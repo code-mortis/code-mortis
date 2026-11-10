@@ -229,6 +229,8 @@ test("scan breadcrumbs contain the repository instead of a separate back-link", 
   await expect(page).toHaveURL(/\/security\/repositories\/22$/);
   await expect(page.getByRole("heading", { name: "acme/payments", exact: true })).toBeVisible();
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("acme/payments");
+  if (info.project.use.viewport) await page.setViewportSize(info.project.use.viewport);
+  await page.screenshot({ path: `../.impeccable/review/cohesive-security-repository-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   expect(writes).toHaveLength(0);
 });
 
@@ -320,6 +322,21 @@ test("scan alerts omit ordinary cancellation but preserve specific reasons and a
   Object.assign(saved, { status: "cancelled", error: "Security scan cancelled." });
   await page.clock.fastForward(5000);
   await expect(page.getByRole("alert")).toContainText("Cancellation request failed.");
+});
+
+test("security prompt limits stay visible for long combined verification warnings", async ({ page }) => {
+  const error = 'Fix verification remains uncertain for a previously reported issue (apps/users/views.py): Inference request exceeds the connection prompt token ceiling; '.repeat(5);
+  expect(error.length).toBeGreaterThan(600);
+  await mock(page, { scanError: error });
+  await page.goto("/security/scans/scan");
+  const alert = page.getByRole("alert").first();
+  await expect(alert.getByText("AI prompt limit reached", { exact: true })).toBeVisible();
+  await expect(alert).toContainText("Those checks remain unverified.");
+  await expect(alert).not.toContainText("ask the administrator");
+  const details = alert.getByRole("region", { name: "AI prompt limit reached technical details", includeHidden: true });
+  await expect(details).toBeHidden();
+  await alert.getByText("Technical details", { exact: true }).click();
+  await expect(details).toHaveText(error.trim());
 });
 
 test("security errors explain failed evidence and keep diagnostics collapsed and copyable", async ({ page }, info) => {
@@ -477,8 +494,8 @@ for (const incomplete of [false, true]) test(`triage immediately updates the rep
   await expect(page.getByRole("link", { name: "Security D", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
-  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
-  await expect(sheet.getByText(/Triage updates the repository grade immediately/)).toBeVisible();
+  await sheet.getByRole("button", { name: "Change status", exact: true }).click();
+  await expect(sheet.getByText(/Changing status updates the repository grade immediately/)).toBeVisible();
   await sheet.getByLabel("Decision", { exact: true }).selectOption("false_positive");
   await sheet.getByLabel("Reason", { exact: true }).fill("The existing ownership guard covers this request.");
   await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
@@ -716,11 +733,11 @@ test("saved scan exposes findings, resolved, coverage and report downloads", asy
   await page.keyboard.press("Escape");
   const report = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await expect(report.locator('[data-slot="finding-card"]')).toHaveCount(1);
-  await expect(page.getByRole("heading", { name: "Remediation", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "How to fix it", exact: true })).toHaveCount(0);
   await report.getByRole("button").click();
   const saved = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await expect(saved.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(saved.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
+  await expect(saved.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(saved.getByRole("heading", { name: "How to fix it", exact: true })).toBeVisible();
   await expect(saved.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(report.getByRole("button")).toBeFocused();
@@ -789,7 +806,7 @@ test("scan state tabs paginate saved findings and retain historical evidence", a
   await page.screenshot({ path: info.outputPath("scan-resolved-state.png"), fullPage: true });
   await cards.click();
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await expect(sheet.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Escape");
   await search.fill("no matches");
   await page.getByRole("button", { name: "Clear filters", exact: true }).click();
@@ -837,7 +854,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(cards.first().locator('[data-slot="badge"]')).toHaveCount(3);
     await expect(report.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Inspect finding", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: /^(Remediation|Verification)$/ })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: /^(How to fix it|How to verify the fix)$/ })).toHaveCount(0);
     if (info.project.name === "desktop") {
       const before = await cards.first().evaluate((node) => getComputedStyle(node).backgroundColor);
       await cards.first().hover();
@@ -856,25 +873,38 @@ test("saved report details preserve original evidence separately from current st
   await page.clock.install();
   const currentSha = "b".repeat(40);
   await page.route("**/api/v1/security/findings/finding", (route) => route.fulfill({ json: { repository,
-    finding: { ...finding, state: "resolved", version: 7, path: "src/account-orders.ts", evidence: { ...finding.evidence,
+    finding: { ...finding, state: "resolved", version: 7, path: "src/account-orders.ts", severity: "low", kind: "infrastructure", evidence: { ...finding.evidence,
       source_sha: currentSha, remediation: "Current remediation after the verified fix." } }, can_write: true, observations: [], activity: [] } }));
   await page.goto("/security/scans/scan");
   const card = page.getByRole("region", { name: "Findings recorded in this scan", exact: true }).getByRole("button");
   await card.focus();
   await page.keyboard.press("Enter");
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await expect(sheet.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByText("orders.ts", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("Code", { exact: true })).toBeVisible();
   await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("resolved");
   await expect(sheet.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
   await expect(sheet.getByRole("link", { name: "View source", exact: true })).toHaveAttribute("href", `https://github.com/acme/payments/blob/${sha}/src/orders.ts`);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: `/private/tmp/code-mortis-security-saved-evidence-${info.project.name}.png`, fullPage: true });
-  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await page.screenshot({ path: `/private/tmp/code-mortis-security-saved-evidence-${info.project.name}.png`, fullPage: false });
+  await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
+  await expect(sheet.getByText("account-orders.ts", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("low", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("Infrastructure", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("orders.ts", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
+  await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("resolved");
   await expect(sheet.getByText("Current remediation after the verified fix.", { exact: true })).toBeVisible();
   await expect(sheet.getByRole("link", { name: "View source", exact: true })).toHaveAttribute("href", `https://github.com/acme/payments/blob/${currentSha}/src/account-orders.ts`);
   await page.clock.fastForward(5000);
-  await expect(sheet.getByRole("tab", { name: "Current status", exact: true })).toHaveAttribute("aria-selected", "true");
-  await sheet.getByRole("tab", { name: "At this scan", exact: true }).click();
+  await expect(sheet.getByRole("tab", { name: "Current finding", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.screenshot({ path: `../.impeccable/review/cohesive-security-current-finding-${info.project.name}.png`, animations: "disabled" });
+  await sheet.getByRole("tab", { name: "Saved evidence", exact: true }).click();
+  await expect(sheet.getByText("orders.ts", { exact: true })).toBeVisible();
+  await expect(sheet.getByText("high", { exact: true })).toBeVisible();
+  await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("resolved");
   await expect(sheet.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
   await expect(sheet.getByText("Current remediation after the verified fix.", { exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -893,12 +923,19 @@ test("saved uncertain verification explains the blocker separately from remediat
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
   const verification = sheet.getByRole("region", { name: "Fix verification", exact: true });
   await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
-  await expect(sheet.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
+  await expect(sheet.getByRole("heading", { name: "How to fix it", exact: true })).toBeVisible();
+  const suggestedChecks = sheet.getByRole("heading", { name: "How to verify the fix", exact: true }).locator("..");
+  await expect(suggestedChecks).toContainText("Suggested checks to run after making the change.");
+  await expect(suggestedChecks).toContainText("Add a cross-account access regression test.");
+  await expect(suggestedChecks).not.toContainText(explanation);
+  await expect(sheet.getByRole("heading", { name: "Verification", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: `/private/tmp/code-mortis-security-verification-reason-${info.project.name}.png`, fullPage: true });
-  await sheet.getByRole("tab", { name: "Current status", exact: true }).click();
+  await page.screenshot({ path: `/private/tmp/code-mortis-security-verification-reason-${info.project.name}.png`, fullPage: false });
+  await sheet.locator('[data-slot="finding-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await page.screenshot({ path: `../.impeccable/review/cohesive-security-suggested-checks-${info.project.name}.png`, animations: "disabled" });
+  await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
   await expect(sheet.getByText(explanation, { exact: true })).toHaveCount(0);
-  await sheet.getByRole("tab", { name: "At this scan", exact: true }).click();
+  await sheet.getByRole("tab", { name: "Saved evidence", exact: true }).click();
   await expect(verification.getByText(explanation, { exact: true })).toBeVisible();
   expect(writes).toHaveLength(0);
 });
@@ -917,7 +954,7 @@ test("uncertain security candidates keep their assessment and evidence in a disc
   await expect(disclosure).not.toHaveAttribute("open");
   await disclosure.locator("summary").click();
   await expect(disclosure.getByText("Required deployment configuration was unavailable.", { exact: true })).toBeVisible();
-  await expect(disclosure.getByRole("heading", { name: "Remediation", exact: true })).toBeVisible();
+  await expect(disclosure.getByRole("heading", { name: "How to fix it", exact: true })).toBeVisible();
   await expect(disclosure.getByRole("region", { name: "Code snippet", exact: true })).toContainText("return orders.find(id);");
   await expect(disclosure.locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await expect(page.getByRole("button", { name: "Create GitHub issue", exact: true })).toHaveCount(0);
@@ -1123,7 +1160,7 @@ test("secret rotation requires an explicit reason and acknowledgment", async ({ 
   const writes = await mock(page, { secret: true });
   await page.goto("/security/repositories/22?finding=finding");
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await sheet.getByRole("button", { name: "Change status", exact: true }).click();
   const acknowledgment = sheet.getByRole("button", { name: "I rotated or revoked this credential" });
   await expect(acknowledgment).toBeDisabled();
   await sheet.getByRole("textbox", { name: "Reason", exact: true }).fill("Revoked the old credential and deployed its replacement.");
@@ -1719,7 +1756,7 @@ test("security finding sheet separates evidence and activity while keeping actio
   await expect(scroll.locator('[data-slot="security-finding-actions"]')).toHaveCount(0);
   await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(footer.getByRole("button", { name: "Create GitHub issue", exact: true })).toBeInViewport();
-  await expect(footer.getByRole("button", { name: "Triage", exact: true })).toBeInViewport();
+  await expect(footer.getByRole("button", { name: "Change status", exact: true })).toBeInViewport();
   await sheet.getByRole("button", { name: "View activity", exact: true }).click();
   const activity = sheet.getByRole("tab", { name: "Activity 2", exact: true });
   await expect(activity).toBeFocused();
@@ -1739,7 +1776,7 @@ test("security finding triage requires a reason and keeps the verified-resolutio
   const writes = await mock(page);
   await page.goto("/security/repositories/22?finding=finding");
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await sheet.getByRole("button", { name: "Change status", exact: true }).click();
   const save = sheet.getByRole("button", { name: "Save decision", exact: true });
   await expect(save).toBeDisabled();
   await sheet.getByRole("combobox", { name: "Decision", exact: true }).selectOption("accepted_risk");
@@ -1748,7 +1785,7 @@ test("security finding triage requires a reason and keeps the verified-resolutio
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ path: "/security/findings/finding", body: { state: "accepted_risk", reason: "Restricted to an isolated environment until remediation.", version: 0 } });
   await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("accepted risk");
-  await expect(sheet.getByRole("button", { name: "Triage", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(sheet.getByRole("button", { name: "Change status", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(sheet.getByRole("button", { name: "Resolve finding", exact: true })).toHaveCount(0);
 });
 
@@ -1885,7 +1922,7 @@ test("security finding sheet hides evidence and mutations after access is denied
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
   await expect(sheet.getByRole("alert")).toContainText("Repository access was revoked.");
   await expect(sheet.getByRole("tablist", { name: "Finding information", exact: true })).toHaveCount(0);
-  await expect(sheet.getByRole("button", { name: "Triage", exact: true })).toHaveCount(0);
+  await expect(sheet.getByRole("button", { name: "Change status", exact: true })).toHaveCount(0);
   await expect(sheet.getByRole("button", { name: "Create GitHub issue", exact: true })).toHaveCount(0);
   expect(writes).toHaveLength(0);
 });
@@ -2352,7 +2389,7 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   await expect(drawer.getByRole("tabpanel", { name: "Evidence 1" }).getByText("return orders.find(id);", { exact: false })).toBeVisible();
   await expect(drawer.getByRole("region", { name: "Code snippet" }).locator('[data-slot="code-line-numbers"]')).toHaveText("14");
   await drawer.getByText("Original proposal", { exact: true }).click();
-  await expect(drawer.getByText("Remediation", { exact: true })).toBeVisible();
+  await expect(drawer.getByText("How to fix it", { exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-security-assessment-${info.project.name}.png`, fullPage: true });
   await page.screenshot({ path: `/private/tmp/code-mortis-security-assessment-viewport-${info.project.name}.png` });
   await page.keyboard.press("Escape");
@@ -3027,7 +3064,7 @@ for (const scope of ["repository"] as const) test(`${scope} triage moves finding
   for (const [state, name] of [["accepted_risk", "Accepted risk"], ["false_positive", "False positives"], ["open", openName]]) {
     await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
     const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-    await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+    await sheet.getByRole("button", { name: "Change status", exact: true }).click();
     await sheet.getByLabel("Decision", { exact: true }).selectOption(state);
     await sheet.getByLabel("Reason", { exact: true }).fill("Reviewed the source evidence and updated this decision.");
     await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
@@ -3092,7 +3129,7 @@ test("scan findings remain historical after triage while the repository updates"
   await expect(page.getByRole("tablist")).toHaveCount(1);
   await page.getByRole("button", { name: /Order lookup does not verify ownership/ }).click();
   const sheet = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await sheet.getByRole("button", { name: "Triage", exact: true }).click();
+  await sheet.getByRole("button", { name: "Change status", exact: true }).click();
   await sheet.getByLabel("Decision", { exact: true }).selectOption("false_positive");
   await sheet.getByLabel("Reason", { exact: true }).fill("Reviewed the saved evidence and current implementation.");
   await sheet.getByRole("button", { name: "Save decision", exact: true }).click();
@@ -3129,7 +3166,7 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} s
   const findings = page.getByRole("region", { name: "Findings recorded in this scan", exact: true });
   await findings.getByRole("button").click();
   const detail = page.getByRole("dialog", { name: "Finding details", exact: true });
-  await expect(detail.getByRole("tab", { name: "At this scan", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(detail.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(detail.getByText("Constrain the order lookup to the authenticated account.", { exact: true })).toBeVisible();
   await expect(detail.getByRole("region", { name: "Code snippet" })).toContainText("return orders.find(id)");
   expect(writes).toHaveLength(0);

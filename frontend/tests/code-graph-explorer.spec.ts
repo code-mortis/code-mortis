@@ -476,7 +476,7 @@ test("saved groups filter files and findings open immutable evidence through rel
   await expect(page.getByRole("region", { name: "Changed files", exact: true }).getByRole("button", { pressed: true })).toHaveCount(1);
   await page.getByRole("button", { name: /Validate the response status/ }).click();
   await expect(page.getByRole("dialog")).toContainText("Validate the response status");
-  await expect(page.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.reload();
   await expect(page.getByRole("dialog")).toContainText("Validate the response status");
   await page.keyboard.press("Escape");
@@ -522,7 +522,7 @@ test("diff finding markers preview saved evidence and open the sidebar by mouse,
   expect(calls.length).toBe(reads);
   if (isMobile) await marker.tap(); else await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog")).toContainText("Validate the response status");
-  await expect(page.getByRole("tab", { name: "At this run", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Saved evidence", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(preview).not.toBeVisible();
   await page.keyboard.press("Escape");
   await expect(marker).toBeFocused();

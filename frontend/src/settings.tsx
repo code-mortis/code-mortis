@@ -14,6 +14,7 @@ import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
 import { CodeGraphSettings } from "./components/code-graph-settings";
+import { SettingsNavigation } from "./components/settings-navigation";
 import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
@@ -40,6 +41,7 @@ import {
   ErrorNotice,
   Field,
   Loading,
+  PageTitle,
   Status,
 } from "./components/common";
 
@@ -252,21 +254,15 @@ export function RepositorySettings({
         }
       }}
     >
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Repository configuration</h1>
-        <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+      <PageTitle title="Repository configuration">
+        <p className="flex items-center gap-2">
           <FolderGit2 className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
         </p>
-      </header>
-      <div className="grid gap-7 border-t pt-6 lg:grid-cols-[180px_minmax(0,1fr)] lg:gap-10">
-        <nav aria-label="Repository settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-          {sections.map(([value, label]) => <Link key={value} to={`?${sectionSearch(value)}`} state={location.state}
-            aria-current={section === value ? "page" : undefined}
-            className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${section === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
-            {label}
-          </Link>)}
-        </nav>
+      </PageTitle>
+      <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
+        <SettingsNavigation label="Repository settings sections" value={section}
+          items={sections.map(([value, label]) => ({ value, label, to: `?${sectionSearch(value)}`, state: location.state }))} />
         <div className="min-w-0 max-w-2xl">
           <section hidden={section !== "reviews"} data-settings-section="reviews" aria-labelledby={`${id}-reviews`} className="space-y-6">
             <div>
@@ -881,21 +877,12 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
   }
 
   return <>
-    <header className="mb-5">
-      <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
+    <PageTitle title="Settings">
         {isAdmin ? "Manage AI connections, API tokens, MCP access, GitHub installations, team access, and appearance." : "View shared AI connections and manage your API tokens, MCP access, and appearance."}
-      </p>
-    </header>
-    <div className="grid min-w-0 gap-6 lg:grid-cols-[176px_minmax(0,1fr)]">
-      <nav aria-label="Settings sections" className="flex flex-wrap self-start gap-1 lg:flex-col">
-        {sections.map(({ value, label, icon: Icon }) => (
-          <Link key={value} to={`/settings?tab=${value}`} aria-current={tab === value ? "page" : undefined}
-            className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${tab === value ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
-            <Icon aria-hidden="true" className="size-4 shrink-0" />{label}
-          </Link>
-        ))}
-      </nav>
+    </PageTitle>
+    <div className="grid min-w-0 gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
+      <SettingsNavigation label="Settings sections" value={tab}
+        items={sections.map((section) => ({ ...section, to: `/settings?tab=${section.value}` }))} />
       <div className="settings-content min-w-0 space-y-6">
         {tab !== "appearance" && <ErrorNotice error={query.error} />}
         {tab === "appearance" && <AppearanceSettings mode={mode} theme={theme} dark={dark} onModeChange={onModeChange} onThemeChange={onThemeChange} />}

@@ -1,5 +1,5 @@
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { Bot, ChartNoAxesCombined, FolderGit2, Github, Inbox, KeyRound, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Plus, Settings, ShieldCheck, Users, X } from "lucide-react";
+import { Bot, ChartNoAxesCombined, FolderGit2, Github, Inbox, KeyRound, LoaderCircle, LogOut, MoreVertical, Palette, Plug, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
@@ -91,8 +91,8 @@ export function AppSidebar({ user, onLogout, signingOut }: {
         </SidebarGroup>
         <SidebarGroup className="mt-3">
           <SidebarGroupLabel className="text-muted-foreground">Repositories</SidebarGroupLabel>
-          {user.role === "admin" && <SidebarGroupAction asChild title="Manage repositories">
-            <Link to="/settings?tab=github" aria-label="Manage repositories" onClick={closeMobile}><Plus aria-hidden="true" /></Link>
+          {user.role === "admin" && <SidebarGroupAction asChild title="Manage repositories" className="top-2 right-2 h-8 w-auto aspect-auto px-2 text-xs">
+            <Link to="/settings?tab=github" aria-label="Manage repositories" onClick={closeMobile}>Manage</Link>
           </SidebarGroupAction>}
           {repos.isPending && <p className="px-2 py-3 text-xs text-muted-foreground">Loading repositories…</p>}
           {repos.error && <div className="space-y-1 px-2 py-3 text-xs">

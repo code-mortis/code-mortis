@@ -46,6 +46,7 @@ from code_mortis.reviews.service import authorize_connection, connection_snapsho
 from code_mortis.schemas.common import SecuritySummary
 from code_mortis.schemas.security import SecurityScanOut
 from code_mortis.security_scans import engine as security_engine
+from code_mortis.security_scans import payload
 
 ACTIVE = {"queued", "running", "blocked"}
 STAGES = ("snapshot", "trivy", "analysis", "assessment", "verification", "report")
@@ -122,6 +123,12 @@ def branch_head(full_name, token, remote=None):
     return {"default_branch": branch, "head_sha": sha, "checked_at": now().isoformat()}
 
 
+def without_request_timeout(config):
+    connection = config["connection"]
+    return {**config, "connection": {**connection, "options": {
+        key: value for key, value in connection["options"].items() if key != "timeout_sec"}}}
+
+
 def create_scan(db, repo, actor, body, remote=None, parent=None):
     connection = db.get(Connection, body.connection_id)
     if parent:
@@ -161,7 +168,7 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
             config["limits"]["concurrency"] = parent.config["limits"].get("concurrency", 1)
         original = {**parent.config, **engine_snapshot(parent.config), "limits": {**parent.config["limits"],
                     "concurrency": config["limits"]["concurrency"]}}
-        if config != original:
+        if without_request_timeout(config) != without_request_timeout(original):
             raise HTTPException(409, "Retry must use the original connection, model and limits. Start a new scan to change them.")
     run = SecurityScan(id=uid(), repository_id=repo.id, actor_id=actor.id, connection_id=connection.id,
                        parent_id=parent.id if parent else None, request_key=body.request_key,
@@ -611,10 +618,10 @@ def perform(scan_id, claim):
         scan.progress = {**scan.progress, "freshness": branch_head(repo.full_name, token)}
         previous = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
             SecurityFinding.repository_id == repo.id))]
-        saved = scan.progress.get("tasks", {})
+        saved, saved_config = scan.progress.get("tasks", {}), config
         if scan.parent_id:
             parent = db.get(SecurityScan, scan.parent_id)
-            saved = parent.progress.get("tasks", {})
+            saved, saved_config = parent.progress.get("tasks", {}), parent.config
     limits = config["limits"]
     concurrency = limits.get("concurrency", 1) if config["connection"]["kind"] == "api" else 1
     stop_workers = Event()
@@ -662,9 +669,14 @@ def perform(scan_id, claim):
             context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS + supplement)
         cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
+        parent_cache_config = {**saved_config, "limits": {
+            key: value for key, value in saved_config["limits"].items() if key != "concurrency"}}
+        identities = {identity}
+        if without_request_timeout(cache_config) == without_request_timeout(parent_cache_config):
+            identities.add(digest(json.dumps([parent_cache_config, context], sort_keys=True)))
         cached = saved.get(key, {})
-        reusable = (cached.get("status") == "completed" and cached.get("input_hash") == identity
-                    and cached.get("result", {}).get("verdict") != "uncertain")
+        reusable = (cached.get("status") == "completed" and cached.get("input_hash") in identities
+                    and cached.get("result", {}).get("verdict") != "uncertain" and payload.reusable_source_context(cached))
         return context, identity, cached if reusable else None
 
     def ai(item, task, context, key, allowance=None, *, parallel=False):
@@ -688,13 +700,14 @@ def perform(scan_id, claim):
                 raise ReviewStopped(_pat.REVOKED_MESSAGE)
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
-            packing = row.progress.get("tasks", {}).get(key, {}).get("source_packing",
-                saved.get(key, {}).get("source_packing"))
-            navigation = None
+            packing, navigation = None, None
             for prior in (row.progress.get("tasks", {}).get(key, {}), saved.get(key, {})):
-                if prior.get("input_hash") == identity and "source_navigation" in prior:
+                if not payload.reusable_source_context(prior):
+                    continue
+                if packing is None:
+                    packing = prior.get("source_packing")
+                if navigation is None and prior.get("input_hash") == identity and "source_navigation" in prior:
                     navigation = prior["source_navigation"]
-                    break
         if used is None:
             raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
         remaining = None if limits["token_budget"] is None else limits["token_budget"] - used
@@ -969,7 +982,7 @@ def perform(scan_id, claim):
                         original = old["evidence"]["source_sha"]
                         current_path = item.renamed(original, old["path"])
                         context = {"finding": old, "original_sha": original, "head_sha": item.sha,
-                                   "diff": item.diff(original), "sources": {
+                                   "diff": item.diff(original, model_context=True), "sources": {
                                        "original": {old["path"]: item.source(old["path"], original)},
                                        "current": {current_path: item.source(current_path)} if current_path in item.inventory else {}}}
                         verdict = ai(item, "verification", context, "verification:" + old["id"])

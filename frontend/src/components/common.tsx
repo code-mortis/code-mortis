@@ -1,10 +1,11 @@
-import { isValidElement, useId, useState, type ReactNode } from "react";
+import { isValidElement, useId, useState, type ComponentProps, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import { AlertCircle, ArrowUpRight, ChevronDown, Copy, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "./ui/badge";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
+import { Skeleton } from "./ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Code } from "./code";
 import { errorFeedback } from "../lib/error-feedback";
@@ -100,12 +101,13 @@ export function TechnicalDetails({ error, name }: { error: string; name: string 
 
 export function Loading() {
   return (
-    <div
-      role="status"
-      className="flex items-center gap-2 py-14 text-sm text-muted-foreground"
-    >
-      <LoaderCircle className="size-4 motion-safe:animate-spin" /> Loading
-      workspace…
+    <div role="status" className="space-y-5 py-8">
+      <span className="text-sm text-muted-foreground">Loading workspace…</span>
+      <div aria-hidden="true" className="space-y-3">
+        <Skeleton className="h-4 w-2/3 max-w-sm" />
+        <Skeleton className="h-4 w-full max-w-xl" />
+        <Skeleton className="h-4 w-1/2 max-w-xs" />
+      </div>
     </div>
   );
 }
@@ -119,8 +121,8 @@ export function Empty({
   className?: string;
 }) {
   return (
-    <div className={cn("rounded-lg border border-dashed px-6 py-14 text-center", className)}>
-      <h2 className="text-lg font-medium">{title}</h2>
+    <div className={cn("rounded-lg border bg-card px-6 py-12 text-center", className)}>
+      <h2 className="text-base font-semibold">{title}</h2>
       <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
         {children}
       </div>
@@ -128,35 +130,35 @@ export function Empty({
   );
 }
 export function PageTitle({
-  eyebrow,
   title,
+  titleMeta,
+  headingProps,
   children,
   actions,
+  className,
 }: {
-  eyebrow?: ReactNode;
   title: ReactNode;
+  titleMeta?: ReactNode;
+  headingProps?: ComponentProps<"h1">;
   children?: ReactNode;
   actions?: ReactNode;
+  className?: string;
 }) {
   return (
-    <header className="mb-8">
-      {eyebrow && (
-        <div className="mb-3 text-xs font-medium text-muted-foreground">
-          {eyebrow}
-        </div>
-      )}
+    <header data-slot="page-title" className={cn("mb-6 min-w-0", className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 max-w-3xl">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl text-balance">
-            {title}
-          </h1>
+        <div className="min-w-0 flex-1 basis-72">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h1 {...headingProps} className={cn("min-w-0 break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]", headingProps?.className)}>{title}</h1>
+            {titleMeta}
+          </div>
           {children && (
-            <div className="mt-3 text-sm leading-relaxed text-muted-foreground">
+            <div className="mt-2 text-sm leading-relaxed text-muted-foreground">
               {children}
             </div>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">{actions}</div>
+        {actions && <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
     </header>
   );

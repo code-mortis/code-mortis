@@ -24,11 +24,11 @@ export function FindingCard({ evidence, state, onClick }: {
         {evidence.severity != null ? <Status value={String(evidence.severity)} /> : <span className="shrink-0">Proposed finding</span>}
         {!!evidence.category && <FindingCategory value={String(evidence.category)} />}
       </span>
-      <span className="flex min-w-0 items-baseline gap-2 font-mono max-sm:order-first max-sm:basis-full">
+      <span className="flex min-w-0 items-baseline font-mono">
         <span className="min-w-0 truncate" title={path}>
           {slash >= 0 && <span>{path.slice(0, slash + 1)}</span>}<span className="font-medium text-card-foreground">{path.slice(slash + 1)}</span>
         </span>
-        {evidence.start_line != null && <span className="shrink-0">{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
+        {evidence.start_line != null && <span className="shrink-0">:{String(evidence.start_line)}{evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}</span>}
       </span>
     </span>
     <span className="flex min-w-0 items-start justify-self-start sm:col-start-2 sm:row-start-1 sm:row-span-2 sm:max-w-48 sm:justify-self-end">{state}</span>

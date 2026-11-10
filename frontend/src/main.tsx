@@ -256,10 +256,14 @@ function App() {
   }
   return (
     <SidebarProvider>
+      <a href="#main-content" onClick={(event) => {
+        event.preventDefault();
+        document.getElementById("main-content")?.focus();
+      }} className="sr-only z-50 rounded-md bg-background px-4 py-3 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Skip to content</a>
       <AppSidebar user={session.data} onLogout={logout} signingOut={action.isPending} />
       <div className="min-w-0 flex-1">
         <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
-        <main className="min-w-0 px-5 py-8 sm:px-9 lg:px-12 lg:py-10">
+        <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8">
           <div className="mx-auto max-w-6xl">
             <ErrorNotice error={action.error} />
             <Routes>

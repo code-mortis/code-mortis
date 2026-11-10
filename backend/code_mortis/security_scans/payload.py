@@ -2,6 +2,36 @@
 
 import json
 
+from code_mortis.core import file_policy
+
+
+def excluded_source_paths(value):
+    paths = set()
+
+    def collect(value):
+        if isinstance(value, dict):
+            for field, child in value.items():
+                if field == "sources" and isinstance(child, dict):
+                    paths.update(path for sources in child.values() if isinstance(sources, dict) for path in sources)
+                elif field == "context_paths" and isinstance(child, list):
+                    paths.update(path for path in child if isinstance(path, str))
+                elif field in {"path", "from_path", "assigned_path", "current_path"} and isinstance(child, str):
+                    paths.add(child)
+                else:
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(value)
+    return sorted(path for path in paths if file_policy.excluded(path))
+
+
+def reusable_source_context(checkpoint):
+    paths = checkpoint.get("context_paths")
+    return (not excluded_source_paths(checkpoint)
+            and (checkpoint.get("source_packing") is not True or isinstance(paths, list) and bool(paths)))
+
 
 def compact_evidence(context):
     sources = context.get("sources", {})

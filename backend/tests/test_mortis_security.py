@@ -30,8 +30,8 @@ def test_mortis_callback_preserves_security_evidence_expansion_and_redaction(tmp
     item = engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     secret = "synthetic-雪-credential"
     item.secret_values.append(secret)
-    # uv.lock is mandatory-excluded from PR evidence but remains valid scanner evidence.
-    item.inventory = {path: {"hash": digest("safe")} for path in ["app.py", "uv.lock"]}
+    # Scanner inventory retains lockfiles; model supporting evidence uses permitted manifests.
+    item.inventory = {path: {"hash": digest("safe")} for path in ["app.py", "uv.lock", "pyproject.toml"]}
     reads, calls = [], []
     item.read = lambda path, revision=None: reads.append((path, revision)) or "resolved package"
     context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "unsafe " + secret}},
@@ -44,8 +44,9 @@ def test_mortis_callback_preserves_security_evidence_expansion_and_redaction(tmp
     def safe_infer(supplied, **kwargs):
         calls.append((deepcopy(supplied), kwargs["round"], kwargs["budget"]))
         assert secret not in json.dumps(supplied, ensure_ascii=False)
-        assert "uv.lock" in supplied["available_paths"]
-        raw = selected_result(task, required=["uv.lock"] if len(calls) == 1 else [])
+        assert "uv.lock" not in supplied["available_paths"]
+        assert "pyproject.toml" in supplied["available_paths"]
+        raw = selected_result(task, required=["pyproject.toml"] if len(calls) == 1 else [])
         if task == "analysis":
             raw["findings"][0]["explanation"] = secret
         else:
@@ -58,8 +59,8 @@ def test_mortis_callback_preserves_security_evidence_expansion_and_redaction(tmp
     assert context == original
     assert secret not in json.dumps(result, ensure_ascii=False)
     assert [(round, budget) for _, round, budget in calls] == [(0, 100), (1, 93)]
-    assert reads == [("uv.lock", None)] + ([("uv.lock", OLD)] if task == "verification" else [])
-    assert calls[1][0]["sources"]["current"]["uv.lock"] == "resolved package"
+    assert reads == [("pyproject.toml", None)] + ([("pyproject.toml", OLD)] if task == "verification" else [])
+    assert calls[1][0]["sources"]["current"]["pyproject.toml"] == "resolved package"
     evidence = result["findings"][0]["evidence"] if task == "analysis" else result["evidence"]
     assert evidence[0]["quote"] == "unsafe [redacted]"
 
@@ -81,6 +82,67 @@ def test_mortis_callback_rejects_citations_before_persistence(tmp_path):
         engine.ask(item, {"kind": "api"}, {}, "analysis", {"assigned_path": "app.py", "sources": {
             "current": {"app.py": "unsafe"}}}, 100, 60, lambda: False, "task", infer=infer)
     assert checked and caught.value.usage == {"tokens": 7}
+
+
+@pytest.mark.parametrize("path", ["uv.lock", ".env", "agents.md", "src/credentials.py"])
+def test_model_source_boundaries_deny_mandatory_exclusions_without_affecting_raw_scanner_reads(tmp_path, path):
+    item = engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}, path: {}}
+    reads = []
+    item.read = lambda current, sha=None: reads.append(current) or "EXCLUDED_SOURCE"
+    with pytest.raises(ValueError):
+        item.source(path)
+    assert reads == []
+    assert item.read(path) == "EXCLUDED_SOURCE"
+    reads.clear()
+    with pytest.raises(engine.verification.VerificationOutputError, match="excluded") as caught:
+        engine.ask(item, {"kind": "api"}, {}, "analysis", {"assigned_path": "app.py", "sources": {
+            "current": {"app.py": "unsafe", path: "EXCLUDED_SOURCE"}}}, 100, 60, lambda: False, "test",
+            infer=lambda *args, **kwargs: pytest.fail("Excluded source reached inference"))
+    assert caught.value.usage == {"tokens": 0} and reads == []
+
+    def infer(supplied, **kwargs):
+        assert path not in supplied["available_paths"] and "EXCLUDED_SOURCE" not in json.dumps(supplied)
+        return kwargs["validator"]({"findings": [], "required_paths": [path]}, supplied), {"tokens": 7}
+
+    with pytest.raises(engine.verification.VerificationOutputError) as caught:
+        engine.ask(item, {"kind": "api"}, {}, "analysis", {"assigned_path": "app.py", "sources": {
+            "current": {"app.py": "unsafe"}}}, 100, 60, lambda: False, "test", infer=infer)
+    assert caught.value.feedback["kind"] == "evidence" and reads == []
+
+
+def test_pinned_navigation_cannot_restore_excluded_source(tmp_path):
+    item = engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {}}
+    with pytest.raises(engine.verification.VerificationOutputError, match="navigation includes excluded") as caught:
+        engine.ask(item, {"kind": "api"}, {}, "analysis", {"task_contract": engine.TASK_CONTRACT,
+            "assigned_path": "app.py", "sources": {"current": {"app.py": "unsafe"}}}, 100, 60, lambda: False, "test",
+            navigation={"hints": [{"path": "src/credentials.py"}]},
+            infer=lambda *args, **kwargs: pytest.fail("Excluded navigation reached inference"))
+    assert caught.value.usage == {"tokens": 0}
+
+
+@pytest.mark.parametrize("record,excluded", [
+    ({"context_paths": ["app.py", "uv.lock"]}, ["uv.lock"]),
+    ({"source_navigation": {"hints": [{"path": "app.py", "from_path": "src/credentials.py"}]}}, ["src/credentials.py"]),
+    ({"result": {"findings": [{"path": "app.py", "evidence": [{"path": "uv.lock"}]}]}}, ["uv.lock"]),
+    ({"sources": {"original": {".env": "hidden"}}}, [".env"]),
+    ({"available_paths": ["uv.lock"], "explanation": "The uv.lock source was unavailable.", "context_paths": ["app.py"]}, []),
+])
+def test_checkpoint_policy_uses_recorded_source_paths_without_interpreting_free_text(record, excluded):
+    assert engine.payload.excluded_source_paths(record) == excluded
+
+
+@pytest.mark.parametrize("record,reusable", [
+    ({"source_packing": True}, False),
+    ({"source_packing": True, "context_paths": []}, False),
+    ({"source_packing": True, "context_paths": ["app.py"]}, True),
+    ({"source_packing": False}, True),
+    ({}, True),
+    ({"context_paths": ["uv.lock"]}, False),
+])
+def test_packed_checkpoint_requires_recorded_permitted_source_provenance(record, reusable):
+    assert engine.payload.reusable_source_context(record) is reusable
 
 
 @pytest.fixture
@@ -225,7 +287,7 @@ def test_security_semantic_fix_uses_original_and_current_source_before_resolutio
 
     item = scan_workflow["item"]
     item.read = lambda path, sha=None: "unsafe" if sha == OLD else "safe"
-    item.diff = lambda original: "-unsafe\n+safe"
+    item.diff = lambda original, **kwargs: "-unsafe\n+safe"
     item.inventory["app.py"]["hash"] = digest("safe")
 
     async def send(connection, credentials, request, **kwargs):
