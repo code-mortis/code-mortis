@@ -93,6 +93,102 @@ def test_ambiguous_jsx_recovery_keeps_parser_warning():
     assert result.files[0].status == "partial" and result.files[0].reason == "syntax_error"
 
 
+@pytest.mark.parametrize("extension", ["ts", "tsx"])
+def test_inline_import_types_preserve_definitions_ranges_and_runtime_calls(extension):
+    source = '''import { helper } from "./helper";
+interface Box { warnings?: import("./schema").Warning[]; }
+type Alias = import("./schema").Warning[];
+export function create(value: import("./schema").Warning[]) {
+  const ref = useRef<import("./schema").Box | null>(null,);
+  return helper(value);
+}
+export const callback = (value: import("./schema").Warning[]) => helper(value);
+const lazy = import("./runtime").then(load);
+'''.replace("\n", "\r\n")
+    payload = request({f"café.{extension}": source, "helper.ts": "export function helper(value: unknown) {}"})
+    result = client.validate_result(payload, extract(payload))
+    file = result.files[0]
+    assert file.status == "parsed" and file.diagnostic is None
+    assert file.unresolved_calls == 5
+    assert file.blob_sha == blob_sha(source.encode())
+    assert [(item.specifier, item.target_path) for item in result.imports] == [("./helper", "helper.ts")]
+    symbols = {item.name: item for item in result.symbols if item.file_path == file.path}
+    assert set(symbols) == {"Box", "Alias", "create", "callback"}
+    raw = source.encode()
+    for name, prefix in [("Box", b"interface Box"), ("Alias", b"type Alias"),
+                         ("create", b"function create"), ("callback", b"callback =")]:
+        symbol = symbols[name]
+        assert symbol.start_byte == raw.index(prefix)
+        assert name.encode() in raw[symbol.start_byte:symbol.end_byte]
+    assert b'import("./schema")' in raw[symbols["create"].start_byte:symbols["create"].end_byte]
+
+
+@pytest.mark.parametrize("extension", ["ts", "tsx"])
+@pytest.mark.parametrize("source", [
+    'type X = import("m",).A[];',
+    'interface Box { value?: import("m" extra).A[]; }',
+    'interface Box { value?: import("m").; }',
+    'function broken() { return useRef<import("m").T | null>(,); }',
+    'function broken() { const value = import("m").T[]; }',
+    'const text = \'import("m").T[]\'; function broken() { return value + ; }',
+    '/* import("m").T[] */ function broken() { return value + ; }',
+])
+def test_import_type_recovery_does_not_accept_malformed_calls_or_runtime_syntax(extension, source):
+    result = client.validate_result(payload := request({f"bad.{extension}": source}), extract(payload))
+    assert result.files[0].status == "partial" and result.files[0].diagnostic is not None
+    assert not any(item.name == "broken" for item in result.symbols)
+
+
+def test_c_optional_expression_and_node_api_macro_preserve_all_source_facts():
+    source = '''/* café */
+#include "node_api.h"
+static int valid_path(int value) {
+  if (value
+#ifdef _WIN32
+      || windows_check()
+#endif
+  ) return accept();
+  return reject();
+}
+NAPI_MODULE_INIT() {
+#ifdef _WIN32
+  windows_init();
+#endif
+  return exports;
+}
+'''.replace("\n", "\r\n")
+    payload = request({"main.c": source})
+    result = client.validate_result(payload, extract(payload))
+    assert result.files[0].status == "parsed" and result.files[0].diagnostic is None
+    assert result.files[0].unresolved_calls == 4
+    assert [item.name for item in result.symbols] == ["valid_path"]
+    symbol = result.symbols[0]
+    assert source.encode()[symbol.start_byte:symbol.end_byte].decode() == source[source.index("static int"):source.index("\r\nNAPI_MODULE_INIT")]
+    assert [item.specifier for item in result.imports] == ['#include "node_api.h"\r\n']
+
+
+@pytest.mark.parametrize("source", [
+    'int f() { return a\n#ifdef X\n ||\n#endif\n b; }',
+    'int f() { return a\n#ifdef X\n || broken +\n#endif\n ; }',
+    '#include "node_api.h"\nNAPI_MODULE_INIT() { return exports }',
+    '#include "node_api.h"\nNAPI_MODULE_INIT() { const x = ; return exports; }',
+    'NAPI_MODULE_INIT() { return exports; }',
+    'const char *s = "#include \\"node_api.h\\"";\nNAPI_MODULE_INIT() { return exports; }',
+    '/* #include "node_api.h" */\nNAPI_MODULE_INIT() { return exports; }',
+    '#include "node_api.h"\nOTHER_MODULE_INIT() { return exports; }',
+    'NAPI_MODULE_INIT() {}\n#include <node_api.h>',
+    '#include <node_api.h>\n#undef NAPI_MODULE_INIT\nNAPI_MODULE_INIT() {}',
+    '#include <node_api.h>\n# undef NAPI_MODULE_INIT // comment\nNAPI_MODULE_INIT() {}',
+    '#include <node_api.h>\n#define NAPI_MODULE_INIT() x\nNAPI_MODULE_INIT() {}',
+    '#include <node_api.h>\nNAPI_MODULE_INIT() {}\nNAPI_MODULE_INIT() {}',
+    'int f() { return a\n#ifdef X\n || b\n#else\n || bad +\n#endif\n ; }',
+])
+def test_c_recovery_preserves_errors_in_optional_branches_and_macro_bodies(source):
+    payload = request({"bad.c": source})
+    result = client.validate_result(payload, extract(payload))
+    assert result.files[0].status == "partial" and result.files[0].diagnostic is not None
+
+
 @pytest.mark.parametrize("source", ["const café = ;\n", "function broken() {\n"])
 def test_partial_files_record_first_error_location_without_source_text(source):
     payload = request({"problem.ts": source})
