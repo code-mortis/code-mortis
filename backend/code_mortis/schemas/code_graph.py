@@ -22,7 +22,7 @@ MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_FACTS = 100_000
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 EXTRACTION_SECONDS = 120
-EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/4"
+EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/5"
 
 
 class StrictModel(BaseModel):
@@ -83,6 +83,15 @@ Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 FileStatus = Literal["parsed", "partial", "unsupported", "excluded", "failed"]
 
 
+class ParseDiagnostic(StrictModel):
+    start_byte: int = Field(ge=0, le=MAX_INDEXED_FILE_BYTES, strict=True)
+    line: int = Field(ge=1, le=MAX_INDEXED_FILE_BYTES + 1, strict=True)
+    column: int = Field(ge=1, le=MAX_INDEXED_FILE_BYTES + 1, strict=True)
+    context: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z_][a-zA-Z_0-9]*$")
+    token: GraphText = Field(min_length=1, max_length=100)
+    missing_token: GraphText | None = Field(default=None, min_length=1, max_length=100)
+
+
 class CodeGraphFile(StrictModel):
     path: RepositoryPath
     blob_sha: GitSha
@@ -92,9 +101,12 @@ class CodeGraphFile(StrictModel):
     line_count: int | None = Field(default=None, ge=0, le=2**31 - 1, strict=True)
     unresolved_calls: int | None = Field(default=None, ge=0, le=2**31 - 1, strict=True)
     reason: Literal["syntax_error", "unsupported_language", "excluded", "file_too_large", "invalid_encoding", "parse_error"] | None = None
+    diagnostic: ParseDiagnostic | None = None
 
     @model_validator(mode="after")
     def extraction_status(self) -> Self:
+        if self.diagnostic is not None and self.status != "partial":
+            raise ValueError("Only partly parsed files can have syntax diagnostics")
         if self.status in {"parsed", "partial"}:
             if self.language is None or self.line_count is None or self.size_bytes > MAX_INDEXED_FILE_BYTES:
                 raise ValueError("Parsed files require language, line count and the per-file source limit")

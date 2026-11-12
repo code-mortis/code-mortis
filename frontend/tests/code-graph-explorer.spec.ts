@@ -8,7 +8,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
   const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
-    fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, verificationSource: head, reviewSource: head, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false };
+    fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, verificationSource: head, reviewSource: head, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false, warningDetails: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
   const read = (revision = "head") => ({ repository_id: 22, commit_sha: revision === "head" ? head : mergeBase,
@@ -17,6 +17,7 @@ export async function mockGraph(page: Page, admin = true) {
     definition_languages: ["python", "typescript"], gaps: [], truncated: state.graphTruncated, source_state: "not_requested", items: [], next_cursor: null,
     coverage: { parsed: 239, partial: (revision === "head" ? state.status : state.baseStatus) === "partial" ? 1 : 0,
       unsupported: 72, failed: 0, too_large: 0, visible_files: 312, complete: false,
+      warning_files: state.warningDetails && (revision === "head" ? state.status : state.baseStatus) === "partial" ? [{ path: "src/parse-problem.ts", reason: "syntax_error", diagnostic: { start_byte: 50, line: 51, column: 20, context: "type_annotation", token: "import", missing_token: null } }] : [],
       reasons: (revision === "head" ? state.status : state.baseStatus) === "partial" ? { syntax_error: 1, unsupported_language: 72 } : { unsupported_language: 72 } } });
   const diff = (body: any) => ({ base_sha: base, head_sha: head, merge_base_sha: mergeBase,
         file: { path: body.path, change: "modified", additions: state.unknownLineCounts ? null : 1, deletions: state.unknownLineCounts ? null : 1 }, patch_state: state.patchState,
@@ -224,6 +225,28 @@ test("status tooltips explain coverage without pushing down the files", async ({
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Limited comparison" }).click();
   await expect(page.getByRole("tooltip")).toContainText("at most 300 files");
+});
+
+test("indexing file warnings open a dialog outside the status tooltip", async ({ page }) => {
+  const { state } = await mockGraph(page);
+  state.warningDetails = true;
+  await page.goto("/pulls/pr?tab=code&code_view=definitions");
+  const warningButton = page.getByRole("button", { name: "View 1 warning", exact: true });
+  await expect(warningButton).toHaveCSS("text-decoration-line", "underline");
+  await expect(warningButton).toHaveCSS("padding-left", "0px");
+  await expect(warningButton).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await warningButton.focus();
+  await page.keyboard.press("Enter");
+  const warnings = page.getByRole("dialog", { name: "Indexing warnings" });
+  await expect(warnings.getByText("src/parse-problem.ts", { exact: true })).toBeVisible();
+  await expect(warnings).toContainText('The parser could not read "import" within type annotation.');
+  await expect(warnings).toContainText("Line 51, column 20");
+  await page.keyboard.press("Escape");
+  await expect(warnings).toHaveCount(0);
+  await expect(warningButton).toBeFocused();
+  await page.getByRole("button", { name: "Indexed with warnings", exact: true }).click();
+  await expect(page.getByRole("tooltip")).toContainText("1 file could only be partly parsed");
+  await expect(page.getByRole("tooltip").locator("summary")).toHaveCount(0);
 });
 
 test("revision uses the shared combobox with mouse, keyboard and touch", async ({ page, isMobile }) => {

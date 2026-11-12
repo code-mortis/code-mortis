@@ -95,6 +95,23 @@ def test_new_head_policy_and_partial_readiness(graph, client):
     assert state["snapshot_id"] != first.id
 
 
+def test_previous_parser_coverage_is_labelled_and_requires_current_revision_and_policy(graph, client):
+    first, _ = run(service.enqueue_snapshot(22))
+    with transaction() as db:
+        db.get(CodeGraphSnapshot, first.id).extractor_version = "historical-parser"
+    result = client.get(BASE).json()
+    assert result["state"] == "stale" and result["coverage"] is None
+    assert result["previous_coverage"]["parsed"] == 1 and result["snapshot_id"] is None
+    with transaction() as db:
+        db.get(CodeGraphRepository, 22).observed_sha = graph["second"]
+    assert client.get(BASE).json()["previous_coverage"] is None
+    with transaction() as db:
+        db.get(CodeGraphRepository, 22).observed_sha = graph["first"]
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "exclusions": "a.py"}
+    assert client.get(BASE).json()["previous_coverage"] is None
+
+
 def test_refresh_revocation_and_expired_attempt_cannot_publish(graph, monkeypatch):
     with transaction() as db:
         identity = service.schedule_refresh(db, 22)

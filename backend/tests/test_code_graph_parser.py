@@ -93,6 +93,28 @@ def test_ambiguous_jsx_recovery_keeps_parser_warning():
     assert result.files[0].status == "partial" and result.files[0].reason == "syntax_error"
 
 
+@pytest.mark.parametrize("source", ["const café = ;\n", "function broken() {\n"])
+def test_partial_files_record_first_error_location_without_source_text(source):
+    payload = request({"problem.ts": source})
+    result = client.validate_result(payload, extract(payload))
+    diagnostic = result.files[0].diagnostic
+    assert diagnostic is not None
+    prefix = source.encode()[:diagnostic.start_byte]
+    assert diagnostic.line == prefix.count(b"\n") + 1
+    assert diagnostic.column == len(prefix.rsplit(b"\n", 1)[-1]) + 1
+    assert "café" not in diagnostic.model_dump_json()
+    assert result.files[0].status == "partial"
+
+
+@pytest.mark.parametrize("patch", [{"line": 100}, {"column": 100}, {"start_byte": 999}])
+def test_parser_diagnostic_location_is_validated_against_exact_source(patch):
+    payload = request({"problem.ts": "const café = ;\n"})
+    result = extract(payload).model_dump()
+    result["files"][0]["diagnostic"].update(patch)
+    with pytest.raises(ValueError, match="diagnostic does not match source"):
+        client.validate_result(payload, CodeGraphResult.model_validate(result))
+
+
 def test_exclusions_invalid_encoding_multi_imports_aliases_and_ambiguous_targets():
     payload = request({
         "a.py": "import one as first, two\nfrom .target import x as y\n",

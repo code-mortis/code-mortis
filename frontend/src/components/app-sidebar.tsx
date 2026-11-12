@@ -7,7 +7,7 @@ import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import {
-  Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupAction,
+  Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuBadge, SidebarMenuButton,
   SidebarMenuItem, SidebarTrigger, useSidebar,
 } from "./ui/sidebar";
@@ -91,9 +91,6 @@ export function AppSidebar({ user, onLogout, signingOut }: {
         </SidebarGroup>
         <SidebarGroup className="mt-3">
           <SidebarGroupLabel className="text-muted-foreground">Repositories</SidebarGroupLabel>
-          {user.role === "admin" && <SidebarGroupAction asChild title="Manage repositories" className="top-2 right-2 h-8 w-auto aspect-auto px-2 text-xs">
-            <Link to="/settings?tab=github" aria-label="Manage repositories" onClick={closeMobile}>Manage</Link>
-          </SidebarGroupAction>}
           {repos.isPending && <p className="px-2 py-3 text-xs text-muted-foreground">Loading repositories…</p>}
           {repos.error && <div className="space-y-1 px-2 py-3 text-xs">
             <p role="alert">{accessDenied ? "Repository access denied." : "Repository activity unavailable."}</p>

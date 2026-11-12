@@ -237,6 +237,25 @@ def test_default_order_upgrade_preserves_existing_graph_pin(seed):
                           {"id": identity}).mappings().one() == {**before, "failure": None}
 
 
+def test_parser_diagnostics_upgrade_preserves_saved_file_coverage(seed):
+    with transaction() as db:
+        identity = snapshot(db, status="partial")
+        db.add(CodeGraphFile(snapshot_id=identity, path="problem.ts", blob_sha="b" * 40, size_bytes=10,
+                             language="typescript", status="partial", line_count=1, reason="syntax_error"))
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261108_mortis_only")
+        with engine().connect() as connection:
+            before = connection.execute(text("SELECT * FROM code_graph_files WHERE snapshot_id = :id"),
+                                        {"id": identity}).mappings().one()
+    finally:
+        command.upgrade(config, "head")
+    with engine().connect() as connection:
+        after = connection.execute(text("SELECT * FROM code_graph_files WHERE snapshot_id = :id"),
+                                   {"id": identity}).mappings().one()
+        assert after == {**before, "diagnostic": None}
+
+
 def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
     with transaction() as db:
         db.add(ReviewRun(id="history", pr_id="pr", actor_id=7, trigger="manual", dedup_key="history",

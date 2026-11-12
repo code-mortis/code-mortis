@@ -2604,6 +2604,7 @@ export interface components {
             error?: string | null;
             failure?: components["schemas"]["GraphFailure"] | null;
             coverage?: components["schemas"]["GraphCoverage"] | null;
+            previous_coverage?: components["schemas"]["GraphCoverage"] | null;
         };
         /** CodeGroup */
         CodeGroup: {
@@ -3078,6 +3079,8 @@ export interface components {
             };
             /** Oversized Files */
             oversized_files?: components["schemas"]["OversizedGraphFile"][];
+            /** Warning Files */
+            warning_files?: components["schemas"]["GraphFileWarning"][];
         };
         /** GraphCursor */
         GraphCursor: {
@@ -3166,6 +3169,17 @@ export interface components {
             };
             /** Attempt Reference */
             attempt_reference?: string | null;
+        };
+        /** GraphFileWarning */
+        GraphFileWarning: {
+            /** Path */
+            path: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "syntax_error" | "invalid_encoding" | "parse_error";
+            diagnostic?: components["schemas"]["ParseDiagnostic"] | null;
         };
         /** GraphRead */
         GraphRead: {
@@ -3603,6 +3617,21 @@ export interface components {
             latest_observed_run_id: string | null;
             /** Can Write */
             can_write: boolean;
+        };
+        /** ParseDiagnostic */
+        ParseDiagnostic: {
+            /** Start Byte */
+            start_byte: number;
+            /** Line */
+            line: number;
+            /** Column */
+            column: number;
+            /** Context */
+            context: string;
+            /** Token */
+            token: string;
+            /** Missing Token */
+            missing_token?: string | null;
         };
         /** PullRequestOut */
         PullRequestOut: {

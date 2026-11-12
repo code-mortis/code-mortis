@@ -42,6 +42,29 @@ def syntax_tree(parser, source, language):
     return recovered if not recovered.has_error else root
 
 
+def parse_diagnostic(root):
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.is_error or node.is_missing:
+            parent = node.parent
+            while parent is not None and not parent.is_named:
+                parent = parent.parent
+            context = parent.type if parent else "program"
+            if len(context) > 100 or not context.isascii() or not context.isidentifier():
+                context = "syntax"
+            token = node.type if node.is_missing else node.descendant_for_byte_range(
+                node.start_byte, min(node.start_byte + 1, node.end_byte)).type
+            if not token or len(token) > 100 or any(ord(char) < 32 or ord(char) == 127 for char in token):
+                token = "syntax"
+            return dict(start_byte=node.start_byte, line=node.start_point.row + 1,
+                        column=node.start_point.column + 1, context=context,
+                        token=token, missing_token=token if node.is_missing else None)
+        if node.has_error:
+            pending.extend(reversed(node.children))
+    return None
+
+
 def extract(request: CodeGraphRequest) -> CodeGraphResult:
     parsers, files, symbols, imports = {}, [], [], []
     for item in request.files:
@@ -109,6 +132,7 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
         files.append(CodeGraphFile(**metadata, language=language,
                                    status="partial" if root.has_error else "parsed",
                                    reason="syntax_error" if root.has_error else None,
+                                   diagnostic=parse_diagnostic(root) if root.has_error else None,
                                    line_count=source_lines(source), unresolved_calls=count))
     available = {item.path for item in files if item.status not in {"excluded", "failed"}}
     for item in imports:

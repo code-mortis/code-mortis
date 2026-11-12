@@ -515,6 +515,25 @@ def test_eligible_file_gaps_produce_partial_snapshot_and_reason_counts(graph, so
         coverage = service.coverage(db, row)
         assert coverage.reasons == {reason: 1} and not coverage.complete
         assert coverage.visible_files == 2 and coverage.parsed == 1
+        if reason != "file_too_large":
+            assert [(file.path, file.reason) for file in coverage.warning_files] == [("problem.py", reason)]
+            assert bool(coverage.warning_files[0].diagnostic) == (reason == "syntax_error")
+
+
+def test_coverage_warning_files_are_bounded_sorted_and_obey_exclusions(graph):
+    row, _ = run(service.enqueue_snapshot(22))
+    with transaction() as db:
+        current = db.get(CodeGraphSnapshot, row.id)
+        for index in reversed(range(25)):
+            db.add(CodeGraphFile(snapshot_id=row.id, path=f"problem-{index:02}.py", blob_sha="a" * 40,
+                                 size_bytes=10, language="python", status="partial", reason="syntax_error", line_count=1))
+        hidden = db.get(CodeGraphFile, (row.id, "skip.py"))
+        hidden.language, hidden.status, hidden.reason, hidden.line_count = "python", "partial", "syntax_error", 1
+        db.flush()
+        result = service.coverage(db, current)
+        assert result.partial == 25
+        assert [file.path for file in result.warning_files] == [f"problem-{index:02}.py" for index in range(20)]
+        assert all(file.diagnostic is None for file in result.warning_files)
 
 
 def test_disk_monitor_tolerates_git_pack_rename_and_enforces_limit(tmp_path, monkeypatch):

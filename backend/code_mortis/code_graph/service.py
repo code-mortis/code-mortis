@@ -256,6 +256,10 @@ def status(db, repo):
         CodeGraphSnapshot.extractor_version == EXTRACTOR_VERSION, CodeGraphSnapshot.policy_digest == digest))
     latest = db.scalar(select(CodeGraphSnapshot).where(CodeGraphSnapshot.repository_id == repo.id,
                        CodeGraphSnapshot.status.in_(USABLE)).order_by(CodeGraphSnapshot.finished_at.desc()).limit(1))
+    previous = db.scalar(select(CodeGraphSnapshot).where(
+        CodeGraphSnapshot.repository_id == repo.id, CodeGraphSnapshot.commit_sha == config.observed_sha,
+        CodeGraphSnapshot.policy_digest == digest, CodeGraphSnapshot.extractor_version != EXTRACTOR_VERSION,
+        CodeGraphSnapshot.status.in_(USABLE)).order_by(CodeGraphSnapshot.finished_at.desc()).limit(1))
     refreshing = bool(db.scalar(select(Job.id).where(Job.kind == "code_graph_refresh", Job.status.in_(ACTIVE),
                       Job.payload["repository_id"].as_integer() == repo.id,
                       Job.payload["actor_id"].as_integer() == config.actor_id).limit(1)))
@@ -270,17 +274,20 @@ def status(db, repo):
                            finished_at=current.finished_at if current else None,
                            error=config.error or (current.error if current and state != "cancelled" else None),
                            failure=config.failure or (current.failure if current else None),
-                           coverage=coverage(db, current) if current and current.status in USABLE else None)
+                           coverage=coverage(db, current) if current and current.status in USABLE else None,
+                           previous_coverage=coverage(db, previous) if previous and not (current and current.status in USABLE) else None)
 
 
 def coverage(db, row):
-    files = [file for file in db.scalars(select(CodeGraphFile).where(CodeGraphFile.snapshot_id == row.id))
+    files = [file for file in db.scalars(select(CodeGraphFile).where(CodeGraphFile.snapshot_id == row.id).order_by(CodeGraphFile.path))
              if file.reason != "excluded" and not store.excluded(file.path, row.policy)]
     counts = Counter(file.status for file in files)
     reasons = Counter(file.reason for file in files if file.reason)
     return GraphCoverage(**{state: counts[state] for state in ("parsed", "partial", "unsupported", "failed")},
                          too_large=reasons["file_too_large"], visible_files=len(files),
                          complete=counts["parsed"] == len(files), reasons=dict(reasons),
+                         warning_files=[dict(path=file.path, reason=file.reason, diagnostic=file.diagnostic)
+                                        for file in files if file.status in {"partial", "failed"}][:20],
                          oversized_files=[dict(path=file.path, size_bytes=file.size_bytes,
                                                limit_bytes=CodeGraphLimits.model_validate(row.policy.get("limits", {})).max_file_bytes)
                                           for file in files if file.reason == "file_too_large"][:20])

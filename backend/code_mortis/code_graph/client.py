@@ -61,6 +61,14 @@ def validate_result(request: CodeGraphRequest, result: CodeGraphResult) -> CodeG
             continue
         if item.status not in {"parsed", "partial"} or item.line_count != source_lines(source) or item.unresolved_calls is None:
             raise ValueError("Parser returned invalid file coverage")
+        if item.diagnostic is not None:
+            diagnostic = item.diagnostic
+            before = source[:diagnostic.start_byte]
+            if (diagnostic.start_byte > len(source)
+                or diagnostic.line != before.count(b"\n") + 1
+                or diagnostic.column != len(before.rsplit(b"\n", 1)[-1]) + 1):
+                raise ValueError("Parser diagnostic does not match source location")
+            before.decode("utf-8")
         sources[item.path], languages[item.path] = source, language
         lines[item.path] = [index for index, value in enumerate(source) if value == 10]
     available = {item.path for item in result.files if item.status not in {"excluded", "failed"}}
