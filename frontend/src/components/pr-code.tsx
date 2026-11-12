@@ -6,7 +6,7 @@ import { findingCount, usePRCode } from "../lib/use-pr-code";
 import { cn } from "../lib/utils";
 import { Empty, ErrorNotice, Loading, Status } from "./common";
 import { GraphFileDetails, indexDescriptions, rowClass, StatusHint } from "./code-graph-explorer";
-import { CodeGraphCoverage } from "./code-graph-coverage";
+import { CodeGraphCoverage, CodeGraphWarnings } from "./code-graph-coverage";
 import { FilterBar } from "./filter-bar";
 import { FindingCard, FindingCategory } from "./finding-card";
 import { SearchSelect } from "./search-select";
@@ -241,6 +241,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
                 </div>}</>}
               </div>
               <SearchSelect aria-label="Revision" className="ml-auto w-56 max-w-full shrink-0" value={workspace.revision} options={[{ value: "head", label: `PR head · ${data.head_sha.slice(0, 7)}` }, { value: "base", label: `Merge base · ${data.merge_base_sha.slice(0, 7)}` }]} onChange={(value) => change({ graph_revision: value, code_view: view, graph_file: value === "base" ? data.files.find((f) => f.path === path)?.previous_path ?? path : data.files.find((f) => f.previous_path === path)?.path ?? path })} />
+              {!workspace.loading && !workspace.error && <CodeGraphWarnings coverage={snapshot?.coverage} />}
             </div>}
             {workspace.loading ? <div className="px-4 sm:px-5"><Loading /></div> : workspace.error ? <div className="space-y-3 p-4"><ErrorNotice error={workspace.error} /><Button size="sm" variant="outline" onClick={refresh}>Refresh Code</Button></div> : !data.graph_enabled ? <Empty className="rounded-none border-0" title="Code graph is disabled">{admin ? <Link to={`/repositories/${repositoryId}/settings?tab=code-graph`} className="underline">Enable it in Code graph settings</Link> : "Ask an administrator to enable it in Code graph settings."}</Empty> : <>
               {action.error && <div className="p-4"><ErrorNotice error={action.error} /></div>}

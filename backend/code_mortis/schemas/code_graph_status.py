@@ -3,13 +3,19 @@ from typing import Literal
 
 from pydantic import Field
 
-from code_mortis.schemas.code_graph import GitSha, GraphFailure, StrictModel
+from code_mortis.schemas.code_graph import GitSha, GraphFailure, ParseDiagnostic, RepositoryPath, StrictModel
 
 
 class OversizedGraphFile(StrictModel):
     path: str
     size_bytes: int
     limit_bytes: int
+
+
+class GraphFileWarning(StrictModel):
+    path: RepositoryPath
+    reason: Literal["syntax_error", "invalid_encoding", "parse_error"]
+    diagnostic: ParseDiagnostic | None = None
 
 
 class GraphCoverage(StrictModel):
@@ -22,6 +28,7 @@ class GraphCoverage(StrictModel):
     complete: bool = False
     reasons: dict[str, int] = Field(default_factory=dict)
     oversized_files: list[OversizedGraphFile] = Field(default_factory=list, max_length=20)
+    warning_files: list[GraphFileWarning] = Field(default_factory=list, max_length=20)
 
 
 class CodeGraphStatus(StrictModel):
@@ -37,3 +44,4 @@ class CodeGraphStatus(StrictModel):
     error: str | None = None
     failure: GraphFailure | None = None
     coverage: GraphCoverage | None = None
+    previous_coverage: GraphCoverage | None = None

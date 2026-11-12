@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Bot, Check, Copy, FolderGit2, Github, KeyRound, MoreHorizontal, Palette, Plug, Plus, Users } from "lucide-react";
+import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, SlidersHorizontal, Users } from "lucide-react";
 import {
   api,
   useAction,
@@ -131,13 +131,7 @@ const reviewSensitivities = [
   { value: "broad", label: "Broad", description: "Also minor bugs and rare cases." },
 ] as const;
 
-export function RepositorySettings({
-  repository: repo,
-  onSaved,
-}: {
-  repository: Repository;
-  onSaved: () => void;
-}) {
+export function RepositorySettings({ repository: repo }: { repository: Repository }) {
   const connections = useApi<Connection[]>(
     `/connections?repository_id=${repo.id}`,
   );
@@ -145,8 +139,14 @@ export function RepositorySettings({
   const id = useId();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
-  const sections = [["reviews", "Review behavior"], ["connection", "AI connection"], ["context", "Project context"], ["code-graph", "Code graph"], ["limits", "Limits & rules"]];
-  const section = sections.some(([value]) => value === params.get("tab")) ? params.get("tab")! : "reviews";
+  const sections = [
+    { value: "reviews", label: "Review behavior", icon: GitPullRequest },
+    { value: "connection", label: "AI connection", icon: Plug },
+    { value: "context", label: "Project context", icon: FolderGit2 },
+    { value: "code-graph", label: "Code graph", icon: Network },
+    { value: "limits", label: "Limits & rules", icon: SlidersHorizontal },
+  ];
+  const section = sections.some(({ value }) => value === params.get("tab")) ? params.get("tab")! : "reviews";
   const invalidField = useRef<HTMLInputElement | null>(null);
   useLayoutEffect(() => {
     invalidField.current?.focus();
@@ -248,7 +248,6 @@ export function RepositorySettings({
             },
           });
           toast.success("Repository configuration saved.");
-          onSaved();
         } catch (e) {
           setError(e);
         }
@@ -262,7 +261,7 @@ export function RepositorySettings({
       </PageTitle>
       <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
         <SettingsNavigation label="Repository settings sections" value={section}
-          items={sections.map(([value, label]) => ({ value, label, to: `?${sectionSearch(value)}`, state: location.state }))} />
+          items={sections.map((item) => ({ ...item, to: `?${sectionSearch(item.value)}`, state: location.state }))} />
         <div className="min-w-0 max-w-2xl">
           <section hidden={section !== "reviews"} data-settings-section="reviews" aria-labelledby={`${id}-reviews`} className="space-y-6">
             <div>

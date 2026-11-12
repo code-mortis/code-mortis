@@ -199,6 +199,7 @@ class CodeGraphFile(Base):
     line_count: Mapped[int | None] = mapped_column(Integer)
     unresolved_calls: Mapped[int | None] = mapped_column(Integer)
     reason: Mapped[str | None] = mapped_column(String(50))
+    diagnostic: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 class CodeGraphSymbol(Base):

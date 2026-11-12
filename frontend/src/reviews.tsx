@@ -151,8 +151,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
   if (configure) {
     if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
-    const finish = () => navigate(returnPath, { state: location.state });
-    return <RepositorySettings key={selected.id} repository={selected} onSaved={finish} />;
+    return <RepositorySettings key={selected.id} repository={selected} />;
   }
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
