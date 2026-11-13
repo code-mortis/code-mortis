@@ -12,8 +12,10 @@ from code_mortis.core.errors import ReviewStopped
 from code_mortis.core.process import child_environment, command
 from code_mortis.core.security import safe_repo_name
 
+PR_FETCH_TIMEOUT_SECONDS = 360
 
-def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
+
+def git(directory: Path, env: dict, *args: str, stopped=lambda: False, timeout: int = 180) -> str:
     code, output, _ = command(
         [
             "git",
@@ -27,7 +29,7 @@ def git(directory: Path, env: dict, *args: str, stopped=lambda: False) -> str:
         ],
         directory,
         env,
-        timeout=180,
+        timeout=timeout,
         stopped=stopped,
     )
     if code:
@@ -91,7 +93,8 @@ def review_snapshot(full_name, number, base_sha, head_sha, token, stopped, *, ti
         git(repo, env, "init", "--quiet", stopped=stopped)
         git(repo, env, "remote", "add", "origin", f"https://github.com/{full_name}.git", stopped=stopped)
         fetch_refs = [f"{base_sha}:refs/mortis/base", f"refs/pull/{number}/head:refs/mortis/head"]
-        git(repo, fetch_env, "fetch", "--no-tags", "--depth=500", "origin", *fetch_refs, stopped=stopped)
+        git(repo, fetch_env, "fetch", "--no-tags", "--depth=500", "origin", *fetch_refs, stopped=stopped,
+            timeout=PR_FETCH_TIMEOUT_SECONDS)
         fetched_head = git(repo, env, "rev-parse", "refs/mortis/head", stopped=stopped).strip()
         if fetched_head != head_sha:
             raise ReviewStopped("The pull request changed before its commits could be fetched.")
@@ -100,7 +103,8 @@ def review_snapshot(full_name, number, base_sha, head_sha, token, stopped, *, ti
         try:
             merge_base = git(repo, env, "merge-base", base_sha, head_sha, stopped=stopped).strip()
         except ValueError:
-            git(repo, fetch_env, "fetch", "--unshallow", "--no-tags", "origin", *fetch_refs, stopped=stopped)
+            git(repo, fetch_env, "fetch", "--unshallow", "--no-tags", "origin", *fetch_refs, stopped=stopped,
+                timeout=PR_FETCH_TIMEOUT_SECONDS)
             merge_base = git(repo, env, "merge-base", base_sha, head_sha, stopped=stopped).strip()
         # Check that trusted rules cannot lead the resolver outside the checkout through symlinks.
         for path in (repo / ".opencodereview", repo / ".opencodereview" / "rule.json"):
