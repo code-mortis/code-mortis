@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from pydantic import TypeAdapter
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, or_, select, text
 
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import client, errors, store
@@ -34,6 +34,7 @@ ACTIVE = {"queued", "running"}
 USABLE = {"ready", "partial"}
 LEASE_SECONDS = 600
 MAX_RECENT_SNAPSHOTS = 10
+REFRESH_FAILURE_COOLDOWN = timedelta(hours=1)
 
 
 class AccessLost(ValueError):
@@ -173,12 +174,21 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     return row.id
 
 
+def refresh_due():
+    """Failed refreshes stay visible but cannot be re-created every reconciliation tick."""
+    return or_(CodeGraphRepository.error.is_(None), CodeGraphRepository.checked_at.is_(None),
+               CodeGraphRepository.checked_at <= now() - REFRESH_FAILURE_COOLDOWN)
+
+
 def schedule_refresh(db, repository_id, *, retry=False, commit_sha=None):
     browser_only()
     if commit_sha is not None:
         commit_sha = TypeAdapter(GitSha).validate_python(commit_sha)
     config = db.scalar(select(CodeGraphRepository).where(CodeGraphRepository.repository_id == repository_id).with_for_update())
     if not config or not config.enabled or config.paused:
+        return None
+    if (not retry and config.error and config.checked_at
+        and config.checked_at > now() - REFRESH_FAILURE_COOLDOWN):
         return None
     query = select(Job).where(Job.kind == "code_graph_refresh", Job.status.in_(ACTIVE),
                              Job.payload["repository_id"].as_integer() == repository_id,

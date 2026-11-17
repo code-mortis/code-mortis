@@ -175,3 +175,66 @@ def test_reenable_explicitly_resumes_cancelled_revision(graph, client):
     assert save(client, True).status_code == 200
     jobs.execute_job(refresh_job().id)
     assert run(identity)[0].status == "ready"
+
+
+def test_failed_refresh_cools_down_and_transient_failure_can_recover(graph, monkeypatch):
+    authorize = github.authorize_repo
+    monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(503, "secret outage")))
+    with transaction() as db:
+        identity = service.schedule_refresh(db, 22)
+    jobs.execute_job(identity)
+    with transaction() as db:
+        config = db.get(CodeGraphRepository, 22)
+        failure = config.failure
+        assert config.error and db.get(Job, identity).status == "failed"
+        assert service.schedule_refresh(db, 22) is None
+        assert db.scalar(select(CodeGraphRepository.repository_id).where(service.refresh_due())) is None
+        assert config.failure == failure  # Do not hide the failure during cooldown.
+        config.checked_at = now() - service.REFRESH_FAILURE_COOLDOWN - timedelta(seconds=1)
+    monkeypatch.setattr(github, "authorize_repo", authorize)
+    with transaction() as db:
+        assert db.scalar(select(CodeGraphRepository.repository_id).where(service.refresh_due())) == 22
+        recovered = service.schedule_refresh(db, 22)
+    assert recovered != identity
+    jobs.execute_job(recovered)
+    with transaction() as db:
+        assert db.get(Job, recovered).status == "done"
+        assert db.get(CodeGraphRepository, 22).failure is None
+        assert db.get(CodeGraphRepository, 22).error is None
+        assert service.schedule_refresh(db, 22) is not None
+
+
+def test_explicit_retry_bypasses_failed_refresh_cooldown(graph):
+    with transaction() as db:
+        config = db.get(CodeGraphRepository, 22)
+        config.error, config.checked_at = "Previous failure", now()
+        assert service.schedule_refresh(db, 22) is None
+        identity = service.schedule_refresh(db, 22, retry=True)
+        assert identity
+        assert service.schedule_refresh(db, 22, retry=True) == identity
+
+
+def test_legacy_failure_without_check_time_is_retryable(graph):
+    with transaction() as db:
+        config = db.get(CodeGraphRepository, 22)
+        config.error, config.checked_at = "Legacy failure", None
+        assert db.scalar(select(CodeGraphRepository.repository_id).where(service.refresh_due())) == 22
+        assert service.schedule_refresh(db, 22)
+
+
+def test_cooling_repositories_do_not_fill_reconciliation_batch(graph):
+    checked = now()
+    with transaction() as db:
+        for identity in range(100, 116):
+            db.add(Repository(id=identity, installation_id=10, full_name=f"team/cooling-{identity}"))
+        db.flush()
+        for identity in range(100, 116):
+            db.add(CodeGraphRepository(repository_id=identity, actor_id=7, enabled=True,
+                                       error="Previous failure", checked_at=checked - timedelta(minutes=10)))
+        # A recently successful repository would sort behind all sixteen failures.
+        db.get(CodeGraphRepository, 22).checked_at = checked
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        refreshes = list(db.scalars(select(Job).where(Job.kind == "code_graph_refresh")))
+        assert len(refreshes) == 1
+        assert refreshes[0].payload["repository_id"] == 22

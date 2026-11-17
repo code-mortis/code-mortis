@@ -749,12 +749,12 @@ def dispatch():
 
 @celery.task(name="mortis.reconcile")
 def schedule_reconciliation():
-    from code_mortis.code_graph.service import schedule_refresh
+    from code_mortis.code_graph.service import refresh_due, schedule_refresh
     from code_mortis.models import CodeGraphRepository
 
     with transaction() as db:
         identities = list(db.scalars(select(CodeGraphRepository.repository_id).where(
-            CodeGraphRepository.enabled.is_(True), CodeGraphRepository.paused.is_(False),
+            CodeGraphRepository.enabled.is_(True), CodeGraphRepository.paused.is_(False), refresh_due(),
         ).order_by(CodeGraphRepository.checked_at.asc().nulls_first(), CodeGraphRepository.repository_id).limit(16)))
     # Keep configuration locks out of the reconciliation transaction's job locks.
     for identity in identities:
