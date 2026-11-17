@@ -8,8 +8,15 @@ from test_code_graph_workflow import run
 from code_mortis import jobs
 from code_mortis.code_graph import service
 from code_mortis.core.db import now, transaction
-from code_mortis.integrations import github
-from code_mortis.models import CodeGraphRepository, CodeGraphSnapshot, Job, Membership, Repository
+from code_mortis.integrations import github, installations
+from code_mortis.models import (
+    CodeGraphRepository,
+    CodeGraphSnapshot,
+    Installation,
+    Job,
+    Membership,
+    Repository,
+)
 
 BASE = "/api/v1/repositories/22/code-graph"
 
@@ -238,3 +245,46 @@ def test_cooling_repositories_do_not_fill_reconciliation_batch(graph):
         refreshes = list(db.scalars(select(Job).where(Job.kind == "code_graph_refresh")))
         assert len(refreshes) == 1
         assert refreshes[0].payload["repository_id"] == 22
+
+
+@pytest.mark.parametrize("model,field,value", [
+    (Repository, "active", False),
+    (Installation, "active", False),
+    (Installation, "uninstalled", True),
+    (Installation, "archived", True),
+])
+def test_refresh_stops_for_unavailable_installation_or_repository(graph, monkeypatch, model, field, value):
+    with transaction() as db:
+        queued = service.schedule_refresh(db, 22)
+        target = db.get(model, 22 if model is Repository else 10)
+        setattr(target, field, value)
+    monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: pytest.fail("Must not contact GitHub after removal"))
+    with transaction() as db:
+        assert service.schedule_refresh(db, 22, retry=True) is None
+        assert db.scalar(select(CodeGraphRepository.repository_id).where(service.refresh_available())) is None
+    jobs.execute_job(queued)
+    with transaction() as db:
+        assert db.get(Job, queued).status == "done"
+        assert db.get(CodeGraphRepository, 22).failure is None
+        assert db.scalar(select(func.count()).select_from(CodeGraphSnapshot)) == 0
+    jobs.schedule_reconciliation()
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "code_graph_refresh")) == 1
+
+
+def test_uninstall_deactivation_stops_graph_refresh_until_access_restored(graph):
+    with transaction() as db:
+        installation = db.get(Installation, 10)
+        installation.uninstalled = True
+        installations.deactivate(db, installation, "GitHub App was removed.")
+    jobs.schedule_reconciliation()
+    assert refresh_job() is None
+    with transaction() as db:
+        # Preserve the user's graph preference and history; it is not an access grant.
+        assert db.get(CodeGraphRepository, 22).enabled
+        assert service.schedule_refresh(db, 22) is None
+        installation = db.get(Installation, 10)
+        installation.active, installation.uninstalled = True, False
+        db.get(Repository, 22).active = True
+    with transaction() as db:
+        assert service.schedule_refresh(db, 22)

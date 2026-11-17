@@ -174,6 +174,14 @@ def admit(db, repo, actor_id, sha, default_sha, *, retry=False):
     return row.id
 
 
+def refresh_available():
+    """Graph preferences do not grant access after an installation/repository is removed."""
+    return CodeGraphRepository.repository_id.in_(select(Repository.id).join(Installation).where(
+        Repository.active.is_(True), Installation.active.is_(True),
+        Installation.uninstalled.is_(False), Installation.archived.is_(False),
+    ))
+
+
 def refresh_due():
     """Failed refreshes stay visible but cannot be re-created every reconciliation tick."""
     return or_(CodeGraphRepository.error.is_(None), CodeGraphRepository.checked_at.is_(None),
@@ -185,7 +193,9 @@ def schedule_refresh(db, repository_id, *, retry=False, commit_sha=None):
     if commit_sha is not None:
         commit_sha = TypeAdapter(GitSha).validate_python(commit_sha)
     config = db.scalar(select(CodeGraphRepository).where(CodeGraphRepository.repository_id == repository_id).with_for_update())
-    if not config or not config.enabled or config.paused:
+    if (not config or not config.enabled or config.paused
+        or not db.scalar(select(CodeGraphRepository.repository_id).where(
+            CodeGraphRepository.repository_id == repository_id, refresh_available()))):
         return None
     if (not retry and config.error and config.checked_at
         and config.checked_at > now() - REFRESH_FAILURE_COOLDOWN):
@@ -219,7 +229,9 @@ def refresh(repository_id, job_id, attempt, actor_id, *, retry=False, commit_sha
     try:
         with transaction() as db:
             config = db.get(CodeGraphRepository, repository_id)
-            if not config or not config.enabled or config.paused or config.actor_id != actor_id:
+            if (not config or not config.enabled or config.paused or config.actor_id != actor_id
+                or not db.scalar(select(CodeGraphRepository.repository_id).where(
+                    CodeGraphRepository.repository_id == repository_id, refresh_available()))):
                 return
         repo, remote = authorize(repository_id, actor_id)
         sha = default_head(repo, remote)
