@@ -3,6 +3,7 @@ import { Bot, ChartNoAxesCombined, FolderGit2, Github, Inbox, KeyRound, LoaderCi
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
+import { Brand } from "./brand";
 import { Button } from "./ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -13,15 +14,6 @@ import {
 } from "./ui/sidebar";
 
 const hasActiveScan = (repo: Repository) => ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? "");
-
-export function Brand() {
-  return (
-    <span className="flex items-center gap-2.5 font-semibold tracking-tight">
-      <span aria-hidden="true" className="grid size-7 place-items-center rounded border border-current/30 font-mono text-xs">cm</span>
-      Code Mortis
-    </span>
-  );
-}
 
 export function SidebarToggle() {
   const { isMobile, open, openMobile } = useSidebar();

@@ -24,7 +24,10 @@ import {
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
-import { AppSidebar, Brand } from "./components/app-sidebar";
+import { AppSidebar } from "./components/app-sidebar";
+import { Brand } from "./components/brand";
+import raven from "./assets/raven.svg";
+import logo from "./assets/logo.svg";
 import { AppHeader } from "./components/app-header";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { Toaster } from "./components/ui/sonner";
@@ -93,78 +96,83 @@ function Setup({ configured }: { configured: boolean }) {
     }
   }
   return (
-    <div className="mx-auto max-w-lg px-6 py-16 sm:py-28">
-      <Brand />
-      <h1 className="mt-14 text-3xl font-semibold tracking-tight">
-        {configured
-          ? "Connect your GitHub account."
-          : "Give your reviews a home."}
-      </h1>
-      <p className="mt-4 leading-relaxed text-muted-foreground">
-        {configured
-          ? "Your GitHub App is registered. Next, authorize your GitHub account, install the app on selected repositories, and choose a model connection."
-          : "Register a GitHub App for this instance. GitHub requires Contents: Read and write to resolve or reopen review threads. You choose which repositories it can access when installing it."}
-      </p>
-      {authError && (
-        <div
-          role="alert"
-          className="mt-6 rounded border border-destructive/30 p-4 text-sm"
-        >
-          <p>{authError}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Diagnostic: {params.get("diagnostic")}
-          </p>
+    <div className="mx-auto grid min-h-svh max-w-lg content-center items-center gap-12 px-6 py-16 md:max-w-6xl md:grid-cols-2 lg:gap-20 lg:py-28">
+      <section className="min-w-0">
+        <div className="flex items-end gap-3">
+          <img src={logo} alt="Code Mortis" width="232" height="192" className="h-10 w-auto shrink-0 -translate-y-1" />
+          <h1 className="text-3xl font-semibold tracking-tight">
+            {configured
+              ? "Connect your GitHub account."
+              : "Give your reviews a home."}
+          </h1>
         </div>
-      )}
-      {configured ? (
-        <Button asChild className="mt-8">
-          <a href="/api/v1/auth/login">
-            <Github />
-            Continue with GitHub
-          </a>
-        </Button>
-      ) : (
-        <form onSubmit={submit} className="mt-8 space-y-5">
-          <ErrorNotice error={error} />
-          <Field
-            label="Bootstrap token"
-            hint="Copy only the CM_BOOTSTRAP_TOKEN value from .env.dev for development, or .env for the server. Each instance has its own token."
+        <p className="mt-4 leading-relaxed text-muted-foreground">
+          {configured
+            ? "Your GitHub App is registered. Next, authorize your GitHub account, install the app on selected repositories, and choose a model connection."
+            : "Register a GitHub App for this instance. GitHub requires Contents: Read and write to resolve or reopen review threads. You choose which repositories it can access when installing it."}
+        </p>
+        {authError && (
+          <div
+            role="alert"
+            className="mt-6 rounded border border-destructive/30 p-4 text-sm"
           >
-            {(id) => (
-              <Input
-                id={id}
-                required
-                type="password"
-                autoComplete="off"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-            )}
-          </Field>
-          <Field
-            label="GitHub organization (optional)"
-            hint="Leave blank to register the app under your personal account."
-          >
-            {(id) => (
-              <Input
-                id={id}
-                value={organization}
-                onChange={(e) => setOrganization(e.target.value)}
-                placeholder="your-team"
-              />
-            )}
-          </Field>
-          <Button disabled={busy} type="submit">
-            {busy ? "Opening GitHub…" : "Register GitHub App"}
-            <Github />
+            <p>{authError}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Diagnostic: {params.get("diagnostic")}
+            </p>
+          </div>
+        )}
+        {configured ? (
+          <Button asChild className="mt-8">
+            <a href="/api/v1/auth/login">
+              <Github />
+              Continue with GitHub
+            </a>
           </Button>
-        </form>
-      )}
-      <p className="mt-10 text-xs leading-relaxed text-muted-foreground">
-        Self-hosted. Your repositories, your model connections.
-        <br />
-        Access is limited to people allowed by your administrator.
-      </p>
+        ) : (
+          <form onSubmit={submit} className="mt-8 space-y-5">
+            <ErrorNotice error={error} />
+            <Field
+              label="Bootstrap token"
+              hint="Copy only the CM_BOOTSTRAP_TOKEN value from .env.dev for development, or .env for the server. Each instance has its own token."
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  required
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              label="GitHub organization (optional)"
+              hint="Leave blank to register the app under your personal account."
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                  placeholder="your-team"
+                />
+              )}
+            </Field>
+            <Button disabled={busy} type="submit">
+              {busy ? "Opening GitHub…" : "Register GitHub App"}
+              <Github />
+            </Button>
+          </form>
+        )}
+        <p className="mt-10 text-xs leading-relaxed text-muted-foreground">
+          Self-hosted. Your repositories, your model connections.
+          <br />
+          Access is limited to people allowed by your administrator.
+        </p>
+      </section>
+      <img src={raven} alt="" width="490" height="389" className="h-auto w-full max-w-xs -scale-x-100 justify-self-center md:max-w-lg" />
     </div>
   );
 }
