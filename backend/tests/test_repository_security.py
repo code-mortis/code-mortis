@@ -32,6 +32,7 @@ from code_mortis.models import (
     SecurityScan,
     User,
 )
+from code_mortis.reviews.service import connection_snapshot
 from code_mortis.schemas.inference import Message, Request
 from code_mortis.schemas.security import SecurityScanInput
 from code_mortis.security_scans import engine as security_engine
@@ -115,7 +116,7 @@ def test_missing_historical_secret_commit_does_not_abort_current_analysis(seed, 
     item.read = read
     item.renamed = lambda sha, path: path
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     calls = []
 
     def ask(*args, **kwargs):
@@ -266,7 +267,7 @@ def test_security_retry_reuses_cached_remainder_at_exhausted_budget(
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda *args: "safe", redact=lambda text: text,
         sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     calls = []
 
     def ask(*args, **kwargs):
@@ -428,7 +429,7 @@ def test_large_history_only_withholds_candidates_that_need_it(seed, security_git
         return real_ask(item, connection, credentials, task, context, *args, **kwargs)
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
@@ -586,7 +587,7 @@ def test_security_auth_outage_preserves_usage_before_retry(seed, security_github
     item.inventory = {"app.py": {"code": True, "hash": digest("safe"), "lines": 1}}
     item.read = lambda *args: "safe"
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     paid_calls, checks = [], []
 
     def ask(*args, **kwargs):
@@ -986,7 +987,7 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
     packages.append({"name": "http-cache-semantics", "version": "4.3.0"})
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "bun.lock")
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "problems": [], "metadata": {},
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "problems": [], "metadata": {},
         "targets": {"bun.lock": {"packages": packages}}})
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Dependency verification must not dispatch inference"))
     request = github.request
@@ -1503,7 +1504,7 @@ def test_complete_pipeline_uses_existing_ai_transport_and_persists_grade(seed, s
         yield item
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
     calls = []
 
     def ask(*args, **kwargs):
@@ -1566,7 +1567,7 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
         return {"findings": [], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}})
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"findings": [], "required_paths": ["bad.py"]}, {"tokens": 12}))
@@ -1647,7 +1648,7 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
         return {"verdict": "confirmed", "finding_id": None, "explanation": "Confirmed", "evidence": [citation], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
@@ -1710,7 +1711,7 @@ def test_security_stage_status_only_reflects_its_own_results(
                 "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {},
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {},
         "problems": ["Dependency scan incomplete"] if earlier_error == "trivy" else [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
@@ -1784,7 +1785,7 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
                 "evidence": context["proposal"]["evidence"], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
@@ -1877,7 +1878,7 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
                 "evidence": proposal["evidence"], "required_paths": []}, {"tokens": 12}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -1930,7 +1931,7 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
                 "evidence": proposals[paths.index(path)]["evidence"], "required_paths": []}, {"tokens": 7}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     body = {"connection_id": "connection", "token_budget": budget, "concurrency": concurrency}
     with transaction() as db:
@@ -1988,13 +1989,16 @@ def test_security_retry_changes_request_timeout_without_losing_completed_work(
         return {"findings": [], "required_paths": []}, {"tokens": 7}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
     with transaction() as db:
         connection = db.get(Connection, "connection")
         connection.options = {**connection.options, **({"timeout_sec": original_timeout} if original_timeout else {})}
-        parent_id = security.create_scan(db, seed["repo"], seed["user"],
-            SecurityScanInput(connection_id="connection", request_key=uid())).id
+        parent = security.create_scan(db, seed["repo"], seed["user"],
+            SecurityScanInput(connection_id="connection", request_key=uid()))
+        parent.config = {**{key: value for key, value in parent.config.items() if key != "execution_limits"},
+                         "connection": connection_snapshot(connection)}
+        parent_id = parent.id
     perform_security(parent_id, "test:1")
     with transaction() as db:
         parent = db.get(SecurityScan, parent_id)
@@ -2058,11 +2062,12 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
         yield item
 
     monkeypatch.setattr(security_engine, "snapshot", snapshot)
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Completed legacy analysis must be reused"))
     with transaction() as db:
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
-        config = {key: value for key, value in parent.config.items() if key != "task_contract"}
+        config = {key: value for key, value in parent.config.items() if key not in {"task_contract", "execution_limits"}}
+        config["connection"] = connection_snapshot(db.get(Connection, "connection"))
         config["limits"] = {"token_budget": None, "timeout_seconds": None}
         context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},
                    "language": "English", "task_contract": "security-task/v2"}
@@ -2229,7 +2234,7 @@ def test_security_scan_persists_selected_citations_and_preserves_uncertain_and_r
         return kwargs["validator"](response, context), {"tokens": 7}
 
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(workflow_inference, "execute", api)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
@@ -3112,7 +3117,8 @@ def test_scanner_database_freshness_and_trusted_options(tmp_path, monkeypatch, d
     if data_age is not None:
         (cache / "db").mkdir(parents=True)
         (cache / "db/metadata.json").write_text(json.dumps({"UpdatedAt": (now() - timedelta(hours=data_age)).isoformat()}))
-    config = SimpleNamespace(trivy_cache_dir=cache, trivy_binary="trivy", trivy_version="0.76.0")
+    config = SimpleNamespace(trivy_cache_dir=cache, trivy_binary="trivy", trivy_version="0.76.0",
+                             encryption_key="synthetic-scanner-test-key")
     monkeypatch.setattr(security_engine, "settings", lambda: config)
     calls = []
 
@@ -3151,6 +3157,9 @@ def test_cancel_saves_report_and_explicit_retry_creates_a_new_history_entry(seed
     cancelled = client.post(f"/api/v1/security/scans/{created['id']}/cancel")
     assert cancelled.json()["status"] == "cancelled"
     assert client.get(f"/api/v1/security/scans/{created['id']}/report").status_code == 200
+    changed = client.post(f"/api/v1/security/scans/{created['id']}/retry",
+                          json={**body, "request_key": uid(), "concurrency": 2})
+    assert changed.status_code == 409
     retry = client.post(f"/api/v1/security/scans/{created['id']}/retry", json={**body, "request_key": uid()})
     assert retry.status_code == 202 and retry.json()["parent_id"] == created["id"] and retry.json()["id"] != created["id"]
 

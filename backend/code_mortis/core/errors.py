@@ -5,6 +5,13 @@ class ReviewStopped(Exception):
     pass
 
 
+def engine_stopped(stopped):
+    """Keep cancellation outside the library's validation and recovery paths."""
+    if stopped():
+        raise ReviewStopped("The operation was cancelled or superseded.")
+    return False
+
+
 class InferenceOutputError(ValueError):
     def __init__(self, message, usage, status="failed", *, feedback=None):
         super().__init__(message)

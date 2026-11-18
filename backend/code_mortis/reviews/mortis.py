@@ -62,6 +62,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             raise ValueError("The shared connection credentials changed before analysis")
         secret = current.secret
         immutable_options = dict(run.config["settings"])
+        configured_output_policy = analysis.configured_output_policy(run.config)
         deadline = (run.started_at + timedelta(seconds=immutable_options["timeout_seconds"])
                     if immutable_options.get("timeout_seconds") is not None else None)
         repository_id, actor_id = repo.id, run.actor_id
@@ -136,7 +137,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                 remaining -= record.get("reserved_bytes", 0)
                 if supporting:
                     graph_sources[item.path] = supporting
-        output_token_policy = analysis.output_token_policy(frozen_plan)
+        output_token_policy = (analysis.output_token_policy(frozen_plan) if frozen_plan
+                               else configured_output_policy)
         source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
         prompt_version = frozen_plan["versions"]["prompt"] if frozen_plan else engine.PROMPT_VERSION
         source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
@@ -216,7 +218,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                     reason = "usage_unknown"
                 elif budget.token_limit is not None:
                     request = requests.get(key)
-                    if request and budget.charged_tokens + llm.reservation(connection, request) + request.max_output_tokens > budget.token_limit:
+                    if request and budget.charged_tokens + llm.reservation(connection, request) + (max(1, request.max_output_tokens)
+                            if output_token_policy == analysis.WORKFLOW_OUTPUT_POLICY else request.max_output_tokens) > budget.token_limit:
                         running = db.scalar(select(AnalysisTask.id).where(AnalysisTask.plan_id == plan_id,
                             AnalysisTask.stage == task.stage, AnalysisTask.status == "running").limit(1))
                         reason = "waiting_capacity" if running else "budget"

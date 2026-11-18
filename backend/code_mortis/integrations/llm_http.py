@@ -471,15 +471,15 @@ async def _bounded(awaitable, stopped, timeout):
             awaitable.close()
         raise InferenceError("cancelled", "Inference was cancelled before dispatch.", consumption_unknown=False)
     task = asyncio.create_task(awaitable)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         while True:
             if stopped():
                 raise InferenceError("cancelled", "Inference was cancelled.")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
                 raise InferenceError("timeout", "The inference request exceeded its deadline.")
-            done, _ = await asyncio.wait({task}, timeout=min(0.1, remaining))
+            done, _ = await asyncio.wait({task}, timeout=min(0.1, remaining) if remaining is not None else 0.1)
             if done:
                 return task.result()
     finally:

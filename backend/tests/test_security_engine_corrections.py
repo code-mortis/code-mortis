@@ -29,6 +29,8 @@ def test_assessment_receives_uncited_analysis_sources_only_for_new_contract(scan
     with transaction() as db:
         scan = db.get(SecurityScan, state["scan_id"])
         scan.config = {**scan.config, "task_contract": contract}
+        connection = scan.config["connection"]
+        token_budget = scan.config["limits"]["token_budget"]
     assessments, calls = [], []
     original_ask = engine.ask
 
@@ -62,7 +64,10 @@ def test_assessment_receives_uncited_analysis_sources_only_for_new_contract(scan
         else:
             assert "context_paths" not in task and "source_navigation" not in task
     assert len(calls) == 3 and len(assessments) == 1
-    assert all(request.effort == "high" and request.max_output_tokens == 16384 for request in calls)
+    for index, request in enumerate(calls):
+        input_tokens = llm.reservation(connection, request.model_copy(update={"max_output_tokens": 0}))
+        assert request.effort == "high"
+        assert request.max_output_tokens == token_budget - index * 12 - input_tokens
     sources = assessments[0]["sources"]["current"]
     assert (sources.get("guards.py") == guard) is (cite_guard or contract == policy.TASK_CONTRACT)
     assert assessments[0]["proposal"]["evidence"][0]["path"] == ("guards.py" if cite_guard else "app.py")

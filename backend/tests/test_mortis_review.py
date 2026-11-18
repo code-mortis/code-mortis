@@ -165,7 +165,16 @@ def settings(scenario, **changes):
         db.get(Repository, 22).settings = scenario["options"]
 
 
-def test_production_adapter_plans_persists_validates_and_replays_without_inference(scenario):
+@pytest.mark.parametrize("workflow", [False, True])
+def test_production_adapter_plans_persists_validates_and_replays_without_inference(scenario, monkeypatch, workflow):
+    if workflow:
+        monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+        monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+        with transaction() as db:
+            run = db.get(ReviewRun, "mortis-run")
+            scenario["connection"] = connection_snapshot(db.get(Connection, "connection"), workflow=True)
+            run.config = {**run.config, "connection": scenario["connection"],
+                          "execution_limits": engine.analysis.EXECUTION_LIMITS}
     first = review(scenario)
     status, report, comments = first
     assert status == "completed" and report["summary"]["total_tokens"] == 12
@@ -183,6 +192,8 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
         plan = db.scalar(select(AnalysisPlan))
         assert plan.run_id == "mortis-run" and plan.job_id == "mortis-job"
         assert plan.snapshot["versions"]["source_code"] == engine.SOURCE_CODE_POLICY
+        assert plan.snapshot["versions"]["output_tokens"] == (
+            engine.analysis.WORKFLOW_OUTPUT_POLICY if workflow else engine.analysis.OUTPUT_TOKEN_POLICY)
         assert plan.snapshot["revisions"] == {"base": scenario["base"], "head": scenario["head"], "merge_base": scenario["base"]}
         assert {entry["path"] for entry in plan.snapshot["selected"]} == {"app.py", "guide.md"}
         assert any(entry["path"] == ".env" for entry in plan.snapshot["exclusions"])
@@ -539,7 +550,7 @@ def test_source_tool_policy_is_pinned_for_new_and_legacy_plan_replay(scenario, m
     with monkeypatch.context() as patcher:
         patcher.setattr(engine, "SOURCE_TOOL_POLICY", policy)
         if policy is None:
-            patcher.setattr(engine.analysis, "output_token_policy", lambda snapshot=None: None)
+            patcher.setattr(engine.analysis, "configured_output_policy", lambda config: None)
         first = review(scenario)
     assert first[0] == "completed" and len(scenario["wire"]) == 2
     with transaction() as db:

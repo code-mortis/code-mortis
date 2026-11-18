@@ -671,7 +671,7 @@ function ConnectionForm({
   </Field>;
   const ceilingField = <Field
     label="Evidence prompt ceiling (tokens)"
-    hint="Each Mortis request, including instructions and output schema, is checked conservatively against this limit. Choose a value your model supports; the total review token budget stays separate."
+    hint="Limits connection tests and applies to older saved jobs. Set new review and scan limits in their respective forms."
   >
     {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
       value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
@@ -719,7 +719,7 @@ function ConnectionForm({
       {(id) => <Textarea id={id} rows={3} className="font-mono text-xs" value={headers}
         onChange={(event) => setHeaders(event.target.value)} placeholder={'{"X-Custom-Header": "value"}'} />}
     </Field>
-    <Field label="Provider options JSON" hint="timeout_sec, extra_body, retry_codes, aws_region, aws_profile, or auth_header.">
+    <Field label="Provider options JSON" hint="Supports extra_body, retry_codes, aws_region, aws_profile, and auth_header. timeout_sec applies to connection tests and older saved jobs.">
       {(id) => <Textarea id={id} rows={4} className="font-mono text-xs" value={options}
         onChange={(event) => setOptions(event.target.value)} />}
     </Field>

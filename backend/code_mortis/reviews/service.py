@@ -7,7 +7,12 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
+from code_mortis.core.analysis import (
+    EXECUTION_LIMITS,
+    engine_snapshot,
+    require_available_engine,
+    require_execution_engine,
+)
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.errors import ReviewStopped, RunnerBlocked
@@ -92,8 +97,8 @@ def cancel_pr_reviews(db: Session, pr: PullRequest) -> list[ReviewRun]:
     return runs
 
 
-def connection_snapshot(connection: Connection) -> dict:
-    return {
+def connection_snapshot(connection: Connection, *, workflow=False) -> dict:
+    snapshot = {
         "id": connection.id,
         "name": connection.name,
         "provider": connection.provider,
@@ -105,6 +110,15 @@ def connection_snapshot(connection: Connection) -> dict:
         "owner_id": connection.owner_id,
         "client_version": {"chatgpt": "0.160.1", "claude_code": "2.1.292"}.get(connection.kind),
     }
+    if workflow:
+        snapshot["execution_limits"] = EXECUTION_LIMITS
+        options = {key: value for key, value in connection.options.items()
+                   if key not in {"timeout_sec", "prompt_token_ceiling"}}
+        if "extra_body" in options:
+            options["extra_body"] = {key: value for key, value in options["extra_body"].items()
+                                     if key not in {"max_tokens", "max_completion_tokens", "max_output_tokens"}}
+        snapshot["options"] = options
+    return snapshot
 
 
 def create_run(
@@ -141,11 +155,9 @@ def create_run(
     require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None
-    config = {"connection": connection_snapshot(connection), "settings": options,
+    config = {"connection": connection_snapshot(connection, workflow=True), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
-              "task_contract": "review-task/v2"}
-    # Freeze a bounded PR request timeout; old snapshots retain their original 120-second default.
-    config["connection"]["options"] = {"timeout_sec": 300, **config["connection"]["options"]}
+              "task_contract": "review-task/v2", "execution_limits": EXECUTION_LIMITS}
     config.update(engine_snapshot(options))
     if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
         config["code_graph"] = graph

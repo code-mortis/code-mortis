@@ -2,14 +2,20 @@
 
 import asyncio
 import json
+import os
 import random
 import time
 from contextlib import suppress
+from urllib.parse import quote, urlsplit
 
 import httpx
+from mortis_engine import gateway as engine_gateway
+from mortis_engine import llm_http as engine_http
 
 from code_mortis.core import analysis, inference_admission
+from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction
+from code_mortis.core.security import safe_endpoint
 from code_mortis.integrations import llm_http
 from code_mortis.integrations.llm_http import InferenceError
 from code_mortis.models import AnalysisBudget, AnalysisPlan, AnalysisTask
@@ -28,6 +34,9 @@ def input_fingerprint(request: Request):
 
 
 def reservation(connection, request):
+    if connection.get("execution_limits") == analysis.EXECUTION_LIMITS:
+        estimate = request if request.max_output_tokens else request.model_copy(update={"max_output_tokens": 5_000_000})
+        return engine_gateway.reservation(connection, estimate)
     protocol = connection["protocol"]
     body = llm_http.encode_request("anthropic" if protocol == "anthropic-bedrock" else protocol,
                                    connection, request)
@@ -46,6 +55,47 @@ async def send(connection, credentials, request, *, client, stopped=lambda: Fals
     """Single attempt, exact connection/model, no implicit protocol or provider fallback."""
     if connection.get("kind") != "api":
         raise ValueError("Inference requires a shared API connection")
+    if connection.get("execution_limits") == analysis.EXECUTION_LIMITS:
+        try:
+            started = time.monotonic()
+            # The package reads endpoint policy from the environment. The app also accepts .env settings.
+            config = settings()
+            if config.allow_private_endpoints:
+                os.environ.setdefault("CM_ALLOW_PRIVATE_ENDPOINTS", "true")
+            if config.trusted_endpoint_hosts:
+                os.environ.setdefault("CM_TRUSTED_ENDPOINT_HOSTS", config.trusted_endpoint_hosts)
+            if connection.get("base_url"):
+                try:
+                    await engine_http._bounded(asyncio.to_thread(safe_endpoint, connection["base_url"]), stopped, timeout)
+                except engine_http.InferenceError as exc:
+                    exc.consumption_unknown = False
+                    raise
+            if (request.max_output_tokens and connection["protocol"] == "anthropic"
+                    and urlsplit(connection["base_url"]).hostname == "api.anthropic.com"):
+                base = connection["base_url"].rstrip("/")
+                if not base.endswith("/v1"):
+                    base += "/v1"
+                options = connection["options"]
+                headers = engine_http.request_headers("anthropic", options, credentials)
+                try:
+                    model, identity = await engine_http.post_json(client,
+                        f"{base}/models/{quote(connection['model'], safe='')}", headers, b"", method="GET",
+                        stopped=stopped, retry_codes=options.get("retry_codes"),
+                        timeout=timeout - (time.monotonic() - started) if timeout is not None else None)
+                except engine_http.InferenceError as exc:
+                    exc.consumption_unknown = False
+                    raise
+                capacity = model.get("max_tokens")
+                if type(capacity) is not int or capacity <= 0:
+                    raise engine_http.InferenceError("model_capacity", "Anthropic did not report the model's output capacity.",
+                                                     request_id=identity, consumption_unknown=False)
+                request = request.model_copy(update={"max_output_tokens": min(request.max_output_tokens, capacity)})
+            return await engine_gateway.send(connection, credentials, request, client=client, stopped=stopped,
+                timeout=timeout - (time.monotonic() - started) if timeout is not None else None)
+        except engine_http.InferenceError as exc:
+            raise InferenceError(exc.code, str(exc), usage=exc.usage, request_id=exc.request_id, retryable=exc.retryable,
+                                 consumption_unknown=exc.consumption_unknown, status_code=exc.status_code,
+                                 retry_after=exc.retry_after) from exc
     if connection.get("protocol") == "anthropic-bedrock":
         from code_mortis.integrations import llm_bedrock
 
@@ -63,7 +113,7 @@ def _inputs(task_id, job_id, request):
         if not plan or plan.job_id != job_id or task.input_hash != input_fingerprint(request):
             raise ValueError("Inference inputs do not match the immutable task plan")
         budget = db.get(AnalysisBudget, (plan.id, task.stage))
-        return plan.snapshot["connection"], budget.deadline_at
+        return plan.snapshot["connection"], analysis.budget_deadline(plan, budget)
 
 
 async def _claim(task_id, job_id, job_attempt, **kwargs):
@@ -85,7 +135,8 @@ async def _claim(task_id, job_id, job_attempt, **kwargs):
 
 
 async def execute_task(task_id, job_id, job_attempt, request: Request, credentials, *, client,
-                       authorize, validate_result, stopped=lambda: False, authorize_admission=None, timeout=None) -> Response | None:
+                       authorize, validate_result, stopped=lambda: False, authorize_admission=None, timeout=None,
+                       token_allowance=None) -> Response | None:
     """Execute an immutable task after fresh external authorization.
 
     None means admission/dependencies/budget require scheduler attention. The caller
@@ -98,9 +149,12 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
     request = Request.model_validate(request.model_dump(mode="python"))
     connection, deadline = await asyncio.to_thread(_inputs, task_id, job_id, request)
     estimate = reservation(connection, request)
-    request_timeout = connection.get("options", {}).get("timeout_sec", 120)
-    until = time.monotonic() + request_timeout
-    timeout_message = (f"AI request timed out. Active limit: the AI connection's per-request timeout ({request_timeout:g} seconds). "
+    workflow = connection.get("execution_limits") == analysis.EXECUTION_LIMITS
+    request_timeout = None if workflow else connection.get("options", {}).get("timeout_sec", 120)
+    until = time.monotonic() + request_timeout if request_timeout is not None else float("inf")
+    timeout_message = ("The selected provider timed out while this workflow had no configured deadline."
+                       if workflow else
+                       f"AI request timed out. Active limit: the AI connection's per-request timeout ({request_timeout:g} seconds). "
                        "Configure timeout_sec in Settings > AI connections > Advanced. Overall workflow time limits are separate.")
     if dispatch_deadline is not None and dispatch_deadline < until:
         until = dispatch_deadline
@@ -122,7 +176,8 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
             await asyncio.to_thread(inference_admission.cancel_task_waiter, task_id, job_id, job_attempt)
             raise
         lease = await _claim(task_id, job_id, job_attempt, input_tokens=estimate,
-                             output_tokens=request.max_output_tokens)
+                             output_tokens=request.max_output_tokens,
+                             **({"token_allowance": token_allowance} if token_allowance is not None else {}))
         if lease is None:
             return None
         lost, response, dispatched = asyncio.Event(), None, False
@@ -143,11 +198,14 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
         retry = None
         try:
             await asyncio.to_thread(authorize)
-            if stopped() or lost.is_set():
+            if stopped() or lost.is_set() or time.monotonic() >= until:
                 raise InferenceError("cancelled", "Inference stopped before dispatch.", consumption_unknown=False)
+            wire_request = (request.model_copy(update={"max_output_tokens": lease.output_tokens})
+                            if lease.output_tokens is not None else request)
             dispatched = True
-            response = await send(connection, credentials, request, client=client,
-                                  stopped=lambda lost=lost: lost.is_set() or stopped(), timeout=until - time.monotonic())
+            response = await send(connection, credentials, wire_request, client=client,
+                                  stopped=lambda lost=lost: lost.is_set() or stopped(),
+                                  timeout=until - time.monotonic() if until != float("inf") else None)
             if stopped() or lost.is_set() or time.monotonic() >= until:
                 raise InferenceError("cancelled", "Inference stopped before result acceptance.",
                                      usage=response.usage, request_id=response.request_id)
@@ -200,7 +258,7 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
         delay = max(retry.retry_after or 0, 2 ** attempt + random.uniform(0, 0.25))
         if time.monotonic() + delay >= until:
             raise retry
-        await llm_http._bounded(asyncio.sleep(delay), stopped, until - time.monotonic())
+        await llm_http._bounded(asyncio.sleep(delay), stopped, until - time.monotonic() if until != float("inf") else None)
         if not await asyncio.to_thread(analysis.retry_task, task_id, job_id, job_attempt):
             raise retry
     raise AssertionError("Bounded inference retry loop exhausted")

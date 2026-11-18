@@ -105,7 +105,7 @@ async function mockSecurityAssessments(page: Page) {
   return { state, writes };
 }
 
-async function mock(page: Page, options: { partial?: boolean; secret?: boolean; canWrite?: boolean; scanError?: string; running?: boolean; longPath?: boolean; latestStatus?: string; summary?: Partial<Schema["SecuritySummary"]>; issue?: Schema["SecurityFindingOut"]["issue"]; activity?: Schema["SecurityActivityOut"][] } = {}) {
+async function mock(page: Page, options: { partial?: boolean; secret?: boolean; canWrite?: boolean; scanError?: string; running?: boolean; longPath?: boolean; latestStatus?: string; summary?: Partial<Schema["SecuritySummary"]>; issue?: Schema["SecurityFindingOut"]["issue"]; activity?: Schema["SecurityActivityOut"][]; workflowLimits?: boolean } = {}) {
   let current = structuredClone(finding);
   if (options.longPath) current.path = `services/${"long-directory-name/".repeat(10)}account-order-ownership-with-a-very-long-filename.ts`;
   if (options.secret) current = { ...current, kind: "secret", title: "Exposed credential material", evidence: { ...current.evidence, identity: "keyed-digest" } };
@@ -116,6 +116,9 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   state.coverage = options.summary?.coverage ?? (state.state === "not_scanned" ? "not_scanned" : state.state === "incomplete" || state.latest_status !== "completed" ? "incomplete" : "complete");
   state.freshness = options.summary?.freshness ?? (state.state === "outdated" ? "outdated" : state.state === "unavailable" ? "unavailable" : "current");
   const saved = { ...scan, report: { commit: sha, grade: "D", status: "completed", findings: [{ ...current, finding_id: current.id, outcome: "present" }], problems: [] } };
+  if (options.workflowLimits) saved.config = {
+    ...saved.config, execution_limits: "workflow/v1", limits: { concurrency: 3, token_budget: 200000, timeout_seconds: 900 },
+  };
   if (options.running) Object.assign(saved, { status: "running", grade: null, report: {},
     stages: Object.fromEntries(["snapshot", "trivy", "analysis", "assessment", "verification", "report"].map((name) => [name,
       name === "analysis" ? { status: "running", total: 163, completed: 11 } : { status: ["snapshot", "trivy"].includes(name) ? "completed" : "pending" }])),
@@ -658,11 +661,11 @@ test("scan dialog uses existing connection and configurable concurrency without 
   await page.getByRole("menuitem", { name: "Run scan", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Run security scan" });
   await expect(dialog).toContainText("Scan the full default branch with Mortis and Trivy.");
-  await expect(dialog.getByRole("spinbutton", { name: "Token budget" })).toHaveValue("200000");
-  await expect(dialog.getByRole("spinbutton", { name: "Timeout (seconds)" })).toHaveValue("900");
+  await expect(dialog.getByRole("checkbox", { name: "Unlimited token budget" })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "Unlimited timeout" })).toBeChecked();
   const concurrency = dialog.getByRole("spinbutton", { name: "Concurrent tasks" });
   await expect(dialog.getByText(/independent finding assessments at a time/)).toBeVisible();
-  await expect(concurrency).toHaveValue("2");
+  await expect(concurrency).toHaveValue("4");
   await concurrency.fill("9");
   await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
   expect(writes).toHaveLength(0);
@@ -670,11 +673,14 @@ test("scan dialog uses existing connection and configurable concurrency without 
   await dialog.getByRole("checkbox", { name: "Unlimited token budget" }).check();
   await expect(dialog.getByRole("spinbutton", { name: "Token budget" })).toBeDisabled();
   await dialog.getByRole("checkbox", { name: "Unlimited token budget" }).uncheck();
+  await dialog.getByRole("spinbutton", { name: "Token budget" }).fill("250000");
+  await dialog.getByRole("checkbox", { name: "Unlimited timeout" }).uncheck();
+  await dialog.getByRole("spinbutton", { name: "Timeout (seconds)" }).fill("1200");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-concurrency-${info.project.name}.png`, fullPage: true });
   await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
   await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0].body).toMatchObject({ connection_id: "connection", model: "test-model", token_budget: 200000, timeout_seconds: 900, concurrency: 4 });
+  expect(writes[0].body).toMatchObject({ connection_id: "connection", model: "test-model", token_budget: 250000, timeout_seconds: 1200, concurrency: 4 });
   expect(String(writes[0].body.request_key).length).toBeGreaterThan(16);
 });
 
@@ -708,6 +714,23 @@ test("Mortis scan retries can increase concurrency while preserving model and li
   expect(writes[0]).toMatchObject({ path: "/security/scans/scan/retry", body: { concurrency: 4, token_budget: 200000, timeout_seconds: 900 } });
 });
 
+test("retry preserves all saved workflow limits", async ({ page }) => {
+  const writes = await mock(page, { scanError: "Security analysis did not finish.", workflowLimits: true });
+  await page.goto("/security/scans/scan");
+  await page.getByRole("button", { name: "Retry scan", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Retry security scan" });
+  for (const [name, value] of [["Concurrent tasks", "3"], ["Token budget", "200000"], ["Timeout (seconds)", "900"]]) {
+    const input = dialog.getByRole("spinbutton", { name });
+    await expect(input).toHaveValue(value);
+    await expect(input).toBeDisabled();
+  }
+  await dialog.getByRole("button", { name: "Retry scan", exact: true }).click();
+  await expect(page).toHaveURL(/\/security\/scans\/queued$/);
+  expect(writes[0]).toMatchObject({
+    path: "/security/scans/scan/retry", body: { concurrency: 3, token_budget: 200000, timeout_seconds: 900 },
+  });
+});
+
 test("rescan can change concurrency after an incomplete scan", async ({ page }) => {
   const writes = await mock(page, { scanError: "Security analysis did not finish." });
   await page.goto("/security/scans/scan");
@@ -717,7 +740,9 @@ test("rescan can change concurrency after an incomplete scan", async ({ page }) 
   await dialog.getByRole("spinbutton", { name: "Concurrent tasks" }).fill("4");
   await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
   await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0]).toMatchObject({ path: "/security/repositories/22/scans", body: { concurrency: 4 } });
+  expect(writes[0]).toMatchObject({
+    path: "/security/repositories/22/scans", body: { concurrency: 4, token_budget: null, timeout_seconds: null },
+  });
 });
 
 test("saved scan exposes findings, resolved, coverage and report downloads", async ({ page }, info) => {

@@ -12,7 +12,7 @@ from urllib.parse import quote
 from sqlalchemy import select
 
 from code_mortis.core import file_policy, source
-from code_mortis.core.analysis import new_engine_snapshot, require_execution_engine
+from code_mortis.core.analysis import EXECUTION_LIMITS, new_engine_snapshot, require_execution_engine
 from code_mortis.core.db import now, transaction
 from code_mortis.core.errors import InferenceOutputError, ReviewStopped, RunnerBlocked
 from code_mortis.core.process import child_environment
@@ -78,7 +78,7 @@ def authorize(db, repo, actor, connection, *, check_repository=True):
 def enqueue(db, repo, actor, connection, model, limits=None):
     require_shared(connection)
     engine = new_engine_snapshot(repo.settings)
-    snapshot = connection_snapshot(connection)
+    snapshot = connection_snapshot(connection, workflow=True)
     snapshot["model"] = model.strip() or connection.model.strip()
     if not snapshot["model"]:
         raise ValueError("Choose a model before generating background.")
@@ -86,7 +86,7 @@ def enqueue(db, repo, actor, connection, model, limits=None):
                                                if key in RunLimits.model_fields})
     job = enqueue_job(db, "generate_background", {
         "repository_id": repo.id, "actor_id": actor.id, "connection_id": connection.id,
-        **engine,
+        **engine, "execution_limits": EXECUTION_LIMITS,
         "connection": snapshot, "limits": limits.model_dump(), "file_policy": file_policy.policy(repo.settings),
         "expires_at": now().timestamp() + 600,
     })
@@ -264,11 +264,14 @@ def perform(job_id, attempt):
         connection = db.get(Connection, payload["connection_id"])
         remote = authorize(db, repo, actor, connection)
         snapshot = payload["connection"]
+        workflow = payload.get("execution_limits") == EXECUTION_LIMITS
+        current = connection_snapshot(connection, workflow=workflow)
         from code_mortis.security_scans.service import connection_busy
 
         if connection.kind != "api" and connection_busy(db, connection.id, job_id=job_id):
             raise RunnerBlocked("busy")
-        if any(snapshot[key] != getattr(connection, key) for key in ("kind", "provider", "protocol", "base_url", "options", "owner_id")):
+        fields = ("kind", "provider", "protocol", "base_url", "options", "owner_id")
+        if any(snapshot[key] != current[key] for key in fields):
             raise ValueError("The connection changed after generation was queued. Generate again to retry.")
         if connection.kind != "api" and db.scalar(select(ReviewRun.id).where(
             ReviewRun.connection_id == connection.id, ReviewRun.status == "running",
@@ -308,8 +311,10 @@ def perform(job_id, attempt):
                         or not current_job.lease_until or current_job.lease_until <= now()
                         or current_job.payload.get("source_sha") != evidence["sha"]):
                     raise ReviewStopped("Background generation lost its execution claim.")
-                if (not selected or selected.secret != secret or any(snapshot[key] != getattr(selected, key)
-                        for key in ("kind", "provider", "protocol", "base_url", "options", "owner_id"))):
+                if not selected or selected.secret != secret:
+                    raise ValueError("The connection changed during generation. Generate again to retry.")
+                current = connection_snapshot(selected, workflow=workflow)
+                if any(snapshot[key] != current[key] for key in fields):
                     raise ValueError("The connection changed during generation. Generate again to retry.")
                 authorize(db, db.get(Repository, payload["repository_id"]), db.get(User, payload["actor_id"]), selected)
 

@@ -6,10 +6,12 @@ from contextlib import nullcontext
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Barrier, Lock, Thread
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
+from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core.analysis import engine_snapshot
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
@@ -195,11 +197,12 @@ def delayed_security_provider(seed, github_stub, tmp_path, monkeypatch):
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     monkeypatch.setattr(settings(), "allow_private_endpoints", True)
+    monkeypatch.setenv("CM_ALLOW_PRIVATE_ENDPOINTS", "true")
     remote = {"id": 22, "private": True, "default_branch": "main", "permissions": {"pull": True, "push": True}}
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **kw: remote)
     monkeypatch.setattr(github, "request", lambda method, path, token, **kw: {"sha": SHA} if "/commits/" in path else remote)
     monkeypatch.setattr(engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(engine, "trivy", lambda *args: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
+    monkeypatch.setattr(engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     observe = service.observe
 
     def observed(db, scan, evidence, existing_id=None):
@@ -242,6 +245,42 @@ def test_independent_security_assessments_overlap_and_persist_deterministically(
     assert len(assessments) == 2
     assert max(assessments) < min(state["finished"]["assessment", path] for path in ("alpha.py", "beta.py"))
     assert len(state["calls"]) == 4
+
+
+def test_scan_timeout_counts_only_active_work_after_requeue(delayed_security_provider, monkeypatch):
+    state = delayed_security_provider
+    clock = [100]
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    snapshot = engine.snapshot
+
+    def temporarily_unauthorized(*args):
+        clock[0] += 30
+        raise TransientAuthorizationError("Temporary test outage")
+
+    with transaction() as db:
+        scan = db.get(SecurityScan, state["scan_id"])
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "timeout_seconds": 120}}
+    monkeypatch.setattr(engine, "snapshot", temporarily_unauthorized)
+    with pytest.raises(TransientAuthorizationError):
+        service.perform(state["scan_id"], state["claim"])
+
+    clock[0] += 3600
+    job_id, _ = state["claim"].rsplit(":", 1)
+    with transaction() as db:
+        scan = db.get(SecurityScan, state["scan_id"])
+        assert scan.progress["execution_seconds"] == 30
+        db.get(Job, job_id).attempts = 2
+    monkeypatch.setattr(engine, "snapshot", snapshot)
+    seen = []
+
+    def scanner(item, seconds, stopped, *, execution_limits):
+        assert execution_limits
+        seen.append(seconds)
+        raise TimeoutError("End synthetic timing check")
+
+    monkeypatch.setattr(engine, "trivy", scanner)
+    service.perform(state["scan_id"], f"{job_id}:2")
+    assert seen == [90]
 
 
 def test_partial_peer_checkpoint_replays_packed_result_after_remaining_budget_shrinks(

@@ -227,16 +227,17 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
   const retiredEngine = !!retry && retry.config.analysis_engine !== "mortis";
   const savedConnection = object(retry?.config.connection);
   const savedLimits = object(retry?.config.limits);
+  const fixedConcurrency = retry?.config.execution_limits === "workflow/v1";
   const [connectionId, setConnectionId] = useState(retry ? text(savedConnection.id) : repository.repository.connection_id ?? "");
   const selected = connections.find((item) => item.id === connectionId);
   const [model, setModel] = useState(retry ? text(savedConnection.model) : (selected?.id === repository.repository.connection_id && repository.repository.settings.model) || selected?.model || "");
-  const initialTokens = retry ? savedLimits.token_budget : repository.repository.settings.token_budget;
-  const initialTimeout = retry ? savedLimits.timeout_seconds : repository.repository.settings.timeout_seconds;
+  const initialTokens = savedLimits.token_budget;
+  const initialTimeout = savedLimits.timeout_seconds;
   const [tokens, setTokens] = useState(initialTokens == null ? "" : String(initialTokens));
   const [timeout, setTimeout] = useState(initialTimeout == null ? "" : String(initialTimeout));
   const [unlimitedTokens, setUnlimitedTokens] = useState(initialTokens == null);
   const [unlimitedTimeout, setUnlimitedTimeout] = useState(initialTimeout == null);
-  const [concurrency, setConcurrency] = useState(String(retry ? savedLimits.concurrency ?? 1 : repository.repository.settings.concurrency));
+  const [concurrency, setConcurrency] = useState(String(retry ? savedLimits.concurrency ?? 1 : 4));
   const requestKey = useRef(crypto.randomUUID());
   useEffect(() => { requestKey.current = crypto.randomUUID(); }, [connectionId, model, tokens, timeout, unlimitedTokens, unlimitedTimeout, concurrency]);
   function submit(event: FormEvent) {
@@ -255,8 +256,8 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited token budget" checked={unlimitedTokens} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTokens(checked === true); if (!tokens) setTokens("200000"); }} />Unlimited</label></div>
       <div className="space-y-2"><Field label="Timeout (seconds)">{(id) => <Input id={id} type="number" min={60} max={3600} value={timeout} placeholder="Unlimited" required={!unlimitedTimeout} disabled={action.isPending || !!retry || unlimitedTimeout} onChange={(event) => setTimeout(event.target.value)} />}</Field>
       <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited timeout" checked={unlimitedTimeout} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTimeout(checked === true); if (!timeout) setTimeout("900"); }} />Unlimited</label></div></div>
-    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={concurrency} required disabled={action.isPending || !selected} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
-      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{"Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order."}{retry ? " Completed work is reused when its inputs match; the saved model and limits stay the same." : " Defaults to the repository concurrency setting."}</p></div>
+    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={concurrency} required disabled={action.isPending || !selected || fixedConcurrency} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
+      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{"Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order."}{retry ? " Completed work is reused when its inputs match." : ""}</p></div>
     <p className="text-xs leading-relaxed text-muted-foreground">Concurrent tasks share the remaining token budget. Budgets stop further work between requests; they are not a guaranteed billing cap. Finished reports grade confirmed findings; incomplete coverage remains visible.</p>
     {retiredEngine && <p role="status" className="text-sm text-muted-foreground">This scan used Open Code Review, which is retired. Start a new Mortis scan with Rescan repository. The saved scan remains unchanged.</p>}
     {retry && !selected && <p role="status" className="text-sm text-muted-foreground">This scan's connection is unavailable or retired. Start a new scan with an explicitly selected shared API connection. The saved scan remains unchanged.</p>}
