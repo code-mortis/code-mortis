@@ -1180,7 +1180,8 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(returnUrl);
-  await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+  const pulls = page.getByRole("region", { name: "Pull requests", exact: true });
+  await expect(pulls.getByLabel("Search pull requests")).toHaveValue("148");
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
