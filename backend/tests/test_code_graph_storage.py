@@ -6,7 +6,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import MetaData, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from code_mortis.core.db import Base, engine, now, transaction
@@ -267,17 +267,20 @@ def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
         db.flush()
         db.add(Occurrence(id="occurrence", run_id="history", finding_id="finding", snapshot={"saved": "original evidence"}))
     config = Config("alembic.ini")
-    legacy_tables = [t for t in Base.metadata.sorted_tables if not t.name.startswith(("code_graph_", "analysis_", "inference_"))]
+    legacy_tables = [name for name in Base.metadata.tables if not name.startswith(("code_graph_", "analysis_", "inference_"))]
     try:
         command.downgrade(config, "20261025_api_tokens")
         with engine().connect() as connection:
-            before = {t.name: connection.execute(select(*[c for c in t.columns if c.name != "code_graph_limits"]).order_by(*t.primary_key.columns)).mappings().all()
-                      for t in legacy_tables}
+            legacy = MetaData()
+            legacy.reflect(connection, only=legacy_tables)
+            history_queries = {
+                table.name: table.select().order_by(*table.primary_key.columns) for table in legacy.tables.values()
+            }
+            before = {name: connection.execute(query).mappings().all() for name, query in history_queries.items()}
     finally:
         command.upgrade(config, "head")
     with engine().connect() as connection:
-        after = {t.name: connection.execute(select(*[c for c in t.columns if c.name != "code_graph_limits"]).order_by(*t.primary_key.columns)).mappings().all()
-                 for t in legacy_tables}
+        after = {name: connection.execute(query).mappings().all() for name, query in history_queries.items()}
         before["repositories"] = [{**row, "settings": {**row["settings"], "analysis_engine": "mortis"}}
                                   for row in before["repositories"]]
         assert before == after
