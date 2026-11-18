@@ -12,6 +12,8 @@ import {
   SidebarMenuItem, SidebarTrigger, useSidebar,
 } from "./ui/sidebar";
 
+const hasActiveScan = (repo: Repository) => ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? "");
+
 export function Brand() {
   return (
     <span className="flex items-center gap-2.5 font-semibold tracking-tight">
@@ -38,18 +40,25 @@ export function AppSidebar({ user, onLogout, signingOut }: {
 }) {
   const route = useLocation();
   const { setOpenMobile } = useSidebar();
-  const repos = useApi<Repository[]>("/repositories", (data) => data?.some((repo) => repo.has_running_review || ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? "")) ? 5000 : 60000);
   const inboxReturn = getInboxReturn(route.state);
   const repositoryReturn = getRepositoryReturn(route.state);
   const detailPath = getDetailPath(route.pathname);
-  const detail = useApi<Pick<Schema["PRDetail"], "repository">>(detailPath ?? "", false, !!detailPath);
+  const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request" | "has_active_run">>(detailPath ?? "", false, !!detailPath);
+  const settingsSearch = new URLSearchParams(route.search);
+  const tab = settingsSearch.get("tab");
+  const pullState = detail.data?.pull_request.state;
+  const idleCode = detailPath?.startsWith("/pulls/") && (tab === "code" || tab === "impact")
+    && !detail.error && (pullState === "closed" || pullState === "merged") && !detail.data?.has_active_run;
+  const repos = useApi<Repository[]>("/repositories", (data) => {
+    const hasActivity = data?.some((repo) => repo.has_running_review || hasActiveScan(repo));
+    return idleCode && !hasActivity ? 60000 : 5000;
+  });
   const accessDenied = !!repos.error && [401, 403].includes(repos.error.status);
   const repositories = accessDenied ? [] : repos.data ?? [];
   const openPrs = repos.data && !repos.error ? repositories.reduce((total, repo) => total + (repo.open_prs ?? 0), 0) : undefined;
-  const securityRunning = !repos.error && repositories.some((repo) => ["queued", "running", "blocked"].includes(repo.security?.latest_status ?? ""));
+  const securityRunning = !repos.error && repositories.some(hasActiveScan);
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
-  const settingsSearch = new URLSearchParams(route.search);
   settingsSearch.delete("tab");
   const selected = repositoryRoute
     ? repositories.find((repo) => String(repo.id) === repositoryRoute.params.repositoryId)?.id

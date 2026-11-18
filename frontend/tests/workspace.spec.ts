@@ -1159,7 +1159,7 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await expect(inbox).toHaveAttribute("title", "0 open pull requests");
   running = true;
   openPrs = 1;
-  await page.clock.fastForward(61000);
+  await page.clock.fastForward(6000);
   await expect(activity).toBeVisible();
   await expect(inbox).toHaveAccessibleDescription("1 open pull request");
   await expect(inbox).toHaveAttribute("title", "1 open pull request");
@@ -1184,6 +1184,27 @@ test("sidebar activity refreshes and does not present failed polling as current"
   await page.clock.fastForward(6000);
   await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
   await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
+});
+
+test("sidebar picks up repository changes after the GitHub installation callback", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  let repositories: (typeof repo)[] = [];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: repositories }));
+  await page.goto("/settings?tab=github&installed=1");
+  await openNavigation(page);
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  const repository = nav.getByRole("link", { name: repo.full_name, exact: true });
+  await expect(nav.getByRole("link", { name: "Connect your first repository" })).toBeVisible();
+
+  repositories = [repo];
+  await page.clock.fastForward(6000);
+  await expect(repository).toBeVisible();
+
+  repositories = [];
+  await page.clock.fastForward(6000);
+  await expect(repository).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Connect your first repository" })).toBeVisible();
 });
 
 test("sidebar handles long repository lists and empty access", async ({ page }, info) => {
@@ -6608,7 +6629,7 @@ test("GitHub installations refresh on return and connect available accounts", as
     window.dispatchEvent(new Event("visibilitychange"));
   });
   await expect.poll(() => reads).toBeGreaterThan(before);
-  await page.getByRole("article", { name: "acme" }).getByRole("button", { name: "Actions for acme" }).click();
+  await page.getByRole("article", { name: "acme" }).getByRole("button", { name: "Actions for acme" }).press("Enter");
   await expect(page.getByRole("menuitem", { name: "Manage repositories" }))
     .toHaveAttribute("href", "https://github.com/settings/installations/10");
 });

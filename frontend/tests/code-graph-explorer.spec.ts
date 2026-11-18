@@ -7,7 +7,7 @@ const location = { path: selected, start_byte: 0, end_byte: 36, start_line: 1, e
 
 export async function mockGraph(page: Page, admin = true) {
   const calls: { path: string; body: any }[] = [];
-  const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
+  const state = { reviewed: false, count: 0, resolvedCount: 0, dismissedCount: 0, fileCounts: {} as Record<string, { open_count: number; resolved_count: number; dismissed_count: number }>, countComplete: true, prState: "open", reviewRunning: false, userId: 7, policy: "test", padding: 0, enabled: true, status: "partial", baseStatus: "ready", paused: false, overviewError: 0,
     fileError: 0, codeError: 0, patchState: "available", unknownLineCounts: false, groups: false, moreFindings: false, verifiedHistory: false, verificationSource: head, reviewSource: head, historicalOnly: false, graphTruncated: false, large: false, empty: false, missingSource: false, long: false, definitionsPage: false, sourcePages: false, warningDetails: false };
   const repo = { id: 22, installation_id: 10, full_name: "acme/project", private: true, active: true,
     enabled: true, connection_id: null, open_prs: 1, settings: {} };
@@ -61,7 +61,7 @@ export async function mockGraph(page: Page, admin = true) {
     let data: unknown = [];
     if (path === "/setup/status") data = { configured: true, public_url: url.origin };
     else if (path === "/auth/me") data = { id: state.userId, login: "developer", role: admin ? "admin" : "member", csrf: "csrf", avatar_url: "" };
-    else if (path === "/repositories") data = [repo];
+    else if (path === "/repositories") data = [{ ...repo, has_running_review: state.reviewRunning }];
     else if (path === "/pulls/pr") data = { repository: repo, can_write: admin, run_count: 0, finding_counts: {}, has_active_run: false, cancellable_run_count: 0,
       pull_request: { id: "pr", repository_id: 22, repository_name: repo.full_name, number: 42, title: "Validate provider responses",
         author: "developer", state: state.prState, draft: false, fork: false, ignored: false, head_ref: "feature", head_sha: head, base_sha: base,
@@ -840,6 +840,24 @@ test("idle Code does not poll hidden findings and keeps periodic calls bounded",
   const periodic = calls.slice(start);
   expect(periodic.filter((call) => call.path.endsWith("/findings"))).toHaveLength(0);
   expect(periodic.length).toBeLessThanOrEqual(6);
+});
+
+test("Code on a closed PR refreshes the sidebar while a review is running", async ({ page, isMobile }) => {
+  const { state } = await mockGraph(page);
+  state.prState = "closed";
+  state.reviewRunning = true;
+  await page.clock.install();
+  await page.goto("/pulls/pr?tab=code");
+  await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Open navigation" }).click();
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  const reviewing = nav.getByRole("link", { name: "acme/project, review running", exact: true });
+  await expect(reviewing.locator(".motion-safe\\:animate-spin")).toBeVisible();
+
+  state.reviewRunning = false;
+  await page.clock.fastForward(6000);
+  await expect(reviewing).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "acme/project", exact: true })).toBeVisible();
 });
 
 for (const initialFilter of [true, false]) test(`empty findings filter refreshes metadata and discovers new findings (${initialFilter ? "initial" : "local"} filter)`, async ({ page }) => {
