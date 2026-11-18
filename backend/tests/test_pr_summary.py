@@ -328,8 +328,8 @@ def test_independent_summary_preserves_findings_prompts_and_diagram(seed, overvi
     with transaction() as db:
         run = db.get(ReviewRun, latest)
         run.summary = {"status": "completed", "settings": {"summary_diagram_enabled": True, "ai_fix_prompts_enabled": True},
-                       "result": {**RESULT, "narrative": "New summary ready before OCR.", "diagram": diagram}}
-        assert run.stages["ocr"]["status"] == "pending"
+                       "result": {**RESULT, "narrative": "New summary ready before analysis.", "diagram": diagram}}
+        assert run.stages["analysis"]["status"] == "pending"
     pr_summary.sync("pr")
     for status in ["running", "completed", "cancelled"]:
         with transaction() as db:
@@ -337,7 +337,7 @@ def test_independent_summary_preserves_findings_prompts_and_diagram(seed, overvi
             run.status, run.cancel_requested = status, status == "cancelled"
         pr_summary.sync("pr")
         body = stored[0]["body"]
-        assert "New summary ready before OCR" in body and latest in body
+        assert "New summary ready before analysis" in body and latest in body
         assert "<summary>Diagram</summary>" in body and "Prompt to fix with AI" in body
         assert "Open findings (1)" in body and COMMENT["content"].replace(".", "\\.") in body
     assert len(stored) == 1 and len(writes) == 4

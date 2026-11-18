@@ -5,7 +5,7 @@ import { coverageFiles } from "./run-coverage";
 import { StageCard } from "./stage-card";
 
 const descriptions = {
-  ocr: ["Code review", "Reviewing changed files and validating their results."],
+  analysis: ["Code review", "Reviewing changed files and validating their results."],
   assessment: ["Assessment", "Checking proposed findings against source evidence."],
   verification: ["Fix verification", "Checking whether earlier findings are fixed."],
   summary: ["PR summary", "Preparing the pull request summary."],
@@ -18,7 +18,8 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   summarySyncFailed?: boolean;
 }) {
   const stages = (Object.keys(descriptions) as (keyof typeof descriptions)[]).flatMap((key) => {
-    const stage = key === "summary" ? summaryStage : run.stages?.[key];
+    const stage = key === "summary" ? summaryStage
+      : key === "analysis" ? run.stages?.analysis ?? run.stages?.ocr : run.stages?.[key];
     return stage ? [{ key, status: key === "assessment" ? assessmentStatus : stage.status }] : [];
   });
   const current = ["running", "waiting", "pending"].flatMap((status) => stages.filter((stage) => stage.status === status))[0];
@@ -30,7 +31,7 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   if (["queued", "blocked", "failed", "cancelled", "superseded", "skipped"].includes(run.status)) status = run.status;
   if (["running", "partial"].includes(run.status) && status === "completed") status = run.status;
   const phase = current?.key ?? (run.progress.phase === "assessment" ? "assessment"
-    : run.progress.phase === "fix verification" ? "verification" : run.progress.phase === "summary" ? "summary" : "ocr");
+    : run.progress.phase === "fix verification" ? "verification" : run.progress.phase === "summary" ? "summary" : "analysis");
   const [stageName, stageExplanation] = descriptions[phase];
   const titles: Record<string, string> = {
     queued: "Waiting to start", blocked: "Review paused", completed: "Review complete", partial: "Review complete with warnings",
@@ -62,7 +63,7 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   }
   const coverage = coverageFiles(run);
   const progressPhase = ["running", "pending", "waiting"].includes(status)
-    ? current?.key ?? (summaryPublicationPending ? "summary" : phase) : "ocr";
+    ? current?.key ?? (summaryPublicationPending ? "summary" : phase) : "analysis";
   let unit = "files";
   let total = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
   let completed = coverage.hasScope ? coverage.counts.completed + coverage.counts.reused : run.progress.completed;

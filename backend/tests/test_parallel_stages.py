@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -44,6 +45,21 @@ from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings, StageState
 
 DIAGRAM = {"nodes": [{"id": "retry", "label": "Retry", "paths": ["src/retry.py"]}], "edges": []}
+
+
+@pytest.mark.parametrize("stage", ["analysis", "ocr"])
+def test_analysis_lifecycle_updates_the_saved_stage_key(monkeypatch, stage):
+    run = SimpleNamespace(stages={stage: {"status": "pending", "tokens": 0}},
+                          started_at=now(), progress={"analysis_status": "completed", "assessment_deferred": True},
+                          report={"summary": {"total_tokens": 12}})
+    monkeypatch.setattr(pipeline, "enqueue_stages", lambda *args: None)
+    monkeypatch.setattr(pipeline, "enqueue_finalizer", lambda *args: None)
+    pipeline.start(None, run, "job:1")
+    assert run.stages[stage]["status"] == "running"
+    pipeline.review_done(None, run)
+    assert set(run.stages) == {stage}
+    assert run.stages[stage]["status"] == "completed" and run.stages[stage]["tokens"] == 12
+    assert pipeline.stage_keys(run) == (stage, "assessment", "verification", "summary")
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +144,7 @@ def test_malformed_report_summary_preserves_analysis(verification_scenario, monk
         assert run.progress["analysis_saved"] and run.progress["analysis_status"] == "completed"
         budget, known = assessment.remaining_budget(db, run)
         if parallel:
-            assert run.stages["ocr"]["status"] == "completed" and run.stages["ocr"]["tokens"] is None
+            assert run.stages["analysis"]["status"] == "completed" and run.stages["analysis"]["tokens"] is None
             assert run.stages["assessment"]["status"] == "completed"
             assert known and budget == run.config["settings"]["assessment_token_budget"]
         else:
@@ -240,7 +256,7 @@ def test_three_workers_overlap_and_join_without_early_resolution(verification_sc
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert run.status == "completed"
-        assert {key: value["tokens"] for key, value in run.stages.items()} == {"ocr": 100, "assessment": 0, "verification": 50, "summary": 321}
+        assert {key: value["tokens"] for key, value in run.stages.items()} == {"analysis": 100, "assessment": 0, "verification": 50, "summary": 321}
         finding = db.get(Finding, verification_scenario["finding"])
         assert finding.desired_status == (None if observed_again else "resolved")
         assert len(list(db.scalars(select(Job).where(Job.kind == "publish", Job.payload["run_id"].as_string() == identity)))) == 1
@@ -264,7 +280,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
     def engine(*args, **kwargs):
         result = kwargs.get("saved_review")
         if result is None:
-            calls.append("ocr")
+            calls.append("analysis")
             kwargs["before_analysis"](None)
             result = ("completed", {"summary": {"total_tokens": 100}}, [
                 {**COMMENT, "source_sha": args[3]},
@@ -300,7 +316,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
     monkeypatch.setattr(assessment.git_source, "git", lambda *a, **k: "")
     monkeypatch.setattr(assessment, "build_context", context)
     monkeypatch.setattr(verification, "mortis_verify", infer)
-    # OCR finishes first; candidates must remain queued until the other worker stops writing history.
+    # Analysis finishes first; candidates must remain queued until the other worker stops writing history.
     perform_review(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -328,9 +344,9 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
         assert len(deferred) == 1
         assessment_job = deferred[0].id
         assert db.scalar(select(Activity.id).where(Activity.source == "verification"))
-    # A recovered OCR delivery cannot bypass the deferred stage or repeat its model calls.
+    # A recovered analysis delivery cannot bypass the deferred stage or repeat its model calls.
     perform_review(identity)
-    assert calls.count("ocr") == 1 and "assessment" not in calls
+    assert calls.count("analysis") == 1 and "assessment" not in calls
     jobs.execute_job(assessment_job)
     jobs.execute_job(assessment_job)
     pipeline.finalize(identity)
@@ -347,7 +363,7 @@ def test_assessment_waits_for_concurrent_verification_history(verification_scena
         assert db.get(Finding, verification_scenario["finding"]).desired_status is None
         assert len(list(db.scalars(select(Job.id).where(
             Job.kind == "publish", Job.payload["run_id"].as_string() == identity)))) == 1
-    assert calls.count("ocr") == 1 and calls.count("verification") == 1 and calls.count("assessment") == 2
+    assert calls.count("analysis") == 1 and calls.count("verification") == 1 and calls.count("assessment") == 2
 
 
 @pytest.mark.parametrize("stop", ["cancel", "head", "connection", "deadline", "worker_lost", "lost_completion", "stage_stopped"])
@@ -358,7 +374,7 @@ def test_deferred_assessment_keeps_guards_and_recovers_without_repeating_inferen
         run.status, run.started_at = "running", now()
         run.progress = {"analysis_saved": True, "analysis_status": "completed"}
         run.report = {"summary": {"total_tokens": 100}}
-        pipeline.update(run, "ocr", "completed", tokens=100)
+        pipeline.update(run, "analysis", "completed", tokens=100)
         pipeline.update(run, "verification", "running")
         pipeline.update(run, "summary", "skipped")
         db.add(ReviewCandidate(run_id=identity, position=0, snapshot=COMMENT))
@@ -799,4 +815,4 @@ def test_verification_keeps_unknown_usage_separate_from_its_reservation(verifica
         run = db.get(ReviewRun, identity)
         assert run.stages["verification"]["tokens"] is None
         assert run.stages["verification"]["error"] == row.error
-        assert run.stages["ocr"]["status"] == "running" and run.summary["status"] == "pending"
+        assert run.stages["analysis"]["status"] == "running" and run.summary["status"] == "pending"

@@ -36,7 +36,7 @@ OUTPUT_TOKEN_POLICY = "mortis-completion/v1"
 WORKFLOW_OUTPUT_POLICY = "workflow-budget/v1"
 EXECUTION_LIMITS = "workflow/v1"
 OUTPUT_RECOVERY_POLICY = "split-units/v2"
-RETIRED_ENGINE_MESSAGE = "OCR execution is retired. Its saved plan and results were preserved; explicitly start new work with Mortis."
+RETIRED_ENGINE_MESSAGE = "This saved review engine is retired. Its plan and results were preserved; explicitly start new work with Mortis."
 
 
 def output_token_limit(policy):

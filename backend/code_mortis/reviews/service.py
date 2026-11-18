@@ -530,7 +530,7 @@ def perform_review(run_id: str, claim: str):
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     if current.progress.get("execution") != claim or current.cancel_requested:
                         return
-                    pipeline.update(current, "ocr", result[0], tokens=report_tokens(result[1]))
+                    pipeline.update(current, pipeline.analysis_stage(current), result[0], tokens=report_tokens(result[1]))
                     if pipeline.defer_assessment(db, current):
                         return
                     pipeline.update(current, "assessment", "running", started_at=now().isoformat(), execution=claim)
@@ -653,7 +653,7 @@ def save_analysis(run_id, claim, status, report, comments):
         if status in {"failed", "skipped"}:
             run.publication = "not_applicable"
             if status == "failed":
-                engine = "Mortis" if run.config.get("analysis_engine") == "mortis" else "OCR"
+                engine = "Mortis" if run.config.get("analysis_engine") == "mortis" else "The review engine"
                 run.error = f"{engine} did not complete the selected review scope. Inspect coverage and retry the review."
         if assessment.enabled(run):
             for position, comment in enumerate(comments):

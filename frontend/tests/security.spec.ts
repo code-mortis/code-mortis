@@ -3208,12 +3208,12 @@ for (const analysisEngine of [undefined, "ocr"] as const) test(`historical ${ana
     activity_count: 0, activity: [], scan: { ...scan, status: "partial", config },
   } }));
   await page.goto("/security/scans/scan");
-  await expect(page.getByText("This historical scan used Open Code Review, which is retired.", { exact: false })).toBeVisible();
-  await expect(page.getByText("Open Code Review", { exact: true })).toBeVisible();
+  await expect(page.getByText("This historical scan used a retired engine.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Retired engine", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Retry scan", exact: true }).click();
   const retry = page.getByRole("dialog", { name: "Retry security scan", exact: true });
   await expect(retry).toContainText("This saved scan used a retired engine.");
-  await expect(retry).toContainText("This scan used Open Code Review, which is retired.");
+  await expect(retry).not.toContainText(/Open Code Review|\bOCR\b/);
   await expect(retry.getByRole("button", { name: "Retry scan", exact: true })).toBeDisabled();
   expect(writes).toHaveLength(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

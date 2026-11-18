@@ -40,7 +40,7 @@ from code_mortis.schemas.inference import ToolCall
 CREDENTIALS = {"api_key": "synthetic-provider-value", "extra_headers": {}}
 
 
-@pytest.mark.parametrize(("selected", "label"), [("mortis", "Mortis"), ("ocr", "OCR")])
+@pytest.mark.parametrize(("selected", "label"), [("mortis", "Mortis"), ("ocr", "The review engine")])
 def test_failed_analysis_names_selected_engine(scenario, selected, label):
     from code_mortis.reviews.service import save_analysis
 

@@ -388,7 +388,7 @@ def test_rerun_publication_and_blocked_resume_reuse_run(seed, check_api, engine)
         db.add(WebhookDelivery(id="resume", event="check_run"))
     with transaction() as db:
         if engine == "ocr":
-            with pytest.raises(ValueError, match="OCR execution is retired"):
+            with pytest.raises(ValueError, match="This saved review engine is retired"):
                 checks.rerequest(db, rerun_body(run_id), "resume")
             assert db.get(ReviewRun, run_id).status == "blocked"
         else:

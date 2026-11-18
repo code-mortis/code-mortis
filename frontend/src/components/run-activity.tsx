@@ -10,7 +10,9 @@ export function runActivityEvents(run: Run): ActivityEvent[] {
   if (run.started_at) events.push({ id: "started", title: "Review started", at: run.started_at, status: "running" });
   const terminal = ["completed", "partial", "failed", "skipped", "cancelled"];
   for (const [name, stage] of Object.entries(run.stages ?? {})) {
-    const title = ({ ocr: "Code review", assessment: "Assessment", verification: "Fix verification", summary: "Summary" } as Record<string, string>)[name] ?? label(name);
+    if (name === "ocr" && run.stages?.analysis) continue;
+    const phase = name === "ocr" ? "analysis" : name;
+    const title = ({ analysis: "Code review", assessment: "Assessment", verification: "Fix verification", summary: "Summary" } as Record<string, string>)[phase] ?? label(phase);
     if (stage.started_at) events.push({ id: `${name}-started`, title: `${title} started`, at: stage.started_at, status: "running" });
     // A retry can retain the preceding attempt's finished_at while it starts again.
     if (stage.finished_at && terminal.includes(stage.status ?? "")

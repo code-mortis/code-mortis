@@ -78,7 +78,7 @@ def test_frozen_reliability_fixture_never_becomes_clean(tmp_path, monkeypatch, p
     if arm == "ocr":
         historical = {"analysis_engine": arm}
         assert analysis.engine_snapshot(historical)["analysis_engine"] == "ocr"
-        with pytest.raises(ValueError, match="OCR execution is retired"):
+        with pytest.raises(ValueError, match="This saved review engine is retired"):
             analysis.require_execution_engine(historical)
         with pytest.raises(ValidationError):
             RepoSettings(analysis_engine=arm)

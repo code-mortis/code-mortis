@@ -1,4 +1,4 @@
-"""Pinned PR analysis through the shared inference gateway, without OCR execution."""
+"""Pinned PR analysis through the shared inference gateway."""
 
 import asyncio
 import time

@@ -203,7 +203,7 @@ def queue_changes(db, _context, _instances):
             if item.status in {"failed", "cancelled", "superseded"}:
                 interrupt(item)
                 if pipeline.enabled(item):
-                    for stage in pipeline.STAGES:
+                    for stage in pipeline.stage_keys(item):
                         if item.stages.get(stage, {}).get("status") not in pipeline.TERMINAL:
                             pipeline.update(item, stage, "cancelled" if item.cancel_requested else "failed")
             enabled.add(item.pr_id)

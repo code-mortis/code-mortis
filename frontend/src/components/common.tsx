@@ -8,7 +8,7 @@ import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Code } from "./code";
-import { errorFeedback } from "../lib/error-feedback";
+import { engineDiagnostic, errorFeedback } from "../lib/error-feedback";
 
 export { Code, CodeComparison } from "./code";
 
@@ -63,7 +63,7 @@ export function ErrorNotice({ error, title }: { error: unknown; title?: string }
   if (!error) return null;
   // Titled notices already supply readable copy and their own diagnostics.
   const feedback = title ? {
-    title, message: error instanceof Error ? error.message : String(error), details: "",
+    title, message: engineDiagnostic(error instanceof Error ? error.message : String(error)), details: "",
   } : errorFeedback(error);
   const heading = title || feedback.title;
   return (
@@ -82,14 +82,15 @@ export function ErrorNotice({ error, title }: { error: unknown; title?: string }
 }
 export function TechnicalDetails({ error, name, compact = false }: { error: string; name: string; compact?: boolean }) {
   const [copying, setCopying] = useState(false);
+  const message = engineDiagnostic(error);
   return <details className="group text-xs text-muted-foreground">
     <summary className="flex min-h-11 w-fit cursor-pointer list-none items-center gap-2 outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden">Technical details<ChevronDown aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-180" /></summary>
     <div className={cn("group/diagnostics relative", compact ? "mt-0.5" : "mt-3")}>
-      <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="min-h-14 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 pr-14 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:pr-12 [overflow-wrap:anywhere]">{error}</pre>
+      <pre role="region" aria-label={`${name} technical details`} tabIndex={0} className="min-h-14 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 pr-14 font-mono text-xs leading-relaxed outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-11 sm:pr-12 [overflow-wrap:anywhere]">{message}</pre>
       <Button variant="ghost" size="icon" aria-label={`${copying ? "Copying" : "Copy"} ${name} details`} title={`${copying ? "Copying" : "Copy"} ${name} details`} className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/diagnostics:opacity-100 group-focus-within/diagnostics:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" disabled={copying} onClick={async () => {
         setCopying(true);
         try {
-          await navigator.clipboard.writeText(error);
+          await navigator.clipboard.writeText(message);
           toast.success(`${name} details copied`);
         } catch {
           toast.error("Could not copy details", { description: "Select the text in Technical details and copy it manually." });

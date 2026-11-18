@@ -16,7 +16,7 @@ def is_retired(config):
     try:
         return engine_snapshot(config)["analysis_engine"] == "ocr"
     except ValueError:
-        # Invalid snapshots fail the execution gate; never reinterpret them as OCR.
+        # Invalid snapshots fail the execution gate without changing their saved identity.
         return False
 
 

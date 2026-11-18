@@ -1,4 +1,4 @@
-"""Stable finding identity and consumption readers, including historical OCR reports."""
+"""Stable finding identity and consumption readers for current and historical reports."""
 
 import json
 import re

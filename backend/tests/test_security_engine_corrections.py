@@ -152,7 +152,7 @@ def test_new_scan_pins_mortis_policy_and_refuses_ocr(scan_workflow, seed, monkey
         repo = db.get(Repository, seed["repo"].id)
         repo.settings = {**repo.settings, "analysis_engine": selected}
         if selected == "ocr":
-            with pytest.raises(ValueError, match="OCR execution is retired"):
+            with pytest.raises(ValueError, match="This saved review engine is retired"):
                 service.create_scan(db, repo, seed["user"], SecurityScanInput(
                     connection_id="connection", request_key=uid()))
             assert len(list(db.scalars(select(SecurityScan)))) == 1
