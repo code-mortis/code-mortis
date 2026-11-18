@@ -2,10 +2,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Building2, FolderGit2, Moon, Settings, Sun } from "lucide-react";
 import type { Schema } from "../api";
 import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
-import { Brand } from "./brand";
 import logo from "../assets/logo.svg";
 import { AccountMenu } from "./account-menu";
-import { SidebarToggle } from "./app-sidebar";
 import { SearchSelect } from "./search-select";
 import { Button } from "./ui/button";
 
@@ -19,9 +17,8 @@ export function AppHeader({ user, onLogout, signingOut, dark, onToggleTheme }: {
   const available = repositories.filter((repo) => (repo.full_name.split("/")[0]).toLowerCase() === organization?.toLowerCase());
   return <header className="sticky top-0 z-20 border-b bg-background px-4 sm:px-8">
     <div className="flex min-h-14 min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-      {repository && <SidebarToggle />}
       <Link to="/" aria-label="Code Mortis home" className="shrink-0 rounded-md">
-        <span className="hidden lg:block"><Brand /></span><img src={logo} alt="" className="h-7 w-auto lg:hidden" width="232" height="192" />
+        <img src={logo} alt="" className="h-7 w-auto" width="232" height="192" />
       </Link>
       <nav aria-label="Workspace" className="order-last flex w-full min-w-0 gap-2 pb-3 sm:order-none sm:w-auto sm:flex-1 sm:pb-0">
         <SearchSelect aria-label="Organization" value={organization ?? "__workspace__"} placeholder="Workspace" disabled={directory.isPending || !!directory.error}

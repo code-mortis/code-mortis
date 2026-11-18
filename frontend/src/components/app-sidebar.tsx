@@ -30,13 +30,10 @@ export function AppSidebar({ admin }: { admin: boolean }) {
     ...(admin ? [{ key: "settings", label: "Repository settings", path: base + "/settings", icon: Settings }] : []),
   ];
   return <Sidebar collapsible="offcanvas" className="top-14 h-[calc(100svh-3.5rem)]">
-    <SidebarHeader className="px-4 py-4">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium" title={repository.full_name}>{repository.full_name}</span>
-        <Button variant="ghost" size="icon" className="size-9 lg:hidden" aria-label="Close navigation" onClick={() => setOpenMobile(false)}><X /></Button>
-      </div>
+    <SidebarHeader className="items-end px-4 py-2 lg:hidden">
+      <Button variant="ghost" size="icon" className="size-9" aria-label="Close navigation" onClick={() => setOpenMobile(false)}><X /></Button>
     </SidebarHeader>
-    <SidebarContent className="px-2">
+    <SidebarContent className="p-2">
       <nav id="workspace-navigation" aria-label="Repository sections">
         <SidebarMenu>
           {items.map(({ key, label, path, icon: Icon }) => <SidebarMenuItem key={key}>

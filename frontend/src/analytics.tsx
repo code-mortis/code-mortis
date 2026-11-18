@@ -111,7 +111,7 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
     : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
-    <PageTitle title="Overview">{repository.full_name} · Review activity, security findings, and reported usage.</PageTitle>
+    <PageTitle title="Overview" />
     <div role="group" aria-label="Analytics filters">
       <FilterBar filters={[]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[

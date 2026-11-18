@@ -3,6 +3,8 @@ import { Link, useLocation, useMatch } from "react-router-dom";
 import { useApi, type Repository, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
+import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
+import { SidebarToggle } from "./app-sidebar";
 import { Button } from "./ui/button";
 import {
   Breadcrumb, BreadcrumbEllipsis, BreadcrumbItem, BreadcrumbLink,
@@ -15,6 +17,7 @@ import {
 type Crumb = { label: string; to: string; state?: { inbox: string | null; repository: string | null } };
 
 export function AppBreadcrumb({ admin }: { admin: boolean }) {
+  const { repository } = useWorkspaceNavigation();
   const route = useLocation();
   const path = route.pathname.replace(/\/$/, "") || "/";
   const params = new URLSearchParams(route.search);
@@ -88,6 +91,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
 
   if (path === "/") return null;
   return <div className="mb-6 flex min-w-0 items-center gap-2">
+    {repository && <SidebarToggle />}
     <Breadcrumb aria-label="Breadcrumb" className="min-w-0 flex-1">
       <BreadcrumbList className="flex-nowrap">
         {ancestors.map((crumb, index) => <Fragment key={crumb.to}>
