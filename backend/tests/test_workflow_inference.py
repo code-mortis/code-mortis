@@ -66,7 +66,7 @@ def test_invalid_timeout_rejected_before_work_starts(workflow, timeout):
 def test_completed_result_replays_after_worker_restart_without_new_consumption(workflow, monkeypatch, legacy):
     with monkeypatch.context() as patcher:
         if legacy:
-            patcher.setattr(workflow_inference.analysis, "output_token_policy", lambda snapshot=None: None)
+            patcher.setattr(workflow_inference.analysis, "configured_output_policy", lambda config: None)
         assert call(workflow) == ({"ok": True}, {"tokens": 12})
     assert workflow["wire"][0]["max_tokens"] == (8192 if legacy else 16384)
     with transaction() as db:

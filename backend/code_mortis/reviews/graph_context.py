@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from code_mortis.code_graph import retrieval, service, store
 from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import fingerprint
+from code_mortis.core.analysis import EXECUTION_LIMITS, fingerprint
 from code_mortis.core.db import transaction
 from code_mortis.core.errors import ReviewStopped
 from code_mortis.integrations import github
@@ -208,8 +208,11 @@ def discovery(evidence, options, repo, env, review_options, credentials, stopped
     # Leave room for adapter instructions/tools. Optional discovery must never crowd out required evidence.
     size = len((instructions + context.SELECTION_INSTRUCTIONS + verification.evidence_bundle(supplied)
                 + json.dumps(selected_schema)).encode()) + 8192
-    if (len(json.dumps(enriched).encode()) > 1_500_000
-        or size > connection.get("options", {}).get("prompt_token_ceiling", 58888) * 4 // 5):
+    options = connection.get("options", {})
+    ceiling = options.get("prompt_token_ceiling")
+    if ceiling is None and connection.get("execution_limits") != EXECUTION_LIMITS:
+        ceiling = 58888
+    if len(json.dumps(enriched).encode()) > 1_500_000 or ceiling is not None and size > ceiling * 4 // 5:
         selection, _ = omitted(selection, "prompt_limit")
         selection.pop("notice", None)
         # Keep omission provenance outside the model payload when even that would consume required space.

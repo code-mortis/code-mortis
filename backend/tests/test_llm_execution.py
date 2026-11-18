@@ -1,6 +1,7 @@
 """Offline HTTP fixtures through real immutable plans, admission and usage accounting."""
 
 import asyncio
+import json
 from datetime import timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from test_analysis_foundation import specification
 from test_llm_http import SCHEMA, result
 
 from code_mortis.core import analysis, inference_admission
+from code_mortis.core.config import settings
 from code_mortis.core.db import engine, now, transaction
 from code_mortis.integrations import llm, llm_http
 from code_mortis.models import (
@@ -38,18 +40,22 @@ def request():
                    output_schema=SCHEMA, max_output_tokens=32)
 
 
-def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budgets=None, options=None, deadlines=None):
+def planned(seed, *, job="job", requests=None, stages=None, concurrency=2, budgets=None, options=None, deadlines=None,
+            workflow=False):
     requests = requests or {"a": request()}
     stages = stages or {key: "analysis" for key in requests}
     with transaction() as db:
         connection = db.get(Connection, "connection")
         if options is not None:
             connection.options = options
-        snapshot = connection_snapshot(connection)
+        snapshot = connection_snapshot(connection, workflow=workflow)
         db.add(Job(id=job, kind="review", payload={}, status="running", attempts=1,
                    lease_until=now() + timedelta(minutes=10)))
         db.flush()
-        plan = analysis.persist_plan(db, job, specification(
+        versions = specification().versions
+        if workflow:
+            versions["output_tokens"] = analysis.WORKFLOW_OUTPUT_POLICY
+        plan = analysis.persist_plan(db, job, specification(versions=versions,
             connection=snapshot, settings={"concurrency": concurrency},
             budgets=budgets or {stage: 10_000 for stage in stages.values()},
             deadlines=deadlines or {},
@@ -72,6 +78,43 @@ def rows():
     with transaction() as db:
         return (list(db.scalars(select(AnalysisTask))), list(db.scalars(select(AnalysisAttempt))),
                 list(db.scalars(select(InferenceAdmission))))
+
+
+@pytest.mark.parametrize("budget", [None, 2_000])
+def test_package_transport_uses_only_the_new_workflow_budget(seed, monkeypatch, budget):
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    value = request().model_copy(update={"max_output_tokens": 0})
+    plan, ids, _, snapshot = planned(seed, requests={"a": value}, budgets={"analysis": budget}, workflow=True,
+        options={"prompt_token_ceiling": 1, "timeout_sec": 5, "extra_body": {"max_tokens": 32}})
+    wire = []
+
+    def handler(message):
+        wire.append(message)
+        return httpx.Response(200, json=result("openai", usage=True))
+
+    assert snapshot["options"] == {"extra_body": {}}
+    assert execute(ids["a"], value, handler).output == {"ok": True}
+    payload = json.loads(wire[0].content)
+    assert wire[0].extensions["timeout"]["read"] is None
+    if budget is None:
+        assert "max_tokens" not in payload and "max_completion_tokens" not in payload
+    else:
+        assert payload.get("max_completion_tokens", payload.get("max_tokens")) == budget - llm.reservation(snapshot, value)
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan, "analysis")).charged_tokens == 12
+
+
+def test_package_transport_uses_trusted_hosts_from_app_config(seed, monkeypatch):
+    monkeypatch.setenv("CM_TRUSTED_ENDPOINT_HOSTS", "")
+    monkeypatch.delenv("CM_TRUSTED_ENDPOINT_HOSTS")
+    monkeypatch.setattr(settings(), "trusted_endpoint_hosts", "127.0.0.1")
+    with transaction() as db:
+        db.get(Connection, "connection").base_url = "http://127.0.0.1:8131/v1"
+    value = request().model_copy(update={"max_output_tokens": 0})
+    _, ids, _, _ = planned(seed, requests={"a": value}, workflow=True)
+    response = execute(ids["a"], value, lambda _: httpx.Response(200, json=result("openai", usage=True)))
+    assert response.output == {"ok": True}
 
 
 @pytest.mark.parametrize("known_usage", [True, False])

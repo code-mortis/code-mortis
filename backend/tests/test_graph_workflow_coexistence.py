@@ -50,7 +50,7 @@ def test_indexing_pr_and_security_overlap_without_crossing_context_policies(rela
         pr_requests.append(supplied)
         return await state["ledger"].execute(*args, **kwargs)
 
-    def scanner(item, *args):
+    def scanner(item, *args, **kwargs):
         scanner_inventories.append(set(item.inventory))
         return {"findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True}}
 

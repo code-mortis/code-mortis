@@ -7,7 +7,7 @@ from code_mortis.reviews import diagnostics as diagnostic
 
 @pytest.mark.parametrize("origin,expected", [
     ("gateway_incomplete", "gateway returned incomplete"),
-    ("ocr_mismatch", "OCR's parsed completion differs"),
+    ("ocr_mismatch", "The parsed completion differs"),
     ("arguments_preserved", "recorded identical completion arguments"),
     ("unavailable", "origin could not be determined"),
 ])

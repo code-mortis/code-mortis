@@ -27,13 +27,20 @@ from code_mortis.reviews import summary as pr_summary
 
 TERMINAL = {"completed", "partial", "failed", "skipped", "cancelled"}
 
-# The stored analysis key remains readable in historical runs. It never selects an executable engine.
-STAGES = ("ocr", "assessment", "verification", "summary")
+STAGES = ("analysis", "assessment", "verification", "summary")
 KINDS = {"verify_fixes": "verification", "summarize_review": "summary", "assess_candidates": "assessment"}
 
 
 def enabled(run):
     return run.config.get("pipeline_version") == 2
+
+
+def analysis_stage(run):
+    return "ocr" if "ocr" in (run.stages or {}) and "analysis" not in run.stages else "analysis"
+
+
+def stage_keys(run):
+    return (analysis_stage(run), *STAGES[1:])
 
 
 def owns(run, stage, claim):
@@ -59,7 +66,7 @@ def enqueue_finalizer(db, run):
 
 
 def start(db, run, claim):
-    update(run, "ocr", "running", execution=claim, started_at=run.started_at.isoformat(), tokens=None)
+    update(run, analysis_stage(run), "running", execution=claim, started_at=run.started_at.isoformat(), tokens=None)
     enqueue_stages(db, run)
 
 
@@ -91,7 +98,7 @@ def enqueue_stages(db, run):
 
 def review_done(db, run, error=None):
     status = run.progress.get("analysis_status", "failed")
-    update(run, "ocr", status, tokens=report_tokens(run.report), error=error)
+    update(run, analysis_stage(run), status, tokens=report_tokens(run.report), error=error)
     if error or not run.progress.get("assessment_deferred"):
         assessment_done(db, run, error)
     enqueue_finalizer(db, run)
@@ -263,7 +270,7 @@ def finalize(run_id):
             run.status, run.cancel_requested, run.publication, run.finished_at = "cancelled", True, "not_applicable", now()
         if run.cancel_requested or run.status in {"cancelled", "superseded"}:
             assessment.withhold_pending(db, run, "Assessment stopped because the review was cancelled or replaced by a newer run. Check the latest review.")
-            for stage in STAGES:
+            for stage in stage_keys(run):
                 if run.stages.get(stage, {}).get("status") not in TERMINAL:
                     update(run, stage, "cancelled", waiting_for=None)
             run.progress = {**run.progress, "pipeline_finalized": True}
@@ -271,14 +278,14 @@ def finalize(run_id):
         if (run.progress.get("assessment_deferred")
             and run.stages.get("assessment", {}).get("status") == "waiting"
             and run.stages.get("assessment", {}).get("waiting_for") == "verification"
-            and run.stages.get("ocr", {}).get("status") in TERMINAL
+            and run.stages.get(analysis_stage(run), {}).get("status") in TERMINAL
             and run.stages.get("verification", {}).get("status") in TERMINAL):
             if not db.scalar(select(Job.id).where(
                 Job.kind == "assess_candidates", Job.payload["run_id"].as_string() == run.id,
             ).limit(1)):
                 enqueue(db, "assess_candidates", {"run_id": run.id})
             update(run, "assessment", "pending", waiting_for=None)
-        if any(run.stages.get(stage, {}).get("status") not in TERMINAL for stage in STAGES):
+        if any(run.stages.get(stage, {}).get("status") not in TERMINAL for stage in stage_keys(run)):
             return
         run.progress = {**run.progress, "pipeline_finalized": True}
         run.status = run.progress.get("analysis_status", "failed")

@@ -52,3 +52,9 @@ test("shared errors preserve actionable messages and separate technical suffixes
   expect(errorFeedback(raw)).toEqual({ title: undefined, message: "The scanner could not refresh its database.", details: raw });
   expect(errorFeedback({})).toEqual({ title: undefined, message: "This action could not be completed. Refresh the page and try again.", details: "" });
 });
+
+test("saved engine diagnostics retain their explanation without the retired name", () => {
+  const raw = "AI result delivery failed. The parsed completion differs from the gateway response.";
+  expect(errorFeedback(raw).message).toContain("The engine changed or lost data");
+  expect(errorFeedback("The saved OCR execution is retired.").message).toBe("The saved retired engine execution is retired.");
+});

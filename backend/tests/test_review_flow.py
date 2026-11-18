@@ -409,11 +409,11 @@ def test_api_credentials_encrypted_and_never_returned(seed, client, monkeypatch)
     assert response.status_code == 422 and "secret-only-here" not in response.text
 
 
-def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(seed, client, github_stub, monkeypatch):
+def test_connection_probe_limits_do_not_change_a_new_review(seed, client, github_stub, monkeypatch):
     monkeypatch.setattr("code_mortis.api.routers.connections.safe_endpoint", lambda value: value)
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     first = client.post("/api/v1/pulls/pr/runs", json={}).json()
-    assert first["config"]["connection"]["options"] == {"timeout_sec": 300}
+    assert first["config"]["connection"]["options"] == {}
     with transaction() as db:
         assert db.get(Connection, "connection").options == {}
     body = {
@@ -425,13 +425,13 @@ def test_api_prompt_ceiling_is_saved_in_run_snapshot_without_changing_budget(see
     assert response.json()["options"] == body["options"]
     assert client.get("/api/v1/connections").json()[0]["options"] == body["options"]
     second = client.post("/api/v1/pulls/pr/runs", json={}).json()
-    assert second["config"]["connection"]["options"] == body["options"]
+    assert second["config"]["connection"]["options"] == {}
+    assert first["id"] == second["id"]
     assert first["config"]["settings"] == second["config"]["settings"]
     body["options"]["prompt_token_ceiling"] = 100000
     assert client.put("/api/v1/connections/connection", json=body).status_code == 200
     with transaction() as db:
-        assert db.get(ReviewRun, first["id"]).config["connection"]["options"] == {"timeout_sec": 300}
-        assert db.get(ReviewRun, second["id"]).config["connection"]["options"]["prompt_token_ceiling"] == 200000
+        assert db.get(ReviewRun, first["id"]).config["connection"]["options"] == {}
         assert json.loads(unseal(db.get(Connection, "connection").secret))["api_key"] == "provider-secret"
 
 

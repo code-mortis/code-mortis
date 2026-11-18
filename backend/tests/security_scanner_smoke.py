@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="scanner-fixture-") as directory:
         (item.files / path).write_text(content)
         item.inventory[path] = {"hash": security_engine.digest(content), "lines": len(content.splitlines()), "code": False}
     item.read = lambda path, sha=None: fixtures[path]
-    result = security_engine.trivy(item, 300, lambda: False)
+    result = security_engine.trivy(item, 300, lambda: False, execution_limits=True)
     kinds = {finding["kind"] for finding in result["findings"]}
     assert {"secret", "infrastructure"} <= kinds, (kinds, result["problems"])
     assert any(finding.get("rule_id") in {"DS002", "DS-0002", "AVD-DS-0002"} for finding in result["findings"]), [(f["rule_id"], f["title"]) for f in result["findings"]]

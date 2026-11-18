@@ -1,3 +1,9 @@
+export function engineDiagnostic(message: string) {
+  return message.replace(/\bGateway\/OCR\b/g, "Gateway and engine")
+    .replace(/\b(?:Open Code Review|OCR)\b/g, "retired engine")
+    .replace(/^retired engine\b/, "The retired engine");
+}
+
 export function resultDeliveryFeedback(error: string) {
   if (!/AI result delivery failed|The AI did not submit a complete structured result|task_done did not include|"kind"\s*:\s*"delivery"/.test(error)) return undefined;
   const message = /exactly one complete task_done/.test(error)
@@ -10,12 +16,12 @@ export function resultDeliveryFeedback(error: string) {
   const summary = error.split(/; response=| Technical details:/, 1)[0];
   const origin = /The gateway returned incomplete or malformed completion arguments\.$/.test(summary)
     ? "The gateway response already contained incomplete or malformed arguments."
-    : /OCR's parsed completion differs from the gateway response\.$/.test(summary)
-      ? "OCR changed or lost data from the gateway's completion."
-      : /The gateway and OCR recorded identical completion arguments\.$/.test(summary)
-        ? "The gateway and OCR recorded identical arguments."
-        : /Gateway\/OCR comparison was unavailable; the origin could not be determined\.$/.test(summary)
-          ? "Gateway/OCR comparison was unavailable, so the origin is unknown." : "";
+    : /parsed completion differs from the gateway response\.$/.test(summary)
+      ? "The engine changed or lost data from the gateway's completion."
+      : /recorded identical completion arguments\.$/.test(summary)
+        ? "The gateway and the engine recorded identical arguments."
+        : /comparison was unavailable; the origin could not be determined\.$/.test(summary)
+          ? "The gateway and engine could not be compared, so the origin is unknown." : "";
   return { title: "AI result delivery failed", message: `${message}${origin ? ` ${origin}` : ""} The affected check was not accepted.` };
 }
 
@@ -35,7 +41,7 @@ export function errorFeedback(error: unknown) {
   if (/Required security evidence|Required supporting source cannot be supplied safely|AI requested evidence it already received|Security analysis could not settle its required evidence/i.test(message)) {
     return explain("Supporting evidence unavailable", message.includes("unavailable or exceeds its limit")
       ? "Supporting source could not be supplied. This older record did not save the requested path or distinguish missing source from an evidence limit."
-      : message.replace(/^Required security evidence could not be supplied:\s*/i, ""));
+      : engineDiagnostic(message.replace(/^Required security evidence could not be supplied:\s*/i, "")));
   }
   if (/AI citation mismatch|(?:Security|Verification|Assessment) evidence does not match/i.test(message)
     && !/"reason"\s*:\s*"unavailable source"/.test(message)) {
@@ -70,5 +76,5 @@ export function errorFeedback(error: unknown) {
   if (/[{}]|\n/.test(message)) {
     return explain("Action could not be completed", "This action could not be completed. Review the technical details before trying again.");
   }
-  return { title: undefined, message, details: message === raw ? "" : raw };
+  return { title: undefined, message: engineDiagnostic(message), details: message === raw ? "" : raw };
 }

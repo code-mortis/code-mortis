@@ -33,14 +33,18 @@ from code_mortis.models import (
 from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
 OUTPUT_TOKEN_POLICY = "mortis-completion/v1"
+WORKFLOW_OUTPUT_POLICY = "workflow-budget/v1"
+EXECUTION_LIMITS = "workflow/v1"
 OUTPUT_RECOVERY_POLICY = "split-units/v2"
-RETIRED_ENGINE_MESSAGE = "OCR execution is retired. Its saved plan and results were preserved; explicitly start new work with Mortis."
+RETIRED_ENGINE_MESSAGE = "This saved review engine is retired. Its plan and results were preserved; explicitly start new work with Mortis."
 
 
 def output_token_limit(policy):
     """Missing policy retains the original immutable 8,192-token requests."""
     if policy is None:
         return 8192
+    if policy == WORKFLOW_OUTPUT_POLICY:
+        return 0
     if policy in {OUTPUT_TOKEN_POLICY, "ocr-completion/v1"}:
         return 16384
     raise ValueError("The saved output-token policy is unsupported")
@@ -50,6 +54,17 @@ def output_token_policy(snapshot=None):
     policy = OUTPUT_TOKEN_POLICY if snapshot is None else snapshot["versions"].get("output_tokens")
     output_token_limit(policy)
     return policy
+
+
+def configured_output_policy(config):
+    return WORKFLOW_OUTPUT_POLICY if config.get("execution_limits") == EXECUTION_LIMITS else OUTPUT_TOKEN_POLICY
+
+
+def budget_deadline(plan, budget):
+    # New scans enforce their deadline against elapsed worker time, even after requeue.
+    if plan.scan_id and output_token_policy(plan.snapshot) == WORKFLOW_OUTPUT_POLICY:
+        return None
+    return budget.deadline_at
 
 
 def engine_snapshot(options):
@@ -275,6 +290,7 @@ class TaskLease:
     job_attempt: int
     lease_until: datetime
     admission_id: str | None = None
+    output_tokens: int | None = None
 
 
 def job_live(job, attempt, timestamp):
@@ -318,10 +334,13 @@ def mark_uncertain(task, attempt, timestamp):
 
 
 def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int,
-               output_tokens: int, lease_seconds: int = 60, concurrency_limit: int | None = None) -> TaskLease | None:
+               output_tokens: int, lease_seconds: int = 60, concurrency_limit: int | None = None,
+               token_allowance: int | None = None) -> TaskLease | None:
     """Reserve a whole request atomically. Revalidate external authorization before calling."""
     if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
         raise ValueError("Input and output reservations must be nonnegative whole tokens")
+    if token_allowance is not None and (type(token_allowance) is not int or token_allowance < 0):
+        raise ValueError("The token allowance must be nonnegative")
     if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
         raise ValueError("Task leases must last between 1 and 3600 seconds")
     if concurrency_limit is not None:
@@ -359,12 +378,23 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
             AnalysisTask.plan_id == plan.id, AnalysisTask.stage == task.stage,
             AnalysisAttempt.usage_state == "unknown").limit(1))
         timestamp = now()
+        wire_output = None
+        if output_token_policy(plan.snapshot) == WORKFLOW_OUTPUT_POLICY:
+            allowances = [token_allowance, None if budget.token_limit is None else budget.token_limit - budget.charged_tokens]
+            finite = [value - input_tokens for value in allowances if value is not None]
+            if finite:
+                remaining = min(finite)
+                if remaining <= 0:
+                    return None
+                output_tokens = min(output_tokens, remaining) if output_tokens else remaining
+            wire_output = output_tokens
         reservation = input_tokens + output_tokens
-        if (not job_live(job, job_attempt, timestamp) or unknown or budget.deadline_at and budget.deadline_at <= timestamp
+        deadline = budget_deadline(plan, budget)
+        if (not job_live(job, job_attempt, timestamp) or unknown or deadline and deadline <= timestamp
                 or budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit):
             return None
         expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
-                      budget.deadline_at or job.lease_until)
+                      deadline or job.lease_until)
         run_limit = plan.snapshot["settings"].get("concurrency", 4 if plan.scan_id else 2)
         validate_limits(1, run_limit, lease_seconds)
         if concurrency_limit is not None:
@@ -381,7 +411,7 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
         attempt = AnalysisAttempt(id=uid(), task_id=task.id, number=task.attempts, job_attempt=job_attempt,
                                   lease_until=expires, reserved_tokens=reservation)
         db.add(attempt)
-        return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires, admission_id)
+        return TaskLease(task.id, attempt.id, task.attempts, job_id, job_attempt, expires, admission_id, wire_output)
 
 
 def owned_attempt(db, lease, *, settlement_only=False):
@@ -454,13 +484,14 @@ def renew_task(lease: TaskLease, *, lease_seconds: int = 60) -> bool:
             return False
         task, attempt = owned
         budget = db.get(AnalysisBudget, (task.plan_id, task.stage))
+        deadline = budget_deadline(db.get(AnalysisPlan, task.plan_id), budget)
         job = db.get(Job, lease.job_id)
         timestamp = now()
         if (not job_live(job, lease.job_attempt, timestamp) or attempt.lease_until <= timestamp
-                or budget.deadline_at and budget.deadline_at <= timestamp):
+                or deadline and deadline <= timestamp):
             return False
         expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
-                      budget.deadline_at or job.lease_until)
+                      deadline or job.lease_until)
         if lease.admission_id and not renew_in_transaction(db, lease.admission_id, expires):
             return False
         attempt.lease_until = expires

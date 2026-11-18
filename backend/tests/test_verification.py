@@ -1298,7 +1298,7 @@ def test_interrupted_ocr_review_refuses_execution_without_new_allowance(scenario
         run.progress = {"analysis_started": True, "execution": "vanished-worker"}
         original_report = copy.deepcopy(run.report)
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("Retired work reached inference"))
-    with pytest.raises(ValueError, match="OCR execution is retired"):
+    with pytest.raises(ValueError, match="This saved review engine is retired"):
         perform_review(scenario["run"])
     with transaction() as db:
         run = db.get(ReviewRun, scenario["run"])

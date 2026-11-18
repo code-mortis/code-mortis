@@ -1843,7 +1843,7 @@ for (const [ocr, assessment, verification, expected] of [
     await expect(trigger).toHaveAttribute("data-status", expected.toLowerCase());
     await trigger.click();
     const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-    await expect(details.getByText("OCR", { exact: true }).locator("..")).toContainText(ocr);
+    await expect(details.getByText("Analysis", { exact: true }).locator("..")).toContainText(ocr);
     await expect(details.getByText("Fix verification", { exact: true }).locator("..")).toContainText(verification);
     await noOverflow(page);
     if (expected === "Partial" && verification === "failed" || expected === "Failed" && assessment === "failed") {
@@ -2004,7 +2004,7 @@ test("stage copy buttons identify and copy their own diagnostics", async ({ page
   });
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  for (const [name, transcript] of [["OCR", "OCR transcript"], ["Assessment", "Assessment transcript"], ["Fix verification", "Verification transcript"]]) {
+  for (const [name, transcript] of [["Analysis", "The retired engine transcript"], ["Assessment", "Assessment transcript"], ["Fix verification", "Verification transcript"]]) {
     const raw = page.getByRole("region", { name: `${name} technical details`, exact: true, includeHidden: true });
     await details.locator("details", { has: raw }).locator("summary").click();
     const copy = details.getByRole("button", { name: `Copy ${name} details`, exact: true });
@@ -2023,7 +2023,7 @@ test("stage copy buttons identify and copy their own diagnostics", async ({ page
   await page.screenshot({ path: `/private/tmp/pr26-stage-copy-labels-${info.project.name}.png` });
 });
 
-for (const [key, name] of [["ocr", "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const) {
+for (const [key, name] of [["ocr", "Analysis"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const) {
 test(`${name} stage failure keeps only collapsed technical details`, async ({ page }, info) => {
   const error = "The fix could not be verified automatically. The AI did not finish checking this finding. Technical details: "
     + JSON.stringify({ exit_code: 0, status: "completed_with_warnings", summary: { total_tokens: 0, budget_exceeded: true },
@@ -2106,7 +2106,7 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await trigger.focus();
   await page.keyboard.press("Enter");
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  await expect(details.getByText(/^(PR summary|OCR|Assessment|Fix verification)$/)).toHaveText(["PR summary", "OCR", "Assessment", "Fix verification"]);
+  await expect(details.getByText(/^(PR summary|Analysis|Assessment|Fix verification)$/)).toHaveText(["PR summary", "Analysis", "Assessment", "Fix verification"]);
   await expect(details.getByText("1,234 tokens", { exact: true })).toBeVisible();
   const summaryLink = details.getByRole("link", { name: "PR summary", exact: true });
   await expect(summaryLink).toHaveAttribute("href", /#issuecomment-10$/);
@@ -2148,7 +2148,7 @@ test("review stage card keeps live details without a duplicate header badge", as
   await trigger.focus();
   await trigger.press("Enter");
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });
-  await expect(details.getByText(/^(PR summary|OCR|Assessment|Fix verification)$/)).toHaveText(["PR summary", "OCR", "Assessment", "Fix verification"]);
+  await expect(details.getByText(/^(PR summary|Analysis|Assessment|Fix verification)$/)).toHaveText(["PR summary", "Analysis", "Assessment", "Fix verification"]);
   await expect(details.getByText(/tokens$/)).toHaveText(["6,449 tokens", "133,071 tokens", "0 tokens", "0 tokens"]);
   await expect(details.locator('[data-slot="badge"]')).toHaveText(["completed", "completed", "completed", "skipped"]);
   await noOverflow(page);
@@ -2202,7 +2202,7 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   await page.keyboard.press("Escape");
   await expect(stages).toBeFocused();
   await stages.press("Enter");
-  await expect(stageDetails.getByText("OCR", { exact: true })).toBeVisible();
+  await expect(stageDetails.getByText("Analysis", { exact: true })).toBeVisible();
   const details = stageDetails;
   await expect(details.getByText("Token usage unavailable", { exact: true })).toBeVisible();
   await expect(details.getByRole("alert")).toHaveCount(0);
@@ -5219,9 +5219,9 @@ const assessmentErrors = [
   { name: "gateway already omitted arguments", error: "AI result delivery failed: task_done did not include the required DONE state and result object. The gateway returned incomplete or malformed completion arguments.",
     title: "AI result delivery failed", message: "The gateway response already contained incomplete or malformed arguments." },
   { name: "OCR changed gateway arguments", error: "AI result delivery failed: task_done did not include the required DONE state and result object. OCR's parsed completion differs from the gateway response.",
-    title: "AI result delivery failed", message: "OCR changed or lost data from the gateway's completion." },
+    title: "AI result delivery failed", message: "The engine changed or lost data from the gateway's completion." },
   { name: "gateway comparison unavailable", error: "AI result delivery failed: task_done did not include the required DONE state and result object. Gateway/OCR comparison was unavailable; the origin could not be determined.",
-    title: "AI result delivery failed", message: "Gateway/OCR comparison was unavailable, so the origin is unknown." },
+    title: "AI result delivery failed", message: "The gateway and engine could not be compared, so the origin is unknown." },
   { name: "incomplete completion call", error: 'The AI did not finish checking this finding. Technical details: {"status":"success","result_error":"The AI did not submit a complete structured result. task_done did not include the required DONE state and result object."}',
     title: "AI result delivery failed", message: "The AI completion call omitted the required DONE state or structured result." },
   { name: "multiple completion calls", error: 'AI result delivery failed: The response must submit exactly one complete task_done result. Technical details: {"result_count":2}',
@@ -5290,14 +5290,17 @@ for (const failure of assessmentErrors) {
     await summary.focus();
     await summary.press("Enter");
     await expect(raw).toBeVisible();
-    expect(await raw.textContent()).toBe(failure.error);
+    const displayed = failure.error.replace("Gateway/OCR", "Gateway and engine")
+      .replace(/^OCR\b/, "The retired engine")
+      .replace(/\bOCR\b/g, "retired engine");
+    expect(await raw.textContent()).toBe(displayed);
     await page.evaluate(() => {
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
         writeText: async (value: string) => { document.body.dataset.copiedAssessment = value; },
       } });
     });
     await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
-    await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", failure.error);
+    await expect(page.locator("body")).toHaveAttribute("data-copied-assessment", displayed);
     await expect(page.getByText("Assessment details copied", { exact: true })).toBeVisible();
     await page.evaluate(() => {
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
@@ -5307,7 +5310,7 @@ for (const failure of assessmentErrors) {
     await sheet.getByRole("button", { name: "Copy Assessment details", exact: true }).click();
     await expect(page.getByText("Select the text in Technical details and copy it manually.", { exact: true })).toBeVisible();
     await expect(sheet.getByRole("button", { name: "Copy Assessment details", exact: true })).toBeEnabled();
-    expect(await raw.textContent()).toBe(failure.error);
+    expect(await raw.textContent()).toBe(displayed);
     await raw.focus();
     await expect(raw).toBeFocused();
     await expect(sheet.locator("[data-slot=sheet-footer]").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
@@ -8693,7 +8696,7 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} h
       settings: { summary_diagram_enabled: true, ai_fix_prompts_enabled: true } },
     report: { manifest: { coverage: { selected, completed: status === "completed" ? selected : selected.slice(0, 1),
       reused: [], failed: [], waived: status === "partial" ? [{ path: "src/config.ts", reason: "Token budget reached" }] : [] } } },
-    stages: { ocr: { status, tokens: 100 }, assessment: { status: "completed", tokens: 20 },
+    stages: { analysis: { status, tokens: 100 }, assessment: { status: "completed", tokens: 20 },
       verification: { status: "skipped", tokens: 0 }, summary: { status: "completed", tokens: 40 } },
     summary: { status: "completed", tokens: 40, limited_context: false, settings: { summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
       result: { narrative: "Payment retries now stop at their limit.",
@@ -8753,12 +8756,12 @@ test("historical OCR reviews preserve origin and publication recovery without re
     blocked_reason: "The saved OCR execution is retired.", publication: "failed", publication_error: "Publication failed.",
     stages: { ocr: { status: "completed", tokens: 10 }, assessment: { status: "failed", tokens: 0 } } } });
   await page.goto("/runs/run?tab=details");
-  await expect(page.getByText("This historical review used Open Code Review.", { exact: false })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Review setup", exact: true }).getByText("Open Code Review", { exact: true })).toBeVisible();
+  await expect(page.getByText("This historical review used a retired engine.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review setup", exact: true }).getByText("Retired engine", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Resume review", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry GitHub publication", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "Review stage details", exact: true }).getByText("OCR", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Review stage details", exact: true }).getByText("Analysis", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry summary generation", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("tab", { name: /^Findings/ }).click();
@@ -8777,7 +8780,7 @@ test("historical OCR candidates keep failed evidence without offering another as
   await page.goto("/runs/run?tab=assessment");
   await page.getByRole("button", { name: /Historical failed proposal/ }).click();
   const sheet = page.getByRole("dialog", { name: "Assessment details" });
-  await expect(sheet).toContainText("Saved OCR failure");
+  await expect(sheet).toContainText("Saved retired engine failure");
   await expect(sheet.getByRole("button", { name: "Retry assessment", exact: true })).toHaveCount(0);
   expect(writes).toHaveLength(0);
 });
@@ -8788,7 +8791,7 @@ for (const engine of ["ocr", "chatgpt", "claude_code"] as const) test(`historica
   const requests = await mock(page, { run: { engine, status: "completed", summary }, overview: { summary_error: null } });
   await page.goto("/runs/run?tab=details");
   const setup = page.getByRole("region", { name: "Review setup", exact: true });
-  const originalEngine = engine === "ocr" ? "Open Code Review" : engine === "chatgpt" ? "Codex (ChatGPT)" : "Claude Code";
+  const originalEngine = engine === "ocr" ? "Retired engine" : engine === "chatgpt" ? "Codex (ChatGPT)" : "Claude Code";
   await expect(setup.getByText(originalEngine, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review stage details", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Review stage details", exact: true });

@@ -893,8 +893,8 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       {can_write && summaryStage.status === "failed" && !active(run.status) && run.status !== "blocked" && run.head_sha === pr.head_sha && pr.latest_run?.id === run.id && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/runs/${run.id}/summary/retry` })}>{run.engine === "mortis" ? "Retry summary generation" : "Generate summary with Mortis"}</Button>}
       {can_write && pr.summary_error && <Button size="sm" variant="outline" disabled={action.isPending || pr.ignored} onClick={() => action.mutate({ path: `/pulls/${pr.id}/summary` })}>Retry GitHub sync</Button>}
     </div>}
-    {([["ocr", run.engine === "mortis" ? "Analysis" : "OCR"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
-      const stage = run.stages?.[key];
+    {([["analysis", "Analysis"], ["assessment", "Assessment"], ["verification", "Fix verification"]] as const).map(([key, name]) => {
+      const stage = key === "analysis" ? run.stages?.analysis ?? run.stages?.ocr : run.stages?.[key];
       if (!stage) return null;
       const status = key === "assessment" ? assessmentStatus : stage.status;
       return <div key={key} className="space-y-2">
@@ -907,9 +907,9 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   </PopoverContent>;
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
-  const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : run.engine === "mortis" ? "Mortis" : run.engine === "ocr" ? "Open Code Review" : run.engine;
+  const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : run.engine === "mortis" ? "Mortis" : "Retired engine";
   return <>
-    {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used {engine}. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
+    {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used a retired engine. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <div className="mb-6 min-w-0">
       <PageTitle className="mb-0" title="Review run" titleMeta={<Status value={run.status} />} actions={can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">

@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
+from mortis_engine.review import planning as native
+
 from code_mortis.core import file_policy, source
 from code_mortis.core.errors import ReviewStopped
 
@@ -247,6 +249,10 @@ class ReviewUnit:
     rule: str
     input_hash: str
 
+    @property
+    def source_only(self):
+        return False
+
 
 @dataclass
 class SelectedFile:
@@ -313,91 +319,14 @@ def _binary_paths(repo, env, merge_base, head_sha, stopped):
     return result
 
 
-def _patch_rows(patch, total_lines):
-    metadata, rows, old, new, active = [], [], 0, 0, False
-    for row in patch.splitlines(keepends=True):
-        match = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", row)
-        if match:
-            old, new, active = int(match[1]), int(match[2]), True
-        elif active and row[:1] in {"+", "-", " ", "\\"}:
-            anchor = min(max(1, new), max(1, total_lines))
-            if row.startswith("\\") and rows:
-                anchor = rows[-1][0]
-            rows.append((anchor, old, new, row))
-            old += row.startswith(("-", " "))
-            new += row.startswith(("+", " "))
-        else:
-            metadata.append(row)
-    return "".join(metadata), rows
-
-
-def _range_patch(metadata, rows):
-    if not rows:
-        return metadata
-    result, group = [], []
-    for item in rows:
-        if group and (item[1] > group[-1][1] + 1 or item[2] > group[-1][2] + 1):
-            result.append(group)
-            group = []
-        group.append(item)
-    if group:
-        result.append(group)
-    output = metadata
-    for group in result:
-        old_count = sum(item[3].startswith(("-", " ")) for item in group)
-        new_count = sum(item[3].startswith(("+", " ")) for item in group)
-        output += f"@@ -{group[0][1]},{old_count} +{group[0][2]},{new_count} @@\n"
-        output += "".join(item[3] for item in group)
-    return output
+_patch_rows = native._patch_rows
+_range_patch = native._range_patch
 
 
 def split_units(path, old_path, status, sha, text, patch, rule, maximum):
-    lines = text.splitlines(keepends=True)
-    metadata, rows = _patch_rows(patch, len(lines))
-    by_line = {}
-    for row in rows:
-        by_line.setdefault(row[0], []).append(row)
-    chunks, chunk_lines, chunk_rows, start = [], [], [], 1
-    fixed_size = len((metadata + rule + path + (old_path or "")).encode()) + 512
-    used = fixed_size
-    for number, line in enumerate(lines or [""], 1):
-        selected_rows = by_line.get(number, [])
-        line_size = len(line.encode())
-        size = line_size + sum(len(row[3].encode()) + 80 for row in selected_rows)
-        if fixed_size + line_size > maximum:
-            raise ValueError("A required source/diff line exceeds the bounded review context.")
-        if fixed_size + size > maximum:
-            if chunk_lines:
-                chunks.append((start, number - 1, "".join(chunk_lines), _range_patch(metadata, chunk_rows)))
-            chunk_lines, chunk_rows, start, used = [], [], number + 1, fixed_size
-            row_chunk, row_size = [], fixed_size + line_size
-            for row in selected_rows:
-                required = len(row[3].encode()) + 80
-                if fixed_size + line_size + required > maximum:
-                    raise ValueError("A required source/diff line exceeds the bounded review context.")
-                if row_chunk and row_size + required > maximum:
-                    chunks.append((number, number, line, _range_patch(metadata, row_chunk)))
-                    row_chunk, row_size = [], fixed_size + line_size
-                row_chunk.append(row)
-                row_size += required
-            if row_chunk:
-                chunks.append((number, number, line, _range_patch(metadata, row_chunk)))
-            continue
-        if chunk_lines and used + size > maximum:
-            chunks.append((start, number - 1, "".join(chunk_lines), _range_patch(metadata, chunk_rows)))
-            chunk_lines, chunk_rows, start, used = [], [], number, fixed_size
-        chunk_lines.append(line)
-        chunk_rows.extend(selected_rows)
-        used += size
-    if chunk_lines:
-        chunks.append((start, max(1, len(lines)), "".join(chunk_lines), _range_patch(metadata, chunk_rows)))
-    units = []
-    for first, last, content, difference in chunks:
-        value = {"path": path, "old_path": old_path, "status": status, "source_sha": sha,
-                 "start_line": first, "end_line": last, "source": content, "patch": difference, "rule": rule}
-        identity = fingerprint(value)
-        units.append(ReviewUnit(key=f"pr-{identity}", **value, input_hash=identity))
-    return units
+    units = native.split_units(path, old_path, status, sha, text, patch, rule, maximum)
+    return [ReviewUnit(**{key: value for key, value in vars(unit).items() if key != "source_only"})
+            for unit in units]
 
 
 def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,

@@ -31,8 +31,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/ ./
 RUN uv sync --frozen --no-dev && groupadd -g 10001 mortis && useradd -u 10001 -g mortis -m mortis && mkdir -p /var/cache/mortis-trivy /var/lib/code-mortis/code-graph && chown -R mortis:mortis /home/mortis /var/cache/mortis-trivy /var/lib/code-mortis
 COPY --from=frontend /src/frontend/dist /app/frontend/dist
-COPY THIRD_PARTY_NOTICES.md LICENSE /app/
-COPY LICENSES/ /app/LICENSES/
+COPY LICENSE /app/
 ENV PATH="/app/backend/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 USER mortis
 EXPOSE 8080

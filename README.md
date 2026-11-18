@@ -2,7 +2,7 @@
 
 Self-hosted GitHub pull request reviews and security scans powered by Mortis Engine. Findings become comments from your own GitHub App. Review runs, coverage, and resolution history stay in one workspace.
 
-Shared API connections are the only execution mode. Historical OCR and subscription results remain available. Mortis is enabled for this personal installation by an explicit early-adoption decision; this does not approve the pending M5 evidence. See [acceptance evidence](docs/acceptance.md) for implemented behavior, local checks and integrations still awaiting real accounts.
+Shared API connections are the only execution mode. Historical results remain available. Mortis is enabled for this personal installation by an explicit early-adoption decision. The pending M5 evidence remains under review. See [acceptance evidence](docs/acceptance.md) for implemented behavior, local checks and integrations still awaiting real accounts.
 
 The [documentation index](docs/README.md) links the product, developer and operations guides, implementation plans and engine milestone records.
 
@@ -54,7 +54,7 @@ The backend is organized into API routers, shared infrastructure, integrations, 
 
 FastAPI serves the production React build and API from one origin. PostgreSQL owns users, credentials, immutable runs, findings, deliveries and durable jobs. Celery/Redis dispatch review and synchronization queues. One scheduler dispatches work every ten seconds and reconciles GitHub every five minutes. The optional code graph parser stays on an internal network with no database or GitHub credentials. Deterministic security scanners retain their process and network isolation.
 
-OCR and official subscription clients are no longer installed in application images. The former runner service is retired; existing profile volumes and historical results are preserved during upgrades. Do not remove volumes to migrate engines.
+Upgrades preserve historical results and existing profile volumes. Do not remove volumes to migrate engines.
 
 ```sh
 docker compose -f compose.test.yaml up -d --wait
@@ -75,4 +75,4 @@ Backend tests require the isolated `mortis_test` database on port 55439 and Redi
 
 The [Noodle API collection](collections/code-mortis/README.md) includes session authentication, automatic CSRF, and a read-only smoke suite for local or hosted instances.
 
-See [operations](docs/operations.md) for upgrading an existing App, backups, restoration and troubleshooting. Code Mortis is MIT licensed; dependencies retain their licenses in [third-party notices](THIRD_PARTY_NOTICES.md).
+See [operations](docs/operations.md) for upgrading an existing App, backups, restoration and troubleshooting. Code Mortis is licensed under [Apache 2.0](LICENSE).

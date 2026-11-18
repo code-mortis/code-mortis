@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session
 
 from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import engine_snapshot, require_available_engine, require_execution_engine
+from code_mortis.core.analysis import (
+    EXECUTION_LIMITS,
+    engine_snapshot,
+    require_available_engine,
+    require_execution_engine,
+)
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.errors import ReviewStopped, RunnerBlocked
@@ -198,7 +203,7 @@ def queue_changes(db, _context, _instances):
             if item.status in {"failed", "cancelled", "superseded"}:
                 interrupt(item)
                 if pipeline.enabled(item):
-                    for stage in pipeline.STAGES:
+                    for stage in pipeline.stage_keys(item):
                         if item.stages.get(stage, {}).get("status") not in pipeline.TERMINAL:
                             pipeline.update(item, stage, "cancelled" if item.cancel_requested else "failed")
             enabled.add(item.pr_id)
@@ -273,7 +278,8 @@ def build_context(repo, env, run, stopped):
     paths = sorted(git_source.review_paths(repo, env, merge_base, run.head_sha, paths, run.config["settings"], stopped, git=source.git))
     if not paths:
         raise SummaryUnavailable("No permitted reviewable changes were available to summarize.")
-    ceiling = run.config["connection"].get("options", {}).get("prompt_token_ceiling", 58888)
+    ceiling = run.config["connection"].get("options", {}).get(
+        "prompt_token_ceiling", 128000 if run.config.get("execution_limits") == EXECUTION_LIMITS else 58888)
     # Conservative byte bound leaves room for instructions, transport and generated output.
     limit = min(128000, ceiling, run.config["settings"].get("summary_token_budget", 60000) or 128000)
     context = {"paths": paths, "base_sha": run.base_sha, "head_sha": run.head_sha,
@@ -316,7 +322,7 @@ def retry_generation(db, run, repo, actor):
         raise ValueError("Select an AI connection in repository settings before retrying the summary.")
     authorize_connection(db, connection, repo, "manual", actor)
     config = {"settings": RepoSettings.model_validate(repo.settings).model_dump(),
-              "connection": connection_snapshot(connection)}
+              "connection": connection_snapshot(connection, workflow=True), "execution_limits": EXECUTION_LIMITS}
     config.update(engine_snapshot(config["settings"]))
     require_available_engine(config)
     config["connection"]["model"] = config["settings"]["model"] or connection.model

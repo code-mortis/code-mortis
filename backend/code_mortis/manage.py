@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -25,8 +26,12 @@ def main():
     export = sub.add_parser("export-openapi")
     export.add_argument("--output", default="../frontend/node_modules/.cache/code-mortis-openapi.json")
     sub.add_parser("retire-subscriptions", help="Cancel retired subscription work durably after stopping old workers")
-    sub.add_parser("retire-ocr", help="After stopping admission and all workers/requests, settle OCR work and release its slots; preserve results and charges")
-    args = parser.parse_args()
+    legacy_command = "retire-legacy-analysis"
+    sub.add_parser(legacy_command, help="Settle retired analysis after stopping admission and workers")
+    argv = sys.argv[1:]
+    if argv[:1] == ["retire-ocr"]:
+        argv[0] = legacy_command
+    args = parser.parse_args(argv)
     if args.command == "retire-subscriptions":
         from code_mortis.core.db import transaction
         from code_mortis.core.shared_execution import retire_subscriptions
@@ -34,7 +39,7 @@ def main():
         with transaction() as db:
             result = retire_subscriptions(db)
         print(json.dumps(result, sort_keys=True))
-    elif args.command == "retire-ocr":
+    elif args.command == legacy_command:
         from code_mortis.core.db import transaction
         from code_mortis.core.engine_retirement import retire_ocr
 

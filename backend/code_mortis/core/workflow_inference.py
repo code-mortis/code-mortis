@@ -56,10 +56,10 @@ def schema_for_transport(schema):
     return schema
 
 
-def output_token_policy(job_id):
+def output_token_policy(job_id, config=None):
     with transaction() as db:
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
-        return analysis.output_token_policy(plan.snapshot if plan else None)
+        return analysis.output_token_policy(plan.snapshot) if plan else analysis.configured_output_policy(config or {})
 
 
 def execute(connection, credentials, context, *, instructions, schema, validator, claim, stage, task_key,
@@ -181,11 +181,13 @@ def execute(connection, credentials, context, *, instructions, schema, validator
         db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         job, run, scan, repo, actor_id, trigger, config, target = owner(db)
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
-        token_policy = analysis.output_token_policy(plan.snapshot if plan else None)
+        token_policy = analysis.output_token_policy(plan.snapshot) if plan else analysis.configured_output_policy(config)
+        workflow_budget = token_policy == analysis.WORKFLOW_OUTPUT_POLICY
         if plan is None:
             options = dict(config.get("settings", config.get("limits", {})))
             if scan:
-                budgets, duration, start = {"security": options.get("token_budget")}, options.get("timeout_seconds"), scan.started_at
+                budgets = {"security": options.get("token_budget")}
+                duration, start = (None if workflow_budget else options.get("timeout_seconds")), scan.started_at
                 policy = {"scanner_policy": config["policy"]}
             elif run:
                 budgets = {"analysis": options.get("token_budget"), "assessment": options.get("assessment_token_budget"),
@@ -199,7 +201,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             if stage not in budgets:
                 raise ValueError("The stage is not supported by this workflow")
             deadline = start + timedelta(seconds=duration) if duration is not None else None
-            if timeout is not None:
+            if timeout is not None and not (scan and workflow_budget):
                 deadline = min(deadline, now() + timedelta(seconds=timeout)) if deadline else now() + timedelta(seconds=timeout)
             specification = PlanSpec(repository_id=repo.id, run_id=run_id, scan_id=scan_id,
                 initiator_id=actor_id, authorization={"actor_id": actor_id, "trigger": trigger}, trigger=trigger,
@@ -245,7 +247,9 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                     "message": "The provider result did not satisfy the workflow evidence contract"}
 
     async def dispatch():
-        until = min(time.monotonic() + 60, dispatch_deadline) if dispatch_deadline is not None else time.monotonic() + 60
+        until = dispatch_deadline if dispatch_deadline is not None else float("inf")
+        if not workflow_budget:
+            until = min(time.monotonic() + 60, until)
         async with llm.http_client() as client:
             try:
                 while True:
@@ -256,16 +260,19 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                         return result, {"tokens": amount}
                     if status not in {"pending", "running"}:
                         raise InferenceOutputError("The saved request failed or its consumption is uncertain", {"tokens": amount})
-                    required = llm.reservation(connection, request) + request.max_output_tokens
+                    required = llm.reservation(connection, request) + (
+                        max(1, request.max_output_tokens) if workflow_budget else request.max_output_tokens)
                     if status == "pending" and token_budget is not None and required > token_budget:
                         raise InferenceOutputError("The request exceeds the remaining workflow allowance", {"tokens": 0})
-                    if unknown or budget.deadline_at and now() >= budget.deadline_at:
+                    deadline = budget.deadline_at
+                    if unknown or deadline and now() >= deadline:
                         raise InferenceOutputError("The stage deadline or unknown consumption prevents inference", {"tokens": amount})
                     if (budget.token_limit is not None and budget.charged_tokens + required > budget.token_limit and not running):
                         raise InferenceOutputError("The stage token budget cannot admit this request", {"tokens": amount})
                     response = await llm.execute_task(task_id, job_id, job_attempt, request, credentials, client=client,
                         authorize=fresh_authority, authorize_admission=check_local, validate_result=validate, stopped=stopped,
-                        timeout=max(0, dispatch_deadline - time.monotonic()) if dispatch_deadline is not None else None)
+                        timeout=max(0, dispatch_deadline - time.monotonic()) if dispatch_deadline is not None else None,
+                        **({"token_allowance": token_budget} if workflow_budget else {}))
                     if response is not None:
                         continue
                     if time.monotonic() >= until:

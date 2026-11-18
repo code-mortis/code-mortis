@@ -67,7 +67,7 @@ def test_old_ocr_delivery_stops_before_authorization_or_execution(seed, monkeypa
     with transaction() as db:
         job = db.get(Job, "retired-delivery")
         assert job.status == "failed" and job.attempts == 0
-        assert "OCR execution is retired" in job.error
+        assert "This saved review engine is retired" in job.error
         assert job.payload["engine_retirement"]["prior_status"] == "queued"
         run = db.get(ReviewRun, identity)
         assert run.config == config and run.engine == "ocr" and run.report == {"tokens": 31, "saved": True}
@@ -172,7 +172,7 @@ def test_old_ocr_api_retry_rejects_without_mutating_saved_work(seed, client, git
         before = copy.deepcopy((run.config, run.engine, run.status, run.report, run.progress))
         job_ids = set(db.scalars(select(Job.id)))
     response = client.post(f"/api/v1/runs/{identity}/{action}")
-    assert response.status_code == 410 and "OCR execution is retired" in response.text
+    assert response.status_code == 410 and "This saved review engine is retired" in response.text
     with transaction() as db:
         run = db.get(ReviewRun, identity)
         assert (run.config, run.engine, run.status, run.report, run.progress) == before

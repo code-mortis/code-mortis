@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import (
+    EXECUTION_LIMITS,
     engine_snapshot,
     job_live,
     new_engine_snapshot,
@@ -149,12 +150,15 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
                             headers={"Location": f"/api/v1/security/scans/{active.id}", "X-Active-Security-Scan": active.id})
     if parent and (parent.branch != freshness["default_branch"] or parent.head_sha != freshness["head_sha"]):
         raise HTTPException(409, "The default branch changed. Start a new scan instead of retrying the old revision.")
-    config = {"connection": connection_snapshot(connection),
+    workflow = parent is None or parent.config.get("execution_limits") == EXECUTION_LIMITS
+    config = {"connection": connection_snapshot(connection, workflow=workflow),
               "limits": {"timeout_seconds": body.timeout_seconds, "token_budget": body.token_budget,
                          "concurrency": body.concurrency if connection.kind == "api" else 1},
               "policy": security_engine.POLICY, "rating_policy": RATING_POLICY,
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
     config.update(engine_snapshot(parent.config) if parent else new_engine_snapshot(repo.settings))
+    if workflow:
+        config["execution_limits"] = EXECUTION_LIMITS
     if parent is None or "task_contract" in parent.config:
         config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
@@ -167,7 +171,7 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
         if "concurrency" not in body.model_fields_set:
             config["limits"]["concurrency"] = parent.config["limits"].get("concurrency", 1)
         original = {**parent.config, **engine_snapshot(parent.config), "limits": {**parent.config["limits"],
-                    "concurrency": config["limits"]["concurrency"]}}
+                    "concurrency": parent.config["limits"].get("concurrency", 1) if workflow else config["limits"]["concurrency"]}}
         if without_request_timeout(config) != without_request_timeout(original):
             raise HTTPException(409, "Retry must use the original connection, model and limits. Start a new scan to change them.")
     run = SecurityScan(id=uid(), repository_id=repo.id, actor_id=actor.id, connection_id=connection.id,
@@ -606,11 +610,14 @@ def perform(scan_id, claim):
             if connection_busy(db, connection.id, scan_id=scan.id):
                 scan.status = "blocked"
                 raise RunnerBlocked("busy")
-        current_connection = connection_snapshot(connection)
+        workflow = scan.config.get("execution_limits") == EXECUTION_LIMITS
+        current_connection = connection_snapshot(connection, workflow=workflow)
         if any(current_connection[key] != scan.config["connection"][key]
                for key in ("kind", "owner_id", "protocol", "base_url", "provider", "options")):
             raise ValueError("The AI connection changed. Start a new security scan.")
         scan.status, scan.started_at = "running", scan.started_at or now()
+        if workflow:
+            started -= scan.progress.get("execution_seconds", 0)
         scan.progress = {**scan.progress, "execution": claim}
         config, full_name = scan.config, repo.full_name
         credentials = json.loads(unseal(connection.secret))
@@ -654,11 +661,18 @@ def perform(scan_id, claim):
                 if not job.lease_until or job.lease_until < now() + timedelta(seconds=300):
                     job.lease_until = now() + timedelta(seconds=360)
         if limits["timeout_seconds"] is not None and time.monotonic() - started >= limits["timeout_seconds"]:
-            raise TimeoutError("Security scan reached its time limit. Retry with a larger limit.")
+            raise TimeoutError("Security scan reached its time limit. Start a new scan with a larger timeout.")
         return False
 
     def timeout():
-        return max(1, int(limits["timeout_seconds"] - (time.monotonic() - started))) if limits["timeout_seconds"] is not None else None
+        if limits["timeout_seconds"] is None:
+            return None
+        remaining = limits["timeout_seconds"] - (time.monotonic() - started)
+        if workflow:
+            if remaining <= 0:
+                raise TimeoutError("Security scan reached its time limit. Start a new scan with a larger timeout.")
+            return remaining
+        return max(1, int(remaining))
 
     def task_input(task, context, key):
         context = {**context, "language": config.get("language", "English"),
@@ -742,7 +756,8 @@ def perform(scan_id, claim):
                                 or _pat.scan_revoked(db, current, repository_id=current.repository_id)):
                             raise ReviewStopped("The originating security scan permission was revoked.")
                         selected = db.get(Connection, current.connection_id)
-                        if (selected.secret != connection.secret or connection_snapshot(selected) != current_connection):
+                        if (not selected or selected.secret != connection.secret
+                                or connection_snapshot(selected, workflow=workflow) != current_connection):
                             raise ReviewStopped("The shared connection changed during the security scan.")
                         authorize(db, db.get(Repository, current.repository_id), db.get(User, current.actor_id), selected)
 
@@ -752,7 +767,7 @@ def perform(scan_id, claim):
 
             from code_mortis.core.workflow_inference import output_token_policy
 
-            token_policy = output_token_policy(claim.rsplit(":", 1)[0])
+            token_policy = output_token_policy(claim.rsplit(":", 1)[0], config)
             result, usage = security_engine.ask(item, config["connection"], credentials, task, context,
                                                 remaining, timeout(), stopped, uid(),
                                                 infer=infer, source_packing=packing, output_token_policy=token_policy,
@@ -806,7 +821,7 @@ def perform(scan_id, claim):
             with transaction() as db:
                 db.get(SecurityScan, scan_id).coverage = {"inventory": item.inventory, "excluded": item.excluded, "problems": item.problems}
             stage(scan_id, "trivy", "running")
-            result = security_engine.trivy(item, timeout(), stopped)
+            result = security_engine.trivy(item, timeout(), stopped, **({"execution_limits": True} if workflow else {}))
             item.secret_rules = []
             for old in previous:
                 if old["kind"] == "secret":
@@ -1003,6 +1018,8 @@ def perform(scan_id, claim):
                 interrupt_work(row)
                 row.status = "queued"
                 row.progress = {**row.progress, "execution": None}
+                if workflow:
+                    row.progress["execution_seconds"] = time.monotonic() - started
         raise
     except ReviewStopped:
         with transaction() as db:
@@ -1170,7 +1187,8 @@ def public_scan(scan):
             if "problems" in result.report:
                 result.report = {**result.report, "problems": [problem.replace(old, message) if isinstance(problem, str) else problem
                                                              for problem in result.report["problems"]]}
-    result.progress = {key: value for key, value in result.progress.items() if key not in {"tasks", "execution"}}
+    result.progress = {key: value for key, value in result.progress.items()
+                       if key not in {"tasks", "execution", "execution_seconds"}}
     result.progress["work"] = {state: sum(task["status"] == state for task in tasks.values())
                                 for state in ("running", "completed", "failed", "interrupted")}
     result.progress["work"]["reused"] = sum(bool(task.get("reused")) for task in tasks.values())

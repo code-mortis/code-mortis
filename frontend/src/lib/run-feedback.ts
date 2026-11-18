@@ -1,5 +1,5 @@
 import type { Run } from "../api";
-import { resultDeliveryFeedback } from "./error-feedback";
+import { engineDiagnostic, resultDeliveryFeedback } from "./error-feedback";
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -66,7 +66,7 @@ export function assessmentFeedback(error: string, stage: "assessment" | "verific
   if (/OCR evidence prompt exceeds|Context limit exhausted|Assessment needs .* bytes|Token budget exhausted|No token budget remains/.test(message)) {
     const limit = message.split(" Technical details:", 1)[0];
     return { title: `${name} limit reached`, message: limit.length <= 240 && !/[{}]/.test(limit)
-      ? limit : `The ${stage} could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review.` };
+      ? engineDiagnostic(limit) : `The ${stage} could not continue within the configured limits. Review the prompt ceiling and run budget before starting another review.` };
   }
   if (/Assessment timed out|Time limit reached/.test(message)) {
     return { title: `${name} timed out`, message: `The time limit was reached before this ${stage} finished. Review the run's timeout before starting another review.` };
@@ -84,7 +84,7 @@ export function assessmentFeedback(error: string, stage: "assessment" | "verific
     return { title: "AI request could not complete", message: `The selected AI service could not complete this ${stage}. Check the connection and technical details before trying again.` };
   }
   return { title: `${name} could not be completed`, message: error.length <= 240 && !/[{}]/.test(error)
-    ? error : `No usable ${stage} was saved. Inspect the technical details before starting another review.` };
+    ? engineDiagnostic(error) : `No usable ${stage} was saved. Inspect the technical details before starting another review.` };
 }
 
 export function runFeedback(run: Run) {
@@ -206,7 +206,7 @@ export function runFeedback(run: Run) {
   }
   const needsAttention = ["failed", "partial", "skipped", "blocked", "cancelled", "superseded"].includes(run.status)
     || !!run.blocked_reason || ["failed", "partially_published"].includes(run.publication);
-  return { summary, nextStep, destination, publicationLabel, publicationDetail, needsAttention };
+  return { summary: engineDiagnostic(summary), nextStep, destination, publicationLabel, publicationDetail, needsAttention };
 }
 
 export function fileFeedback(run: Run) {
@@ -226,7 +226,7 @@ export function fileFeedback(run: Run) {
   const seen = new Set<string>();
   return items.filter((item) => text(item.path)).map((item) => ({
     path: text(item.path),
-    reason: text(item.message) || text(item.reason) || reasons[text(item.exclude_reason)] || "This file was not reviewed. Inspect the coverage report for details.",
+    reason: engineDiagnostic(text(item.message) || text(item.reason) || reasons[text(item.exclude_reason)] || "This file was not reviewed. Inspect the coverage report for details."),
   })).filter((item) => {
     if (seen.has(item.path)) return false;
     seen.add(item.path);

@@ -178,13 +178,15 @@ def test_background_uses_exact_snapshot_redaction_and_shared_ledger(seed, github
         wire.append(json.loads(request.content))
         return httpx.Response(200, json=wire_result("openai", content='{"background":"A Python service."}'))
 
-    from code_mortis.integrations import llm_http
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
     with transaction() as db:
         repo = db.get(Repository, 22)
         repo.settings = {"exclusions": "private/**", "background": "Original"}
-        job = background.enqueue(db, repo, db.get(User, 7), seed["connection"], "",
+        connection = db.get(type(seed["connection"]), "connection")
+        connection.options = {"prompt_token_ceiling": 50_000, "timeout_sec": 5}
+        job = background.enqueue(db, repo, db.get(User, 7), connection, "",
                                  RunLimits(token_budget=60_000, timeout_seconds=None))
         job_id = job.id
         job.payload = {**job.payload, "analysis_engine": "mortis"}
