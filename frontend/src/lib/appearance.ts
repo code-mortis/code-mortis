@@ -81,22 +81,23 @@ const importedThemes = [
 ] as const satisfies readonly { id: string; label: string; light: Palette; dark: Palette }[];
 
 export const themes = [
+  // The site's ember orange and cream, adapted for long reading sessions.
   { id: "code-mortis", label: "Code Mortis", light: {
-    "--background": "#ffffff", "--foreground": "#202c26", "--card": "#ffffff", "--card-foreground": "#202c26",
-    "--popover": "#ffffff", "--popover-foreground": "#202c26", "--primary": "#245944", "--primary-foreground": "#ffffff",
-    "--secondary": "#e9eee8", "--secondary-foreground": "#254533", "--muted": "#eef0ec", "--muted-foreground": "#606a62",
-    "--accent": "#e1ebe2", "--accent-foreground": "#173e2a", "--destructive": "#b32d37", "--destructive-foreground": "#ffffff",
-    "--border": "#dce1d9", "--input": "#c5cec3", "--ring": "#377c59",
-    "--code-keyword": "#6639a6", "--code-string": "#245944", "--code-number": "#924808", "--code-function": "#125d8a",
-    "--code-added": "#18472c", "--code-added-background": "#e5f1e7", "--code-removed": "#8c2530", "--code-removed-background": "#fbeaec",
+    "--background": "#f8f5ef", "--foreground": "#342d2b", "--card": "#fffdf9", "--card-foreground": "#342d2b",
+    "--popover": "#fffdf9", "--popover-foreground": "#342d2b", "--primary": "#a04226", "--primary-foreground": "#fffdf9",
+    "--secondary": "#ede6df", "--secondary-foreground": "#463a36", "--muted": "#f0ebe3", "--muted-foreground": "#6e635e",
+    "--accent": "#f4e5db", "--accent-foreground": "#883b26", "--destructive": "#a2384d", "--destructive-foreground": "#fffdf9",
+    "--border": "#dfd7cd", "--input": "#918074", "--ring": "#b3593e",
+    "--code-keyword": "#a04226", "--code-string": "#506337", "--code-number": "#82581f", "--code-function": "#2a6761",
+    "--code-added": "#415733", "--code-added-background": "#e8eddf", "--code-removed": "#913049", "--code-removed-background": "#f8e7eb",
   }, dark: {
-    "--background": "#17201c", "--foreground": "#e8eee9", "--card": "#1e2923", "--card-foreground": "#e8eee9",
-    "--popover": "#25322b", "--popover-foreground": "#e8eee9", "--primary": "#a2d1aa", "--primary-foreground": "#163021",
-    "--secondary": "#293a2f", "--secondary-foreground": "#d0e6d3", "--muted": "#25312a", "--muted-foreground": "#a7b6ab",
-    "--accent": "#304a39", "--accent-foreground": "#ddf0df", "--destructive": "#ff9b9b", "--destructive-foreground": "#17201c",
-    "--border": "#35433a", "--input": "#53685a", "--ring": "#95c9a5",
-    "--code-keyword": "#d9b8ff", "--code-string": "#a2d1aa", "--code-number": "#efc28d", "--code-function": "#9ad9f5",
-    "--code-added": "#b9e4c4", "--code-added-background": "#243e2e", "--code-removed": "#ffc1c7", "--code-removed-background": "#4a292d",
+    "--background": "#252329", "--foreground": "#ece6df", "--card": "#2b2830", "--card-foreground": "#ece6df",
+    "--popover": "#312d36", "--popover-foreground": "#ece6df", "--primary": "#f09474", "--primary-foreground": "#252329",
+    "--secondary": "#37313b", "--secondary-foreground": "#e2d8df", "--muted": "#302c34", "--muted-foreground": "#b6acb6",
+    "--accent": "#403039", "--accent-foreground": "#f5b39c", "--destructive": "#f08d9c", "--destructive-foreground": "#252329",
+    "--border": "#443e49", "--input": "#867b88", "--ring": "#de937d",
+    "--code-keyword": "#f2a286", "--code-string": "#bacb9b", "--code-number": "#dbbd88", "--code-function": "#9ccbc5",
+    "--code-added": "#c5d6ac", "--code-added-background": "#333a31", "--code-removed": "#f4b9c2", "--code-removed-background": "#422e38",
   } },
   ...importedThemes.map(({ id, label, light, dark }) => ({ id, label, light: tokens(light), dark: tokens(dark) })),
 ] as const satisfies readonly { id: string; label: string; light: ThemeTokens; dark: ThemeTokens }[];
