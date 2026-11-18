@@ -39,12 +39,13 @@ function Metrics({ items }: { items: { label: string; value: ReactNode }[] }) {
   </dl>;
 }
 
-function UsageTable({ title, rows, onRepository }: { title: string; rows: Schema["AnalyticsUsageGroup"][]; onRepository?: (id: number) => void }) {
-  return <AnalyticsPanel title={title} description={onRepository ? "Averages include fully reported samples only. Counts beneath each average show its denominator." : "Saved execution settings, including summary retry overrides. Uncertain historical settings are shown as not recorded."}>
-    <DataTable label={title} headings={[onRepository ? "Repository" : title === "Usage by model" ? "Model" : "Effort", "Reported tokens", "Missing reports", ...(onRepository ? ["Mean / run", "Mean / reviewed PR"] : [])]}
-      rows={rows.map((row) => [row.repository_id != null && onRepository ? <button className="rounded-sm text-left font-medium text-primary underline-offset-4 hover:underline" onClick={() => onRepository(row.repository_id!)}>{row.key}</button> : row.key,
+function UsageTable({ title, rows }: { title: string; rows: Schema["AnalyticsUsageGroup"][] }) {
+  const byRepository = title === "Usage by repository";
+  return <AnalyticsPanel title={title} description={byRepository ? "Averages include fully reported samples only. Counts beneath each average show its denominator." : "Saved execution settings, including summary retry overrides. Uncertain historical settings are shown as not recorded."}>
+    <DataTable label={title} headings={[byRepository ? "Repository" : title === "Usage by model" ? "Model" : "Effort", "Reported tokens", "Missing reports", ...(byRepository ? ["Mean / run", "Mean / reviewed PR"] : [])]}
+      rows={rows.map((row) => [row.key,
         number(row.usage.tokens), number(row.usage.missing_reports),
-        ...(onRepository ? [
+        ...(byRepository ? [
         <><span>{number(row.usage.mean_per_run)}</span><span className="mt-1 block text-xs text-muted-foreground">{number(row.usage.complete_runs)} runs</span></>,
         <><span>{number(row.usage.mean_per_reviewed_pr)}</span><span className="mt-1 block text-xs text-muted-foreground">{number(row.usage.reviewed_pr_samples)} PRs</span></>,
         ] : []),
@@ -52,7 +53,7 @@ function UsageTable({ title, rows, onRepository }: { title: string; rows: Schema
   </AnalyticsPanel>;
 }
 
-export default function Analytics() {
+export default function Analytics({ repository }: { repository: Pick<Schema["RepositoryOut"], "id" | "full_name"> }) {
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useUrlTab("tab", [...analyticsTabs], "overview");
   const range = analyticsRange(params);
@@ -64,11 +65,11 @@ export default function Analytics() {
     next.set("end", range.end);
     setParams(next, { replace: true });
   }, [params, setParams, range.period, range.error, range.start, range.end]);
-  const repositories = useApi<Schema["RepositoryOut"][]>("/repositories");
   const valid = !range.error;
   const orderings = { count: tab === "usage" ? "Tokens" : "Count", key: "Name" };
   const ordering = normalizeOrdering(params.get("ordering"), orderings, "-count");
   const baseParams = new URLSearchParams(range.query);
+  baseParams.set("repo", String(repository.id));
   baseParams.set("ordering", ordering);
   const base = baseParams.toString();
   const findingQuery = new URLSearchParams(base);
@@ -105,15 +106,14 @@ export default function Analytics() {
     }
     setParams(next);
   }
-  const selectRepository = (id: number) => change("repo", [String(id)]);
   const empty = scope && (tab === "overview" ? !overview.data?.findings && !overview.data?.trend.some((point) => point.runs)
     : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs
     : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
-    <PageTitle title="Analytics">Understand review activity, security findings, and reported usage.</PageTitle>
+    <PageTitle title="Overview">{repository.full_name} · Review activity, security findings, and reported usage.</PageTitle>
     <div role="group" aria-label="Analytics filters">
-      <FilterBar filters={[{ key: "repo", label: "Repository", values: params.getAll("repo"), choices: (query.error || repositories.error ? [] : repositories.data ?? []).map((repo) => ({ value: String(repo.id), name: repo.full_name })), searchPlaceholder: "Find a repository…" }]} onChange={change}>
+      <FilterBar filters={[]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
         { value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }, { value: "90", label: "Last 90 days" }, { value: "all", label: "All time" }, { value: "custom", label: "Custom dates" },
       ]} /></div>
@@ -124,11 +124,11 @@ export default function Analytics() {
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Analytics views">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
       <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{{
-        overview: "Review activity, findings, and resolution for the selected repositories and period.",
+        overview: "Review activity, findings, and resolution for this repository and the selected period.",
         findings: "Explore findings by severity, category, and current resolution status.",
         reviews: "Review outcomes, execution time, validated file coverage, assessments, and contributor activity.",
         usage: "Token usage by stage, repository, model, and effort, with averages per run and reviewed PR.",
-        security: "Security scan activity and unique findings first detected in the selected repositories and period.",
+        security: "Security scan activity and unique findings first detected in this repository and the selected period.",
       }[tab]}</p>
       <div className="min-w-0 space-y-6">
       {tab === "findings" && scope && scope.repositories.length > 0 && !empty && findings.data && <div role="status"><Metrics items={[
@@ -144,8 +144,8 @@ export default function Analytics() {
       ]} onChange={change}>
         {["severity", "category", "status"].some((key) => params.has(key)) && <Button variant="ghost" onClick={() => { const next = new URLSearchParams(params); ["severity", "category", "status"].forEach((key) => next.delete(key)); setParams(next); }}>Clear finding filters</Button>}
       </FilterBar></div>}
-      {range.error ? <ErrorNotice error={range.error} /> : query.error ? <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry analytics</Button><Button variant="ghost" onClick={() => change("repo", [])}>Clear repository selection</Button></div> : query.isPending ? <Loading /> : <>
-        {scope && !scope.repositories.length ? <Empty title="No repositories available">Analytics includes repositories you can currently access. <Link className="underline underline-offset-4" to="/settings?tab=github">Manage GitHub connections</Link>.</Empty> : empty ? <Empty title={tab === "findings" ? "No findings recorded in this period" : tab === "security" ? "No security activity in this period" : "No review activity in this period"}>Choose a wider date range or another repository. No findings does not establish complete review coverage.<Button variant="outline" className="mt-4" onClick={() => setPeriod("all")}>View all time</Button></Empty> : <>
+      {range.error ? <ErrorNotice error={range.error} /> : query.error ? <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry analytics</Button></div> : query.isPending ? <Loading /> : <>
+        {scope && !scope.repositories.length ? <Empty title="No repositories available">This repository is unavailable. <Link className="underline underline-offset-4" to="/settings?tab=github">Manage GitHub connections</Link>.</Empty> : empty ? <Empty title={tab === "findings" ? "No findings recorded in this period" : tab === "security" ? "No security activity in this period" : "No review activity in this period"}>Choose a wider date range. No findings does not establish complete review coverage.<Button variant="outline" className="mt-4" onClick={() => setPeriod("all")}>View all time</Button></Empty> : <>
           {tab === "overview" && overview.data && <>
             <Metrics items={[
               { label: "PRs reviewed", value: number(overview.data.reviewed_prs) },
@@ -155,8 +155,8 @@ export default function Analytics() {
             ]} />
             <TrendChart title="Review activity" description="Runs are grouped by creation date; findings by first detection. One PR can have several runs." data={overview.data.trend} keys={["runs", "findings"]} />
             <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="Severity" description="Explore findings first detected in this period." data={overview.data.severities} severity onSelect={(value) => findingFilter("severity", value)} /><BreakdownChart title="Categories" description="Saved finding classifications, including custom categories." data={overview.data.categories} onSelect={(value) => findingFilter("category", value)} /></div>
-            <AnalyticsPanel title="Top repositories" description="Up to five repositories with the most reviewed PRs. Select one to narrow this page.">
-              <DataTable label="Top repositories" headings={["Repository", "PRs reviewed", "Findings", "Resolved"]} rows={overview.data.repositories.map((repo) => [<button className="rounded-sm text-left font-medium text-primary hover:underline underline-offset-4" onClick={() => selectRepository(repo.id)}>{repo.name}</button>, number(repo.reviewed_prs), number(repo.findings), <>{number(repo.resolved)}<span className="mt-1 block text-xs text-muted-foreground">{percent(repo.resolved, repo.findings)}</span></>])} />
+            <AnalyticsPanel title="Repository" description="Saved review activity in this repository.">
+              <DataTable label="Repository" headings={["Repository", "PRs reviewed", "Findings", "Resolved"]} rows={overview.data.repositories.map((repo) => [repo.name, number(repo.reviewed_prs), number(repo.findings), <>{number(repo.resolved)}<span className="mt-1 block text-xs text-muted-foreground">{percent(repo.resolved, repo.findings)}</span></>])} />
             </AnalyticsPanel>
           </>}
           {tab === "findings" && findings.data && <>
@@ -186,7 +186,7 @@ export default function Analytics() {
             ]} />
             <TrendChart title="Token usage" description="Saved consumption attributed to each run’s creation date, including its retries. Gaps mean no known usage; partial totals remain identified in the data table." data={usage.data.trend} keys={["tokens"]} />
             <AnalyticsPanel title="Usage by stage" description="Each saved consumption record is counted once."><DataTable label="Usage by stage" headings={["Stage", "Reported tokens", "Missing reports"]} rows={usage.data.stages.map((row) => [label(row.key), number(row.usage.tokens), number(row.usage.missing_reports)])} /></AnalyticsPanel>
-            <UsageTable title="Usage by repository" rows={usage.data.repositories} onRepository={selectRepository} /><UsageTable title="Usage by model" rows={usage.data.models} /><UsageTable title="Usage by effort" rows={usage.data.efforts} />
+            <UsageTable title="Usage by repository" rows={usage.data.repositories} /><UsageTable title="Usage by model" rows={usage.data.models} /><UsageTable title="Usage by effort" rows={usage.data.efforts} />
           </>}
           {tab === "security" && security.data && <>
             <Metrics items={[
@@ -209,10 +209,10 @@ export default function Analytics() {
     </div>
     <details className="border-t pt-4 text-xs leading-relaxed text-muted-foreground"><summary className="cursor-pointer rounded-sm font-medium text-foreground">About these metrics</summary><div className="mt-3 max-w-[75ch] space-y-2">
       {tab === "security" ? <>
-        <p>Security analytics includes saved repository scans and unique findings in repositories you can currently access. Scans use their creation date; findings use their first detection date. Retried scans count as separate scans.</p>
+        <p>Security analytics includes saved repository scans and unique findings in this repository. Scans use their creation date; findings use their first detection date. Retried scans count as separate scans.</p>
         <p>Open and resolved counts describe the current state of findings first detected in the selected period, not the entire backlog. Reopening changes these counts. Accepted risk and false positives remain separate; absence from a later scan never establishes a fix.</p>
       </> : <>
-      <p>Analytics includes saved history for open, merged, closed, and ignored pull requests in repositories you can currently access. Review runs use their creation date; findings use the date they were first detected.</p>
+      <p>Analytics includes saved history for open, merged, closed, and ignored pull requests in this repository. Review runs use their creation date; findings use the date they were first detected.</p>
       <p>Resolved means the confirmed current status of findings first detected in the selected period. Reopening changes this count. A resolved thread is not necessarily a verified bug fix; dismissal and absence from later reviews do not count as resolution.</p>
       <p>Reported tokens are saved consumption, not billing estimates. Missing reports, reservations, and ambiguous legacy values are excluded. Run and PR averages use fully reported samples. Models and effort come from saved execution settings, including summary retries.</p>
       </>}

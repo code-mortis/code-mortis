@@ -2,6 +2,7 @@ import { AssessmentStatus as CandidateStatus } from "./components/assessment-sta
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
+import { useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { useRunPages, useRunResource } from "./hooks/use-run-resource";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
@@ -133,7 +134,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const denied = repos.error && [401, 403].includes(repos.error.status);
   const available = denied ? [] : repos.data;
   const selected = requested ? available?.find((repo) => String(repo.id) === requested) : available?.[0];
-  const action = useAction();
+  const { sync: action } = useWorkspaceNavigation();
   const target = requested ?? selected?.id;
   if (target && (!repositoryId || params.has("repo") || params.has("configure"))) {
     const search = new URLSearchParams(params);
@@ -144,14 +145,14 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}${configure || legacyConfigure ? "/settings" : ""}`, search: search.toString(), hash: legacyConfigure ? "" : location.hash }} state={location.state} replace />;
   }
   if (repos.isPending) return <Loading />;
-  if (repos.error && (!repos.data || denied)) return <ErrorNotice error={repos.error} />;
+  if (repos.error && (!repos.data || denied)) return <div className="space-y-3"><ErrorNotice error={repos.error} /><Button variant="outline" onClick={() => repos.refetch()}>Retry repositories</Button></div>;
   const repositoryPath = `/repositories/${requested ?? selected?.id}`;
   const returnSearch = new URLSearchParams(params);
   if (configure) returnSearch.delete("tab");
   const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
   if (configure) {
     if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
-    return <RepositorySettings key={selected.id} repository={selected} />;
+    return <>{repos.error && <div className="mb-4 space-y-3"><ErrorNotice error={repos.error} /><Button variant="outline" onClick={() => repos.refetch()}>Retry repositories</Button></div>}<RepositorySettings key={selected.id} repository={selected} /></>;
   }
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
@@ -186,6 +187,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
       </section>}
     </div>
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
+    {repos.error && <Button variant="outline" className="mb-4" onClick={() => repos.refetch()}>Retry repositories</Button>}
     {requested && !selected && <Empty title="Repository unavailable">
       This repository was not found or you no longer have access. <Link className="underline" to="/repositories">View available repositories</Link>.
     </Empty>}

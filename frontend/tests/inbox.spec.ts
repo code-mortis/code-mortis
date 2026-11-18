@@ -223,9 +223,7 @@ test("unified loading, sharing, detail return and legacy bounds", async ({ page 
   await active.getByRole("link").first().click();
   await expect(page.getByRole("heading", { name: `#42 ${titles[0]}`, exact: true })).toBeVisible();
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/?state=open&state=merged&all_pages=2");
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).not.toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/code-mortis", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
   await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
   await expect(page).toHaveURL(/all_pages=2/);
@@ -473,9 +471,8 @@ test("shared combined filters and a search with no matches", async ({ page }) =>
   const { requests } = await mockInbox(page);
   await page.goto("/?repo=22&state=open&review=running&author=maria&findings=open&visibility=all");
   await expect(page.getByRole("status").first()).toHaveText("1 pull request · 1 repository");
-  if (test.info().project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true })).toHaveAccessibleDescription("6 open pull requests");
-  if (test.info().project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
+  await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
+  await expect(page.locator('[data-slot="sidebar-trigger"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Edit Review status/ })).toContainText("Running");
   await expect(page.getByRole("button", { name: /Edit Author/ })).toContainText("@maria");
   await expect(page.getByRole("button", { name: /Edit Open findings/ })).toContainText("Has open findings");

@@ -1,129 +1,48 @@
-import { Fragment } from "react";
-import { Link, useLocation, useMatch } from "react-router-dom";
-import { Moon, Sun } from "lucide-react";
-import { useApi, type Repository, type Schema } from "../api";
-import { getInboxReturn } from "../lib/inbox-filters";
-import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Building2, FolderGit2, Moon, Settings, Sun } from "lucide-react";
+import type { Schema } from "../api";
+import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
+import { Brand } from "./brand";
+import logo from "../assets/logo.svg";
+import { AccountMenu } from "./account-menu";
 import { SidebarToggle } from "./app-sidebar";
+import { SearchSelect } from "./search-select";
 import { Button } from "./ui/button";
-import {
-  Breadcrumb, BreadcrumbEllipsis, BreadcrumbItem, BreadcrumbLink,
-  BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
-} from "./ui/breadcrumb";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
 
-type Crumb = { label: string; to: string; state?: { inbox: string | null; repository: string | null } };
-
-export function AppHeader({ admin, dark, onToggleTheme }: {
-  admin: boolean;
-  dark: boolean;
-  onToggleTheme: () => void;
+export function AppHeader({ user, onLogout, signingOut, dark, onToggleTheme }: {
+  user: Schema["UserOut"]; onLogout: () => void; signingOut: boolean; dark: boolean; onToggleTheme: () => void;
 }) {
   const route = useLocation();
-  const path = route.pathname.replace(/\/$/, "") || "/";
-  const params = new URLSearchParams(route.search);
-  const inboxReturn = getInboxReturn(route.state);
-  const repositoryReturn = getRepositoryReturn(route.state);
-  const detailPath = getDetailPath(route.pathname);
-  const detail = useApi<Pick<Schema["PRDetail"], "repository" | "pull_request">>(detailPath ?? "", false, !!detailPath);
-  const securityScanRoute = useMatch("/security/scans/:scanId");
-  const securityRepositoryRoute = useMatch("/security/repositories/:repositoryId");
-  const securityPath = securityScanRoute ? `/security/scans/${securityScanRoute.params.scanId}`
-    : securityRepositoryRoute ? `/security/repositories/${securityRepositoryRoute.params.repositoryId}` : null;
-  const securityDetail = useApi<Pick<Schema["SecurityRepositoryOut"], "repository">>(securityPath ?? "", false, !!securityPath);
-  const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
-  const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute;
-  const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
-  const crumbs: Crumb[] = [{ label: "Inbox", to: inboxReturn ?? "/" }];
-
-  if (path === "/repositories" || repositoryRoute) {
-    const repository = repos.error ? undefined : repos.data?.find((repo) => String(repo.id) === repositoryRoute?.params.repositoryId);
-    const search = new URLSearchParams(params);
-    search.delete("tab");
-    const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
-    const returnPath = repositorySettingsRoute && repositoryReturn?.split("?")[0] === repositoryPath
-      ? repositoryReturn : repositoryPath + (search.size ? `?${search}` : "");
-    crumbs.push({ label: repository?.full_name || "Repositories", to: returnPath });
-    if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path + route.search });
-  } else if (detailPath) {
-    if (detail.data && !detail.error) {
-      const { repository, pull_request: pull } = detail.data;
-      const repositoryPath = `/repositories/${repository.id}`;
-      crumbs.push({ label: repository.full_name, to: repositoryReturn?.split("?")[0] === repositoryPath ? repositoryReturn : repositoryPath });
-      crumbs.push({ label: `Pull request #${pull.number}`, to: `/pulls/${pull.id}`, state: { inbox: inboxReturn, repository: repositoryReturn } });
-    } else if (path.startsWith("/pulls/")) {
-      crumbs.push({ label: "Pull request", to: path });
-    }
-    if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
-  } else if (path.startsWith("/security")) {
-    const repository = securityDetail.error ? undefined : securityDetail.data?.repository;
-    crumbs.push({ label: "Security", to: "/security" });
-    if (path.startsWith("/security/repositories/")) crumbs.push({ label: repository?.full_name || "Repository security", to: path + route.search });
-    if (path.startsWith("/security/scans/")) {
-      if (repository) crumbs.push({ label: repository.full_name, to: `/security/repositories/${repository.id}` });
-      crumbs.push({ label: "Security scan", to: path + route.search });
-    }
-  } else if (path === "/analytics") {
-    crumbs.push({ label: "Analytics", to: path + route.search });
-  } else if (path === "/mcp/authorize") {
-    crumbs.push({ label: "Agent authorization", to: path + route.search });
-  } else if (path.startsWith("/mcp/approvals/")) {
-    crumbs.push({ label: "Review action", to: path });
-  } else if (path === "/settings/api-tokens/new") {
-    crumbs.push({ label: "Settings", to: "/settings" });
-    crumbs.push({ label: "API tokens", to: "/settings?tab=api-tokens" });
-    crumbs.push({ label: "New token", to: path });
-  } else if (path === "/settings") {
-    const tab = params.get("tab") === "appearance" || params.get("tab") === "mcp" || params.get("tab") === "api-tokens" || admin ? params.get("tab") : null;
-    crumbs.push({ label: "Settings", to: "/settings" });
-    const tabLabels = new Map([["api-tokens", "API tokens"], ["mcp", "MCP access"], ["github", "GitHub"], ["team", "Team"], ["appearance", "Appearance"]]);
-    crumbs.push({ label: tabLabels.get(tab ?? "") ?? "AI connections", to: path + route.search });
-  } else if (path !== "/") {
-    crumbs.push({ label: "Page not found", to: path });
-  }
-
-  const current = crumbs.at(-1)!;
-  const ancestors = crumbs.slice(0, -1);
+  const navigate = useNavigate();
+  const { directory, organizations, repositories, organization, repository } = useWorkspaceNavigation();
   const themeLabel = dark ? "Switch to light mode" : "Switch to dark mode";
-
-  return <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background px-4 sm:gap-3 sm:px-8">
-    <SidebarToggle />
-    <Breadcrumb aria-label="Breadcrumb" className="min-w-0 flex-1">
-      <BreadcrumbList className="flex-nowrap">
-        {ancestors.map((crumb, index) => <Fragment key={crumb.to}>
-          <BreadcrumbItem className={index === 0 ? "shrink-0" : "hidden min-w-0 sm:inline-flex"}>
-            <BreadcrumbLink asChild className="truncate rounded-sm" title={crumb.label}>
-              <Link to={crumb.to} state={crumb.state}>{crumb.label}</Link>
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator className={index === 0 ? "shrink-0" : "hidden shrink-0 sm:block"} />
-        </Fragment>)}
-        {ancestors.length > 1 && <>
-          <BreadcrumbItem className="sm:hidden">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Show breadcrumb ancestors"><BreadcrumbEllipsis /></Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="max-w-[calc(100vw-2rem)]">
-                {ancestors.slice(1).map((crumb) => <DropdownMenuItem asChild key={crumb.to}>
-                  <Link to={crumb.to} state={crumb.state} className="break-all">{crumb.label}</Link>
-                </DropdownMenuItem>)}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator className="shrink-0 sm:hidden" />
-        </>}
-        <BreadcrumbItem className={ancestors.length > 1 && !securityRepositoryRoute ? "min-w-0 sm:shrink-0" : "min-w-0"}>
-          <BreadcrumbPage className="truncate font-medium" title={current.label}>{current.label}</BreadcrumbPage>
-        </BreadcrumbItem>
-      </BreadcrumbList>
-    </Breadcrumb>
-    <Button variant="ghost" size="icon" onClick={onToggleTheme} aria-label={themeLabel} title={themeLabel}
-      className="relative ml-auto overflow-hidden rounded-full bg-muted text-primary hover:bg-accent motion-reduce:transition-none">
-      <Sun aria-hidden="true" className="size-[18px] rotate-0 scale-100 transition-transform duration-200 ease-out dark:-rotate-90 dark:scale-0 motion-reduce:transition-none" />
-      <Moon aria-hidden="true" className="absolute size-[18px] rotate-90 scale-0 transition-transform duration-200 ease-out dark:rotate-0 dark:scale-100 motion-reduce:transition-none" />
-    </Button>
+  const available = repositories.filter((repo) => (repo.full_name.split("/")[0]).toLowerCase() === organization?.toLowerCase());
+  return <header className="sticky top-0 z-20 border-b bg-background px-4 sm:px-8">
+    <div className="flex min-h-14 min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+      {repository && <SidebarToggle />}
+      <Link to="/" aria-label="Code Mortis home" className="shrink-0 rounded-md">
+        <span className="hidden lg:block"><Brand /></span><img src={logo} alt="" className="h-7 w-auto lg:hidden" width="232" height="192" />
+      </Link>
+      <nav aria-label="Workspace" className="order-last flex w-full min-w-0 gap-2 pb-3 sm:order-none sm:w-auto sm:flex-1 sm:pb-0">
+        <SearchSelect aria-label="Organization" value={organization ?? "__workspace__"} placeholder="Workspace" disabled={directory.isPending || !!directory.error}
+          className="w-40 flex-1 sm:flex-none lg:w-44" options={[
+            { value: "__workspace__", label: "Workspace", icon: <Building2 aria-hidden="true" className="size-4" /> },
+            ...organizations.map((name) => ({ value: name, label: name, icon: <Building2 aria-hidden="true" className="size-4" /> })),
+          ]} onChange={(name) => { if (name) navigate(name === "__workspace__" ? "/" : `/organizations/${encodeURIComponent(name)}/repositories`); }} />
+        {organization && <SearchSelect aria-label="Repository" value={repository ? String(repository.id) : ""} placeholder="Choose repository"
+          disabled={directory.isPending || !!directory.error || !available.length} className="w-40 flex-1 sm:flex-none lg:w-44"
+          options={available.map((repo) => ({ value: String(repo.id), label: repo.full_name.split("/").slice(1).join("/") || repo.full_name, icon: <FolderGit2 aria-hidden="true" className="size-4" /> }))}
+          onChange={(id) => { if (id) navigate(`/repositories/${id}/overview`); }} />}
+      </nav>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        <Button variant="ghost" size="icon" onClick={onToggleTheme} aria-label={themeLabel} title={themeLabel}
+          className="relative overflow-hidden rounded-full bg-muted text-primary hover:bg-accent motion-reduce:transition-none">
+          <Sun aria-hidden="true" className="size-[18px] rotate-0 scale-100 transition-transform duration-200 ease-out dark:-rotate-90 dark:scale-0 motion-reduce:transition-none" />
+          <Moon aria-hidden="true" className="absolute size-[18px] rotate-90 scale-0 transition-transform duration-200 ease-out dark:rotate-0 dark:scale-100 motion-reduce:transition-none" />
+        </Button>
+        <Button asChild variant="ghost" size="icon"><Link to="/settings" aria-label="Settings" title="Settings" aria-current={route.pathname.startsWith("/settings") ? "page" : undefined}><Settings aria-hidden="true" /></Link></Button>
+        <AccountMenu user={user} onLogout={onLogout} signingOut={signingOut} />
+      </div>
+    </div>
   </header>;
 }
