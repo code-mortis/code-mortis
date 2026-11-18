@@ -15,9 +15,6 @@ body: |-
   {
     "connection_id": "$connection_id",
     "model": "$model",
-    "concurrency": 1,
-    "timeout_seconds": 900,
-    "token_budget": 200000,
     "request_key": "$random.uuid"
   }
 body_type: json

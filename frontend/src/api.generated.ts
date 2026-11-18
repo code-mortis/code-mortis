@@ -3788,6 +3788,7 @@ export interface components {
             /** Connection Id */
             connection_id?: string | null;
             settings?: components["schemas"]["RepoSettings"];
+            scan_settings?: components["schemas"]["ScanSettings"] | null;
         };
         /** RepositoryOut */
         RepositoryOut: {
@@ -3817,6 +3818,7 @@ export interface components {
              */
             connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettings"];
+            scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs
              * @default 0
@@ -4046,6 +4048,18 @@ export interface components {
              * @default 10
              */
             page_size: number;
+        };
+        /** ScanSettings */
+        ScanSettings: {
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
+            /**
+             * Concurrency
+             * @default 4
+             */
+            concurrency: number;
         };
         /** SecurityActivityOut */
         SecurityActivityOut: {
@@ -4486,12 +4500,20 @@ export interface components {
             /** Activity */
             activity: components["schemas"]["SecurityActivityOut"][];
         };
-        /** SecurityScanInput */
+        /**
+         * SecurityScanInput
+         * @description Use saved limits by default. Explicit limits are supported for existing API clients.
+         */
         SecurityScanInput: {
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /** Token Budget */
             token_budget?: number | null;
+            /**
+             * Concurrency
+             * @description Legacy override. Omit to use saved limits.
+             */
+            concurrency?: number;
             /** Connection Id */
             connection_id: string;
             /**
@@ -4499,11 +4521,6 @@ export interface components {
              * @default
              */
             model: string;
-            /**
-             * Concurrency
-             * @default 4
-             */
-            concurrency: number;
             /** Request Key */
             request_key: string;
         };

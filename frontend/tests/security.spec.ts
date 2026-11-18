@@ -568,33 +568,20 @@ test("repository security badges put the state shield before Security and the gr
   expect(writes).toHaveLength(0);
 });
 
-test("scan dialog uses existing connection and configurable concurrency without enabling PR reviews", async ({ page }, info) => {
+test("scan dialog uses repository limits without enabling PR reviews", async ({ page }, info) => {
   const writes = await mock(page);
   await page.goto("/security/repositories/22");
   await page.getByRole("button", { name: "Run scan", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Run security scan" });
-  await expect(dialog).toContainText("Scan the full default branch with Mortis and Trivy.");
-  await expect(dialog.getByRole("checkbox", { name: "Unlimited token budget" })).toBeChecked();
-  await expect(dialog.getByRole("checkbox", { name: "Unlimited timeout" })).toBeChecked();
-  const concurrency = dialog.getByRole("spinbutton", { name: "Concurrent tasks" });
-  await expect(dialog.getByText(/independent finding assessments at a time/)).toBeVisible();
-  await expect(concurrency).toHaveValue("4");
-  await concurrency.fill("9");
-  await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
-  expect(writes).toHaveLength(0);
-  await concurrency.fill("4");
-  await dialog.getByRole("checkbox", { name: "Unlimited token budget" }).check();
-  await expect(dialog.getByRole("spinbutton", { name: "Token budget" })).toBeDisabled();
-  await dialog.getByRole("checkbox", { name: "Unlimited token budget" }).uncheck();
-  await dialog.getByRole("spinbutton", { name: "Token budget" }).fill("250000");
-  await dialog.getByRole("checkbox", { name: "Unlimited timeout" }).uncheck();
-  await dialog.getByRole("spinbutton", { name: "Timeout (seconds)" }).fill("1200");
+  await expect(dialog).toContainText("This uses the repository’s scan limits and the selected AI connection.");
+  await expect(dialog.getByRole("spinbutton")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: `/private/tmp/code-mortis-security-concurrency-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath("security-scan-launch.png"), fullPage: true });
   await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
   await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0].body).toMatchObject({ connection_id: "connection", model: "test-model", token_budget: 250000, timeout_seconds: 1200, concurrency: 4 });
-  expect(String(writes[0].body.request_key).length).toBeGreaterThan(16);
+  expect(writes[0]).toEqual({ path: "/security/repositories/22/scans", body: {
+    connection_id: "connection", model: "test-model", request_key: expect.stringMatching(/^.{16,}$/),
+  } });
 });
 
 test("retired security connections cannot start a scan", async ({ page }) => {
@@ -612,48 +599,34 @@ test("retired security connections cannot start a scan", async ({ page }) => {
   expect(writes).toHaveLength(0);
 });
 
-test("Mortis scan retries can increase concurrency while preserving model and limits", async ({ page }) => {
-  const writes = await mock(page, { scanError: "Security analysis did not finish." });
-  await page.goto("/security/scans/scan");
-  await page.getByRole("button", { name: "Retry scan", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Retry security scan" });
-  await expect(dialog.getByRole("spinbutton", { name: "Concurrent tasks" })).toHaveValue("1");
-  await expect(dialog.getByRole("spinbutton", { name: "Concurrent tasks" })).toBeEnabled();
-  await expect(dialog.getByRole("spinbutton", { name: "Token budget" })).toBeDisabled();
-  await dialog.getByRole("spinbutton", { name: "Concurrent tasks" }).fill("4");
-  await dialog.getByRole("button", { name: "Retry scan", exact: true }).click();
-  await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0]).toMatchObject({ path: "/security/scans/scan/retry", body: { concurrency: 4, token_budget: 200000, timeout_seconds: 900 } });
-});
-
-test("retry preserves all saved workflow limits", async ({ page }) => {
-  const writes = await mock(page, { scanError: "Security analysis did not finish.", workflowLimits: true });
-  await page.goto("/security/scans/scan");
-  await page.getByRole("button", { name: "Retry scan", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Retry security scan" });
-  for (const [name, value] of [["Concurrent tasks", "3"], ["Token budget", "200000"], ["Timeout (seconds)", "900"]]) {
-    const input = dialog.getByRole("spinbutton", { name });
-    await expect(input).toHaveValue(value);
-    await expect(input).toBeDisabled();
-  }
-  await dialog.getByRole("button", { name: "Retry scan", exact: true }).click();
-  await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0]).toMatchObject({
-    path: "/security/scans/scan/retry", body: { concurrency: 3, token_budget: 200000, timeout_seconds: 900 },
+for (const workflowLimits of [false, true]) {
+  test(`retry preserves saved ${workflowLimits ? "workflow" : "legacy"} scan limits`, async ({ page }) => {
+    const writes = await mock(page, { scanError: "Security analysis did not finish.", workflowLimits });
+    await page.goto("/security/scans/scan");
+    await page.getByRole("button", { name: "Retry scan", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Retry security scan" });
+    await expect(dialog).toContainText("Retry with the original scan limits.");
+    await expect(dialog.getByRole("spinbutton")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Retry scan", exact: true }).click();
+    await expect(page).toHaveURL(/\/security\/scans\/queued$/);
+    expect(writes[0]).toEqual({
+      path: "/security/scans/scan/retry",
+      body: { connection_id: "connection", model: "test-model", request_key: expect.any(String) },
+    });
   });
-});
+}
 
-test("rescan can change concurrency after an incomplete scan", async ({ page }) => {
+test("rescan uses repository limits after an incomplete scan", async ({ page }) => {
   const writes = await mock(page, { scanError: "Security analysis did not finish." });
   await page.goto("/security/scans/scan");
   await page.getByRole("button", { name: "Rescan repository", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Run security scan" });
-  await expect(dialog.getByRole("spinbutton", { name: "Concurrent tasks" })).toBeEnabled();
-  await dialog.getByRole("spinbutton", { name: "Concurrent tasks" }).fill("4");
+  await expect(dialog.getByRole("spinbutton")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Run scan", exact: true }).click();
   await expect(page).toHaveURL(/\/security\/scans\/queued$/);
-  expect(writes[0]).toMatchObject({
-    path: "/security/repositories/22/scans", body: { concurrency: 4, token_budget: null, timeout_seconds: null },
+  expect(writes[0]).toEqual({
+    path: "/security/repositories/22/scans",
+    body: { connection_id: "connection", model: "test-model", request_key: expect.any(String) },
   });
 });
 

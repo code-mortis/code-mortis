@@ -66,6 +66,8 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
     old_policy = store.policy(repo)
     if body.code_graph_limits is not None:
         repo.code_graph_limits = body.code_graph_limits.model_dump()
+    if body.scan_settings is not None:
+        repo.scan_settings = body.scan_settings.model_dump()
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,

@@ -17,7 +17,7 @@
   --chart-high: #dc2626;
   --chart-medium: #a16207;
   --chart-low: #64748b;
-  --sidebar: var(--muted);
+  --sidebar: var(--background);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);

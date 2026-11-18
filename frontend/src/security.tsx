@@ -214,7 +214,11 @@ function ScanDialog({ repositoryId, onClose, retry, returnTo }: { repositoryId: 
   const repo = useApi<SecurityRepo>(`/security/repositories/${repositoryId}`);
   const connections = useApi<Connection[]>(`/connections?repository_id=${repositoryId}`);
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent {...focus} className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
-    <DialogHeader><DialogTitle>{retry ? "Retry security scan" : "Run security scan"}</DialogTitle><DialogDescription>{retry && retry.config.analysis_engine !== "mortis" ? "This saved scan used a retired engine. Start a new Mortis scan with Rescan repository." : "Scan the full default branch with Mortis and Trivy. This uses the selected AI connection and its quota."}</DialogDescription></DialogHeader>
+    <DialogHeader><DialogTitle>{retry ? "Retry security scan" : "Run security scan"}</DialogTitle><DialogDescription>{retry
+      ? retry.config.analysis_engine !== "mortis"
+        ? "This saved scan used a retired engine. Start a new Mortis scan with Rescan repository."
+        : "Retry with the original scan limits. Completed work is reused when its inputs match."
+      : "Scan the full default branch with Mortis and Trivy. This uses the repository’s scan limits and the selected AI connection."}</DialogDescription></DialogHeader>
     <ErrorNotice error={repo.error || connections.error} />
     {repo.isPending || connections.isPending ? <Loading /> : repo.data && connections.data && !repo.error && !connections.error &&
       <ScanForm repository={repo.data} connections={connections.data.filter((connection) => connection.kind === "api")} onClose={onClose} retry={retry} />}
@@ -226,39 +230,21 @@ function ScanForm({ repository, connections, onClose, retry }: { repository: Sec
   const action = useAction<Scan>();
   const retiredEngine = !!retry && retry.config.analysis_engine !== "mortis";
   const savedConnection = object(retry?.config.connection);
-  const savedLimits = object(retry?.config.limits);
-  const fixedConcurrency = retry?.config.execution_limits === "workflow/v1";
   const [connectionId, setConnectionId] = useState(retry ? text(savedConnection.id) : repository.repository.connection_id ?? "");
   const selected = connections.find((item) => item.id === connectionId);
   const [model, setModel] = useState(retry ? text(savedConnection.model) : (selected?.id === repository.repository.connection_id && repository.repository.settings.model) || selected?.model || "");
-  const initialTokens = savedLimits.token_budget;
-  const initialTimeout = savedLimits.timeout_seconds;
-  const [tokens, setTokens] = useState(initialTokens == null ? "" : String(initialTokens));
-  const [timeout, setTimeout] = useState(initialTimeout == null ? "" : String(initialTimeout));
-  const [unlimitedTokens, setUnlimitedTokens] = useState(initialTokens == null);
-  const [unlimitedTimeout, setUnlimitedTimeout] = useState(initialTimeout == null);
-  const [concurrency, setConcurrency] = useState(String(retry ? savedLimits.concurrency ?? 1 : 4));
   const requestKey = useRef(crypto.randomUUID());
-  useEffect(() => { requestKey.current = crypto.randomUUID(); }, [connectionId, model, tokens, timeout, unlimitedTokens, unlimitedTimeout, concurrency]);
+  useEffect(() => { requestKey.current = crypto.randomUUID(); }, [connectionId, model]);
   function submit(event: FormEvent) {
     event.preventDefault();
     action.mutate({ path: retry ? `/security/scans/${retry.id}/retry` : `/security/repositories/${repository.repository.id}/scans`, body: {
-      connection_id: connectionId, model, token_budget: unlimitedTokens ? null : Number(tokens),
-      timeout_seconds: unlimitedTimeout ? null : Number(timeout), request_key: requestKey.current,
-      concurrency: Number(concurrency),
+      connection_id: connectionId, model, request_key: requestKey.current,
     } }, { onSuccess: (scan) => { onClose(); navigate(`/security/scans/${scan.id}`); } });
   }
   return <form onSubmit={submit} className="space-y-5">
     <div className="rounded-md border bg-muted/30 p-4 text-sm"><p className="break-words font-medium">{repository.repository.full_name}</p><p className="mt-2 flex items-center gap-1.5 font-mono text-xs text-muted-foreground"><GitBranch aria-hidden="true" className="size-3.5 shrink-0" />{repository.summary.default_branch ?? "Resolved from GitHub when the scan starts"}</p></div>
     <Field label="AI connection">{(id) => <SearchSelect id={id} value={connectionId} onChange={(value) => { setConnectionId(value); setModel((value === repository.repository.connection_id && repository.repository.settings.model) || connections.find((row) => row.id === value)?.model || ""); }} options={[{ value: "", label: "Choose a connection" }, ...connections.map((row) => ({ value: row.id, label: row.name }))]} required disabled={action.isPending || !!retry} />}</Field>
     <ModelPicker value={model} onChange={setModel} path={connectionId ? `/connections/${connectionId}/models?repository_id=${repository.repository.id}` : undefined} enabled={!!selected} disabled={action.isPending || !!retry} required />
-    <div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Field label="Token budget">{(id) => <Input id={id} type="number" min={1000} max={5000000} step={1000} value={tokens} placeholder="Unlimited" required={!unlimitedTokens} disabled={action.isPending || !!retry || unlimitedTokens} onChange={(event) => setTokens(event.target.value)} />}</Field>
-      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited token budget" checked={unlimitedTokens} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTokens(checked === true); if (!tokens) setTokens("200000"); }} />Unlimited</label></div>
-      <div className="space-y-2"><Field label="Timeout (seconds)">{(id) => <Input id={id} type="number" min={60} max={3600} value={timeout} placeholder="Unlimited" required={!unlimitedTimeout} disabled={action.isPending || !!retry || unlimitedTimeout} onChange={(event) => setTimeout(event.target.value)} />}</Field>
-      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs sm:min-h-8"><Checkbox aria-label="Unlimited timeout" checked={unlimitedTimeout} disabled={action.isPending || !!retry} onCheckedChange={(checked) => { setUnlimitedTimeout(checked === true); if (!timeout) setTimeout("900"); }} />Unlimited</label></div></div>
-    <div className="space-y-2"><Field label="Concurrent tasks">{(id) => <Input id={id} type="number" min={1} max={8} step={1} value={concurrency} required disabled={action.isPending || !selected || fixedConcurrency} onChange={(event) => setConcurrency(event.target.value)} aria-describedby="security-concurrency-help" />}</Field>
-      <p id="security-concurrency-help" className="text-xs leading-relaxed text-muted-foreground">{"Run 1–8 file analyses or independent finding assessments at a time. Related findings are assessed in order."}{retry ? " Completed work is reused when its inputs match." : ""}</p></div>
-    <p className="text-xs leading-relaxed text-muted-foreground">Concurrent tasks share the remaining token budget. Budgets stop further work between requests; they are not a guaranteed billing cap. Finished reports grade confirmed findings; incomplete coverage remains visible.</p>
     {retry && !selected && <p role="status" className="text-sm text-muted-foreground">This scan's connection is unavailable or retired. Start a new scan with an explicitly selected shared API connection. The saved scan remains unchanged.</p>}
     {!retry && repository.repository.connection_requires_setup && <p role="status" className="text-sm text-muted-foreground">The repository's subscription connection is retired. Choose a shared API connection for this new scan.</p>}
     <ErrorNotice error={action.error} />

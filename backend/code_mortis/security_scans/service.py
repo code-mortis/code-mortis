@@ -44,7 +44,7 @@ from code_mortis.models import (
 from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import diagnostics as result_diagnostics
 from code_mortis.reviews.service import authorize_connection, connection_snapshot, enqueue
-from code_mortis.schemas.common import SecuritySummary
+from code_mortis.schemas.common import ScanSettings, SecuritySummary
 from code_mortis.schemas.security import SecurityScanOut
 from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans import payload
@@ -138,7 +138,7 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
         new_engine_snapshot(repo.settings)
     authorized = authorize(db, repo, actor, connection, fresh=remote is None)
     freshness = branch_head(repo.full_name, github.installation_token(db, repo.installation_id), remote or authorized)
-    db.scalar(select(Repository).where(Repository.id == repo.id).with_for_update())
+    scan_settings = db.scalar(select(Repository.scan_settings).where(Repository.id == repo.id).with_for_update())
     existing = db.scalar(select(SecurityScan).where(SecurityScan.request_key == body.request_key))
     if existing:
         if existing.repository_id != repo.id or existing.actor_id != actor.id:
@@ -151,9 +151,14 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
     if parent and (parent.branch != freshness["default_branch"] or parent.head_sha != freshness["head_sha"]):
         raise HTTPException(409, "The default branch changed. Start a new scan instead of retrying the old revision.")
     workflow = parent is None or parent.config.get("execution_limits") == EXECUTION_LIMITS
+    limits = ScanSettings.model_validate(scan_settings).model_dump() if parent is None else {
+        "concurrency": 1, **parent.config["limits"],
+    }
+    limits.update(body.model_dump(include=set(ScanSettings.model_fields), exclude_unset=True))
+    if connection.kind != "api":
+        limits["concurrency"] = 1
     config = {"connection": connection_snapshot(connection, workflow=workflow),
-              "limits": {"timeout_seconds": body.timeout_seconds, "token_budget": body.token_budget,
-                         "concurrency": body.concurrency if connection.kind == "api" else 1},
+              "limits": limits,
               "policy": security_engine.POLICY, "rating_policy": RATING_POLICY,
               "trivy_version": settings().trivy_version, "language": repo.settings.get("language", "English")}
     config.update(engine_snapshot(parent.config) if parent else new_engine_snapshot(repo.settings))
@@ -168,8 +173,6 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
         # Retain inert metadata in immutable retry identities without restoring its adapter.
         if "ocr_version" in parent.config["connection"]:
             config["connection"]["ocr_version"] = parent.config["connection"]["ocr_version"]
-        if "concurrency" not in body.model_fields_set:
-            config["limits"]["concurrency"] = parent.config["limits"].get("concurrency", 1)
         original = {**parent.config, **engine_snapshot(parent.config), "limits": {**parent.config["limits"],
                     "concurrency": parent.config["limits"].get("concurrency", 1) if workflow else config["limits"]["concurrency"]}}
         if without_request_timeout(config) != without_request_timeout(original):

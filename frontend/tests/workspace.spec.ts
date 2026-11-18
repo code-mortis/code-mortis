@@ -1453,7 +1453,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   await expect(slider).toHaveValue("0");
   await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
   await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByRole("textbox", { name: "Review rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
   await repositorySection(page, "Review behavior");
   await expect(slider).toHaveValue("0");
@@ -1498,7 +1498,7 @@ test("repository configuration keeps drafts and stays on the selected section af
   await page.getByRole("switch", { name: "Automatic reviews", exact: true }).uncheck();
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Keep this draft while changing sections.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await page.getByLabel("Maximum files", { exact: true }).fill("75");
   await repositorySection(page, "Review behavior");
   await expect(effort).toHaveValue("high");
@@ -1567,8 +1567,45 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-settings-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+  const body = requests.find((request) => request.path === "/repositories/22")?.body;
+  expect(body).not.toHaveProperty("scan_settings");
+  expect(body).toMatchObject({
     settings: { summary_token_budget: 45000, summary_timeout_seconds: 240, token_budget: 200000, timeout_seconds: 900 },
+  });
+});
+
+test("repository scan limits validate across sections and save independently of review limits", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings?tab=scan-limits");
+  const form = page.getByRole("form", { name: "Repository configuration" });
+  const budget = form.getByLabel("Scan token budget", { exact: true });
+  const unlimitedBudget = form.getByLabel("Unlimited scan token budget", { exact: true });
+  const unlimitedTimeout = form.getByLabel("Unlimited scan timeout (seconds)", { exact: true });
+  const concurrency = form.getByLabel("Scan concurrency", { exact: true });
+  await expect(unlimitedBudget).toBeChecked();
+  await expect(unlimitedTimeout).toBeChecked();
+  await expect(concurrency).toHaveValue("4");
+  await unlimitedBudget.uncheck();
+  await budget.fill("250000");
+  await unlimitedBudget.check();
+  await expect(budget).toBeDisabled();
+  await unlimitedBudget.uncheck();
+  await expect(budget).toHaveValue("250000");
+  await unlimitedTimeout.uncheck();
+  await form.getByLabel("Scan timeout (seconds)", { exact: true }).fill("1200");
+  await concurrency.fill("9");
+  await repositorySection(page, "Reviews");
+  await expect(form.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL(/tab=scan-limits$/);
+  await expect(concurrency).toBeFocused();
+  expect(requests).toHaveLength(0);
+  await concurrency.fill("6");
+  await noOverflow(page);
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    scan_settings: { token_budget: 250000, timeout_seconds: 1200, concurrency: 6 },
+    settings: { token_budget: 200000, timeout_seconds: 900, concurrency: 2 },
   });
 });
 
@@ -1580,7 +1617,7 @@ test("stage budgets and optional overview content save independently", async ({ 
     await expect(toggle).not.toBeChecked();
     await toggle.check();
   }
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await page.getByLabel("Analysis token budget", { exact: true }).fill("11000");
   await page.getByLabel("Assessment token budget", { exact: true }).fill("22000");
   await page.getByLabel("Unlimited verification token budget", { exact: true }).check();
@@ -2337,7 +2374,7 @@ test("repository configuration validates hidden fields and retains drafts after 
   await expect(page.getByRole("alert")).toContainText("Repository settings could not be saved");
   await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
 });
 
@@ -2348,7 +2385,7 @@ test("repository configuration shows connection failures across every section", 
   await page.goto("/repositories/22/settings");
   const form = page.getByRole("form", { name: "Repository configuration" });
   const notice = form.getByRole("alert").filter({ hasText: error });
-  for (const section of ["Review behavior", "Project context", "Limits & rules", "AI connection"]) {
+  for (const section of ["Review behavior", "Project context", "Reviews", "Security scan", "AI connection"]) {
     await repositorySection(page, section);
     await expect(notice).toBeVisible();
     await expect(notice).toHaveCount(1);
@@ -2380,7 +2417,7 @@ test("repository configuration sections retain navigation and fit both themes", 
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
-    for (const name of ["Review behavior", "AI connection", "Project context", "Code graph", "Limits & rules"]) {
+    for (const name of ["Review behavior", "AI connection", "Project context", "Code graph", "Reviews", "Security scan"]) {
       const link = page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name, exact: true });
       await expect(link.locator("svg[aria-hidden=true]")).toBeVisible();
       await link.focus();
@@ -2390,11 +2427,12 @@ test("repository configuration sections retain navigation and fit both themes", 
       await expect(footer).toHaveCSS("border-top-width", "0px");
       await expect(footer.getByRole("button")).toHaveText(["Save"]);
       await noOverflow(page);
-      await page.screenshot({ path: `../.impeccable/review/repository-settings-${name.split(" ")[0].toLowerCase()}-${info.project.name}-${theme}.png`, fullPage: true });
+      await page.screenshot({ path: `../.impeccable/review/repository-settings-${name.toLowerCase().replaceAll(" ", "-").replace("&-", "")}-${info.project.name}-${theme}.png`, fullPage: true });
     }
   }
   await page.reload();
-  await expect(page.getByLabel("Maximum files", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/tab=scan-limits$/);
+  await expect(page.getByLabel("Scan concurrency", { exact: true })).toBeVisible();
   await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/repositories\/22\?q=148&state=all$/);
   expect(requests).toEqual([]);
@@ -4298,7 +4336,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await repositorySection(page, "AI connection");
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "token budget" || change === "timeout") {
-        await repositorySection(page, "Limits & rules");
+        await repositorySection(page, "Reviews");
         await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Analysis token budget", { exact: true })
           .fill(change === "timeout" ? "1200" : "450000");
       }
@@ -4340,7 +4378,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await repositorySection(page, "AI connection");
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "limits") {
-        await repositorySection(page, "Limits & rules");
+        await repositorySection(page, "Reviews");
         await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
       }
       await repositorySection(page, "Project context");
@@ -4468,7 +4506,7 @@ for (const unlimited of [false, true]) {
     await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     if (unlimited) {
       await page.getByLabel("Unlimited analysis token budget", { exact: true }).check();
       await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
@@ -4561,7 +4599,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   });
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   const time = page.getByLabel("Timeout (seconds)", { exact: true });
   const tokens = page.getByLabel("Analysis token budget", { exact: true });
   const files = page.getByLabel("Maximum files", { exact: true });
@@ -4710,7 +4748,7 @@ for (const field of [
       ...connection, id: "personal", name: "My ChatGPT", kind: "chatgpt", owner_id: 7, protocol: "native",
     }] }));
     await page.goto("/repositories/22/settings?tab=connection");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     const input = page.getByLabel(field.label, { exact: true });
     for (const invalid of ["", "0", field.excessive, "1e309"]) {
       await input.fill(invalid);
@@ -4726,7 +4764,7 @@ for (const field of [
     await expect(input).toHaveValue(field.valid);
     await input.fill("0");
     await repositorySection(page, "AI connection");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     await expect(input).toHaveValue("0");
     await input.fill(field.valid);
     await repositorySection(page, "Review behavior");
@@ -8772,7 +8810,7 @@ test("Mortis is saved without an engine selector while custom review rules remai
   await page.goto("/repositories/22/settings?tab=connection");
   await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
   const rules = { rules: [{ path: "**/*.py", rule: "Preserve ownership checks" }] };
   await page.getByRole("textbox", { name: "Review rules JSON", exact: true }).fill(JSON.stringify(rules));
