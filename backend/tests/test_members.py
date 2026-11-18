@@ -14,6 +14,21 @@ from code_mortis.models import LoginSession, Membership, User
 from code_mortis.schemas.common import MemberInput
 
 
+def test_team_settings_include_saved_avatars_and_members_without_profiles(seed, client):
+    avatar_url = "https://avatars.githubusercontent.com/u/8?v=4"
+    with transaction() as db:
+        db.add_all([
+            User(id=8, login="renamed-member", avatar_url=avatar_url),
+            Membership(github_id=8, login="member", role="member"),
+            Membership(github_id=9, login="invited", role="member"),
+        ])
+    response = client.get("/api/v1/settings")
+    assert response.status_code == 200
+    members = {row["id"]: row for row in response.json()["members"]}
+    assert members[8] == {"id": 8, "login": "member", "role": "member", "avatar_url": avatar_url}
+    assert members[9] == {"id": 9, "login": "invited", "role": "member", "avatar_url": ""}
+
+
 @pytest.mark.parametrize("operation", ["remove", "demote"])
 def test_last_administrator_cannot_be_removed_or_demoted(seed, client, monkeypatch, operation):
     monkeypatch.setattr(github, "request", lambda *args: {"id": 7, "login": "owner", "type": "User"})

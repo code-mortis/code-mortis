@@ -19,9 +19,9 @@ import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { ApiTokensSection, CreateApiTokenPage } from "./components/api-tokens";
+import { UserAvatar } from "./components/user-avatar";
 import { McpSettingsSection } from "./mcp";
 import type { ColorMode, ThemeId } from "./lib/appearance";
-import { Avatar, AvatarFallback } from "./components/ui/avatar";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -55,7 +55,7 @@ type Provider = {
 type Instance = {
   github_app: { id: string; slug: string; install_url: string };
   installations: { id: number; account: string; active: boolean }[];
-  members: { id: number; login: string; role: string }[];
+  members: { id: number; login: string; role: string; avatar_url?: string }[];
   failed_jobs: { id: string; kind: string; error: string; available_at?: string | null; attempts?: number }[];
   public_url: string;
   webhook_url?: string;
@@ -1070,7 +1070,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
             </div>
             {instance.members.map((item) => <div key={item.id} className="settings-member-row border-b px-4 py-4 last:border-b-0 sm:px-5">
               <div className="settings-member-identity flex min-w-0 items-center">
-                <Avatar className="settings-member-avatar size-(--settings-avatar-size) rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+                <UserAvatar user={item.id === user.id ? user : item} className="settings-member-avatar size-(--settings-avatar-size)" />
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium">@{item.login}</p>
                   {item.id === user.id && <p className="mt-0.5 text-xs text-muted-foreground">You</p>}

@@ -60,13 +60,18 @@ export function AppHeader({ user, onLogout, signingOut, dark, onToggleTheme }: {
             onChoose={(id) => navigate(`/repositories/${id}/overview`)} />
         </>}
       </nav>
-      <div className="ml-auto flex shrink-0 items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-1 max-sm:min-h-14">
         <Button variant="ghost" size="icon" onClick={onToggleTheme} aria-label={themeLabel} title={themeLabel}
-          className="relative overflow-hidden rounded-full bg-muted text-primary hover:bg-accent motion-reduce:transition-none">
-          <Sun aria-hidden="true" className="size-[18px] rotate-0 scale-100 transition-transform duration-200 ease-out dark:-rotate-90 dark:scale-0 motion-reduce:transition-none" />
-          <Moon aria-hidden="true" className="absolute size-[18px] rotate-90 scale-0 transition-transform duration-200 ease-out dark:rotate-0 dark:scale-100 motion-reduce:transition-none" />
+          className="relative text-muted-foreground motion-reduce:transition-none pointer-coarse:size-11">
+          <Sun aria-hidden="true" className="size-4 rotate-0 scale-100 transition-transform duration-200 ease-out dark:-rotate-90 dark:scale-0 motion-reduce:transition-none" />
+          <Moon aria-hidden="true" className="absolute size-4 rotate-90 scale-0 transition-transform duration-200 ease-out dark:rotate-0 dark:scale-100 motion-reduce:transition-none" />
         </Button>
-        <Button asChild variant="ghost" size="icon"><Link to="/settings" aria-label="Settings" title="Settings" aria-current={route.pathname.startsWith("/settings") ? "page" : undefined}><Settings aria-hidden="true" /></Link></Button>
+        <Button asChild variant="ghost" size="icon" className="text-muted-foreground pointer-coarse:size-11">
+          <Link to="/settings" aria-label="Settings" title="Settings" aria-current={route.pathname.startsWith("/settings") ? "page" : undefined}>
+            <Settings aria-hidden="true" />
+          </Link>
+        </Button>
+        <span aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
         <AccountMenu user={user} onLogout={onLogout} signingOut={signingOut} />
       </div>
     </div>

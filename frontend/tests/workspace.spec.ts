@@ -7174,6 +7174,40 @@ test("closing member menu cannot steal focus from the dialog role picker", async
   await expect(role).toHaveValue("Member");
 });
 
+test("Team avatars match the navbar and use initials for missing or broken images", async ({ page }, info) => {
+  await mock(page);
+  const ownAvatar = "/fixtures/own-avatar.svg";
+  const memberAvatar = "/fixtures/member-avatar.svg";
+  await page.route("**/fixtures/*-avatar.svg", (route) => route.fulfill({
+    contentType: "image/svg+xml",
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#245c47"/></svg>',
+  }));
+  await page.route("**/fixtures/missing.png", (route) => route.fulfill({ status: 404 }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: {
+    id: 7, login: "carlos", role: "admin", avatar_url: ownAvatar, csrf: "csrf-from-session",
+  } }));
+  await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], failed_jobs: [], public_url: "https://reviews.example.com",
+    members: [
+      { id: 7, login: "carlos", role: "admin" },
+      { id: 8, login: "sam", role: "member", avatar_url: memberAvatar },
+      { id: 9, login: "invitee", role: "member" },
+      { id: 10, login: "observer", role: "member", avatar_url: "/fixtures/missing.png" },
+    ],
+  } }));
+  await page.goto("/settings?tab=team");
+  const team = page.getByRole("region", { name: "Team", exact: true });
+  const avatar = (login: string) => team.locator(".settings-member-row")
+    .filter({ has: page.getByText(`@${login}`, { exact: true }) }).locator('[data-slot="avatar"]');
+  await expect(page.getByRole("button", { name: "Account menu for @carlos" }).locator("img")).toHaveAttribute("src", ownAvatar);
+  await expect(avatar("carlos").locator("img")).toHaveAttribute("src", ownAvatar);
+  await expect(avatar("sam").locator("img")).toHaveAttribute("src", memberAvatar);
+  await expect(avatar("invitee")).toHaveText("IN");
+  await expect(avatar("observer")).toHaveText("OB");
+  await noOverflow(page);
+  await team.screenshot({ path: `../.impeccable/review/team-avatars-${info.project.name}.png` });
+});
+
 test("team rows preserve unknown roles and align labels with resized avatars in both directions", async ({ page }, info) => {
   await mock(page);
   const role = "repository-observer-with-limited-access";
