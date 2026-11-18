@@ -3827,7 +3827,26 @@ export interface components {
              * @default false
              */
             has_running_review: boolean;
+            /** Last Pr Sync Check At */
+            last_pr_sync_check_at?: string | null;
+            latest_completed_review?: components["schemas"]["RepositoryReviewSummary"] | null;
             security?: components["schemas"]["SecuritySummary"] | null;
+        };
+        /** RepositoryReviewSummary */
+        RepositoryReviewSummary: {
+            /** Run Id */
+            run_id: string;
+            /** Pull Request Id */
+            pull_request_id: string;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Finished At
+             * Format: date-time
+             */
+            finished_at: string;
         };
         /** ResolvedPage */
         ResolvedPage: {

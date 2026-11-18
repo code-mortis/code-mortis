@@ -1,6 +1,6 @@
 name = "contract_ui_reviewer"
 description = "Review API/frontend contracts, async UI states, accessibility and browser regression coverage."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "medium"
 developer_instructions = """
 Follow AGENTS.md and the parent assignment. Review the diff and connected callers without

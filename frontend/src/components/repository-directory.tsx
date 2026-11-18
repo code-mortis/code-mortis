@@ -33,5 +33,5 @@ export function LegacyAnalytics() {
   const repository = ids.length === 1 ? repositories.find((repo) => String(repo.id) === ids[0]) : undefined;
   if (directory.isPending) return <Loading />;
   params.delete("repo");
-  return <Navigate to={repository ? `/repositories/${repository.id}/overview${params.size ? `?${params}` : ""}` : "/repositories"} replace />;
+  return <Navigate to={repository ? `/repositories/${repository.id}/analytics${params.size ? `?${params}` : ""}${location.hash}` : "/repositories"} state={location.state} replace />;
 }

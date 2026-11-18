@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Link, useLocation, useMatch } from "react-router-dom";
-import { useApi, type Repository, type Schema } from "../api";
+import { useApi, type Schema } from "../api";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getDetailPath, getRepositoryReturn } from "../lib/navigation";
 import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
@@ -29,44 +29,48 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
   const securityRepositoryRoute = useMatch("/security/repositories/:repositoryId");
   const securityPath = securityScanRoute ? `/security/scans/${securityScanRoute.params.scanId}`
     : securityRepositoryRoute ? `/security/repositories/${securityRepositoryRoute.params.repositoryId}` : null;
-  const securityDetail = useApi<Pick<Schema["SecurityRepositoryOut"], "repository">>(securityPath ?? "", false, !!securityPath);
+  const securityDetail = useApi<Pick<Schema["SecurityScanDetail"], "repository"> & Partial<Pick<Schema["SecurityScanDetail"], "scan">>>(securityPath ?? "", false, !!securityPath);
   const organizationRoute = useMatch("/organizations/:owner/repositories");
   const overviewRoute = useMatch("/repositories/:repositoryId/overview");
+  const analyticsRoute = useMatch("/repositories/:repositoryId/analytics");
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
-  const repositoryRoute = useMatch("/repositories/:repositoryId") ?? repositorySettingsRoute ?? overviewRoute;
-  const repos = useApi<Repository[]>("/repositories", false, !!repositoryRoute);
-  const crumbs: Crumb[] = [{ label: "Inbox", to: inboxReturn ?? "/" }];
+  const pullListRoute = useMatch("/repositories/:repositoryId");
+  const pull = detail.error ? undefined : detail.data?.pull_request;
+  const security = securityDetail.error ? undefined : securityDetail.data;
+  const repo = detailPath ? (pull ? detail.data?.repository : undefined)
+    : securityPath ? security?.repository : repository;
+  const crumbs: Crumb[] = [];
+  if (!repo || inboxReturn) crumbs.push({ label: "Inbox", to: inboxReturn ?? "/" });
 
-  if (path === "/repositories" || repositoryRoute) {
-    const repository = repos.error ? undefined : repos.data?.find((repo) => String(repo.id) === repositoryRoute?.params.repositoryId);
+  if (repo) {
+    const repositoryPath = `/repositories/${repo.id}`;
     const search = new URLSearchParams(params);
     search.delete("tab");
-    const repositoryPath = repositoryRoute ? `/repositories/${repositoryRoute.params.repositoryId}` : path;
-    const returnPath = repositorySettingsRoute && repositoryReturn?.split("?")[0] === repositoryPath
-      ? repositoryReturn : repositoryPath + (search.size ? `?${search}` : "");
-    crumbs.push({ label: repository?.full_name || "Repositories", to: returnPath });
-    if (overviewRoute) crumbs.push({ label: "Overview", to: path + route.search });
-    if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path + route.search });
+    const listPath = repositoryPath + (search.size ? `?${search}` : "");
+    const savedList = repositoryReturn?.split("?")[0] === repositoryPath ? repositoryReturn : null;
+    const returnPath = pullListRoute ? listPath : savedList ?? (repositorySettingsRoute ? listPath : repositoryPath);
+    const returnState = { inbox: inboxReturn, repository: returnPath };
+    crumbs.push({ label: repo.full_name.split("/").at(-1) || repo.full_name, to: repositoryPath + "/overview", state: returnState });
+    if (overviewRoute || analyticsRoute) {
+      crumbs.push({ label: analyticsRoute ? "Analytics" : "Overview", to: path });
+    } else if (securityPath) {
+      crumbs.push({ label: "Security", to: `/security/repositories/${repo.id}` });
+      if (securityScanRoute) crumbs.push({ label: security?.scan?.head_sha ? `Scan · ${security.scan.head_sha.slice(0, 7)}` : "Security scan", to: path });
+    } else {
+      crumbs.push({ label: "Pull requests", to: returnPath, state: returnState });
+      if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path });
+      if (pull) crumbs.push({ label: `#${pull.number}`, to: `/pulls/${pull.id}`, state: returnState });
+      if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
+    }
+  } else if (path === "/repositories" || pullListRoute || repositorySettingsRoute || overviewRoute || analyticsRoute) {
+    crumbs.push({ label: analyticsRoute ? "Analytics" : overviewRoute ? "Overview" : "Repositories", to: path });
   } else if (organizationRoute) {
     crumbs.push({ label: organizationRoute.params.owner ?? "Repositories", to: path });
   } else if (detailPath) {
-    if (detail.data && !detail.error) {
-      const { repository, pull_request: pull } = detail.data;
-      const repositoryPath = `/repositories/${repository.id}`;
-      crumbs.push({ label: repository.full_name, to: repositoryReturn?.split("?")[0] === repositoryPath ? repositoryReturn : repositoryPath });
-      crumbs.push({ label: `Pull request #${pull.number}`, to: `/pulls/${pull.id}`, state: { inbox: inboxReturn, repository: repositoryReturn } });
-    } else if (path.startsWith("/pulls/")) {
-      crumbs.push({ label: "Pull request", to: path });
-    }
-    if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
+    crumbs.push({ label: path.startsWith("/runs/") ? "Review run" : "Pull request", to: path });
   } else if (path.startsWith("/security")) {
-    const repository = securityDetail.error ? undefined : securityDetail.data?.repository;
     crumbs.push({ label: "Repositories", to: "/repositories" });
-    if (path.startsWith("/security/repositories/")) crumbs.push({ label: repository?.full_name || "Repository security", to: path + route.search });
-    if (path.startsWith("/security/scans/")) {
-      if (repository) crumbs.push({ label: repository.full_name, to: `/security/repositories/${repository.id}` });
-      crumbs.push({ label: "Security scan", to: path + route.search });
-    }
+    if (securityRepositoryRoute || securityScanRoute) crumbs.push({ label: securityScanRoute ? "Security scan" : "Security", to: path });
   } else if (path === "/analytics") {
     crumbs.push({ label: "Analytics", to: path + route.search });
   } else if (path === "/mcp/authorize") {
@@ -95,7 +99,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
     <Breadcrumb aria-label="Breadcrumb" className="min-w-0 flex-1">
       <BreadcrumbList className="flex-nowrap">
         {ancestors.map((crumb, index) => <Fragment key={crumb.to}>
-          <BreadcrumbItem className={index === 0 ? "shrink-0" : "hidden min-w-0 sm:inline-flex"}>
+          <BreadcrumbItem className={index === 0 ? "min-w-0" : "hidden min-w-0 sm:inline-flex"}>
             <BreadcrumbLink asChild className="truncate rounded-sm" title={crumb.label}>
               <Link to={crumb.to} state={crumb.state}>{crumb.label}</Link>
             </BreadcrumbLink>
@@ -117,7 +121,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
           </BreadcrumbItem>
           <BreadcrumbSeparator className="shrink-0 sm:hidden" />
         </>}
-        <BreadcrumbItem className={ancestors.length > 1 && !securityRepositoryRoute ? "min-w-0 sm:shrink-0" : "min-w-0"}>
+        <BreadcrumbItem className="min-w-0 shrink-0">
           <BreadcrumbPage className="truncate font-medium" title={current.label}>{current.label}</BreadcrumbPage>
         </BreadcrumbItem>
       </BreadcrumbList>

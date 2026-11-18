@@ -15,8 +15,29 @@ from code_mortis.schemas.common import (
     ConnectionOut,
     PullRequestOut,
     RepositoryOut,
+    RepositoryReviewSummary,
     RunOut,
 )
+
+
+def latest_repository_reviews(db: Session, repository_ids: list[int]) -> dict[int, RepositoryReviewSummary]:
+    if not repository_ids:
+        return {}
+    latest = select(
+        PullRequest.repository_id, ReviewRun.id.label("run_id"), PullRequest.id.label("pull_request_id"),
+        PullRequest.number, ReviewRun.head_sha, ReviewRun.finished_at,
+        func.row_number().over(partition_by=PullRequest.repository_id,
+                               order_by=(ReviewRun.finished_at.desc(), ReviewRun.id.desc())).label("rank"),
+    ).join(PullRequest, ReviewRun.pr_id == PullRequest.id).where(
+        PullRequest.repository_id.in_(repository_ids), ReviewRun.status == "completed",
+        ReviewRun.finished_at.is_not(None),
+    ).subquery()
+    return {
+        row.repository_id: RepositoryReviewSummary.model_validate({
+            key: value for key, value in row._mapping.items() if key not in {"repository_id", "rank"}
+        })
+        for row in db.execute(select(latest).where(latest.c.rank == 1))
+    }
 
 
 def repo_out(db: Session, repo: Repository) -> RepositoryOut:

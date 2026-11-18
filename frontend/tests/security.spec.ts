@@ -180,7 +180,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
   return writes;
 }
 
-test("security repository breadcrumbs show the name, fit narrow screens, and clear denied data", async ({ page }, info) => {
+test("security breadcrumbs link to Overview, fit narrow screens, and clear denied data", async ({ page }, info) => {
   await page.clock.install();
   const writes = await mock(page);
   const name = "organization-with-a-very-long-name/repository-with-a-very-long-name";
@@ -192,9 +192,10 @@ test("security repository breadcrumbs show the name, fit narrow screens, and cle
   await page.goto("/security/repositories/22/?tab=resolved");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   const current = breadcrumb.locator('[aria-current="page"]');
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(current).toHaveText(name);
-  await expect(current).toHaveAttribute("title", name);
+  await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
+  const repoLink = breadcrumb.getByRole("link", { name: name.split("/")[1], exact: true });
+  await expect(repoLink).toHaveAttribute("href", "/repositories/22/overview");
+  await expect(current).toHaveText("Security");
   for (const width of info.project.name === "mobile" ? [390, 320] : [1440, 1024, 768, 640]) {
     await page.setViewportSize({ width, height: 938 });
     await expect(current).toBeInViewport();
@@ -204,11 +205,12 @@ test("security repository breadcrumbs show the name, fit narrow screens, and cle
   denied = true;
   await page.clock.fastForward(5000);
   await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access denied.");
-  await expect(current).toHaveText("Repository security");
+  await expect(repoLink).toHaveCount(0);
+  await expect(current).toHaveText("Security");
   expect(writes).toHaveLength(0);
 });
 
-test("scan breadcrumbs contain the repository instead of a separate back-link", async ({ page }, info) => {
+test("scan breadcrumbs link to Overview and Security and identify the scanned commit", async ({ page }, info) => {
   const writes = await mock(page);
   const name = "organization-with-a-very-long-name/repository-with-a-very-long-name";
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
@@ -216,9 +218,8 @@ test("scan breadcrumbs contain the repository instead of a separate back-link", 
   } }));
   await page.goto("/security/scans/scan?tab=coverage");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
-  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Security scan");
-  await expect(page.getByRole("main").getByRole("link", { name, exact: true })).toHaveCount(info.project.name === "mobile" ? 0 : 1);
-  await expect(breadcrumb.getByRole("link", { name, exact: true, includeHidden: true })).toHaveAttribute("href", "/security/repositories/22");
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(`Scan · ${sha.slice(0, 7)}`);
+  await expect(breadcrumb.getByRole("link", { name: name.split("/")[1], exact: true })).toHaveAttribute("href", "/repositories/22/overview");
   for (const width of info.project.name === "mobile" ? [390, 320] : [1440, 768, 640]) {
     await page.setViewportSize({ width, height: 938 });
     await expect(breadcrumb.locator('[aria-current="page"]')).toBeInViewport();
@@ -226,12 +227,12 @@ test("scan breadcrumbs contain the repository instead of a separate back-link", 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   if (info.project.name === "mobile") await breadcrumb.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
-  const parent = info.project.name === "mobile" ? page.getByRole("menuitem", { name, exact: true }) : breadcrumb.getByRole("link", { name, exact: true });
+  const parent = info.project.name === "mobile" ? page.getByRole("menuitem", { name: "Security", exact: true }) : breadcrumb.getByRole("link", { name: "Security", exact: true });
   await expect(parent).toHaveAttribute("href", "/security/repositories/22");
   await parent.press("Enter");
   await expect(page).toHaveURL(/\/security\/repositories\/22$/);
-  await expect(page.getByRole("heading", { name: "acme/payments", exact: true })).toBeVisible();
-  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("acme/payments");
+  await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Security");
   if (info.project.use.viewport) await page.setViewportSize(info.project.use.viewport);
   await page.screenshot({ path: `../.impeccable/review/cohesive-security-repository-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   expect(writes).toHaveLength(0);
@@ -246,12 +247,12 @@ test("scan breadcrumbs omit repository data after access is denied", async ({ pa
     : route.fulfill({ json: { repository, scan, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
   await page.goto("/security/scans/scan");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
-  await expect(breadcrumb.getByRole("link", { name: repository.full_name, exact: true, includeHidden: true })).toHaveAttribute("href", "/security/repositories/22");
+  await expect(breadcrumb.getByRole("link", { name: "payments", exact: true, includeHidden: true })).toHaveAttribute("href", "/repositories/22/overview");
   await expect(page.getByRole("region", { name: "Scan stages" })).toBeVisible();
   denied = true;
   await page.clock.fastForward(5000);
   await expect(page.getByRole("main").getByRole("alert")).toHaveText("Scan access denied.");
-  await expect(breadcrumb.getByRole("link", { name: repository.full_name, exact: true, includeHidden: true })).toHaveCount(0);
+  await expect(breadcrumb.getByRole("link", { name: "payments", exact: true, includeHidden: true })).toHaveCount(0);
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Security scan");
 });
 
@@ -265,7 +266,7 @@ test("security navigation shows scan activity and clears it when scanning stops"
   for (const status of [null, "queued", "running", "blocked", "completed", "partial", "failed", "cancelled"]) {
     latestStatus = status;
     await page.goto("/security/repositories/22");
-    await expect(page.getByRole("heading", { name: "acme/payments", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
     if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
     const link = page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: /^Security/ });
     const active = status === "queued" || status === "running" || status === "blocked";
@@ -284,7 +285,7 @@ test("security navigation shows scan activity and clears it when scanning stops"
   denied = true;
   latestStatus = "running";
   await page.goto("/security/repositories/22");
-  await expect(page.getByRole("combobox", { name: "Organization", exact: true })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: /^Organization:/ })).toBeDisabled();
   await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
 });
 
@@ -1200,7 +1201,7 @@ for (const head of ["b".repeat(40), null]) test(`latest scan metadata uses the c
 test("repository without a scan does not show an inspection link", async ({ page }) => {
   const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null } });
   await page.goto("/security/repositories/22");
-  await expect(page.getByRole("heading", { name: "acme/payments", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Inspect scan", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Latest security scan", exact: true })).toHaveCount(0);
   expect(writes).toHaveLength(0);

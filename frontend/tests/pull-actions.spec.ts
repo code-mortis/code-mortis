@@ -127,8 +127,8 @@ for (const surface of ["/", "/repositories/22"]) {
     if (surface === "/") await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
     else if (info.project.name === "mobile") {
       await page.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
-      await page.getByRole("menuitem", { name: "acme/project", exact: true }).click();
-    } else await breadcrumb.getByRole("link", { name: "acme/project", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Pull requests", exact: true }).click();
+    } else await breadcrumb.getByRole("link", { name: "Pull requests", exact: true }).click();
     await expect(page).toHaveURL(returnUrl);
   });
 

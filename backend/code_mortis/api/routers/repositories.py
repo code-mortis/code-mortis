@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, USER, repo_access
-from code_mortis.api.presenters import repo_out
+from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import service as graphs
 from code_mortis.code_graph import store
@@ -33,9 +33,11 @@ def repositories(db: DB, user: USER):
 
     repos = github.visible_repositories(db, user)
     security = summaries(db, [repo.id for repo in repos])
+    reviews = latest_repository_reviews(db, [repo.id for repo in repos])
     result = [repo_out(db, repo) for repo in repos]
     for repo in result:
         repo.security = security[repo.id]
+        repo.latest_completed_review = reviews.get(repo.id)
     return result
 
 

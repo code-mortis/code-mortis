@@ -158,10 +158,12 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const syncHere = action.variables?.path === syncPath;
   const syncPending = syncHere && action.isPending;
   const Visibility = selected?.private ? LockKeyhole : Globe;
-  const repositoryNameStart = (selected?.full_name.lastIndexOf("/") ?? -1) + 1;
+  const latestReview = !repos.error ? selected?.latest_completed_review : null;
+  const lastCheck = !repos.error ? selected?.last_pr_sync_check_at : null;
   return <>
     <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" title={selected ? <><span className="font-normal text-muted-foreground">{selected.full_name.slice(0, repositoryNameStart)}</span>{selected.full_name.slice(repositoryNameStart)}</> : "Repositories"}
+      <PageTitle className="mb-0" title={selected ? "Pull requests" : "Repositories"}
+        headingProps={selected ? { id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } } : undefined}
         actions={selected && <>
           <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
             onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
@@ -170,11 +172,22 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
           </Button>
           {admin && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
         </>}>
-        {selected ? <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-          <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
-          <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-          <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
-        </div> : "Follow each pull request from first review to final resolution."}
+        {selected ? <>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
+            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
+            <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+          </div>
+          {(lastCheck || latestReview || (!repos.error && selected.has_running_review)) && <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {lastCheck && <span>Last successful GitHub PR check · <time dateTime={lastCheck}>{date(lastCheck)}</time></span>}
+            {latestReview && <Link className="rounded-sm underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+              to={`/runs/${latestReview.run_id}`} state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
+              title={`Reviewed commit ${latestReview.head_sha}`}>
+              Last completed review · PR #{latestReview.number} · <code>{latestReview.head_sha.slice(0, 7)}</code>
+            </Link>}
+            {!repos.error && selected.has_running_review && <span>Review in progress</span>}
+          </p>}
+        </> : "Follow each pull request from first review to final resolution."}
       </PageTitle>
       {selected && <section aria-label="Review configuration" className="mt-6 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">

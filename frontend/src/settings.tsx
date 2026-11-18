@@ -253,12 +253,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
         }
       }}
     >
-      <PageTitle title="Repository configuration">
-        <p className="flex items-center gap-2">
-          <FolderGit2 className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
-        </p>
-      </PageTitle>
+      <PageTitle title="Repository configuration" />
       <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
         <SettingsNavigation label="Repository settings sections" value={section}
           items={sections.map((item) => ({ ...item, to: `?${sectionSearch(item.value)}`, state: location.state }))} />

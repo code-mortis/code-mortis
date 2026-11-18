@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { Badge } from "./ui/badge";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
-import { Skeleton } from "./ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Code } from "./code";
 import { engineDiagnostic, errorFeedback } from "../lib/error-feedback";
@@ -101,16 +100,7 @@ export function TechnicalDetails({ error, name, compact = false }: { error: stri
 }
 
 export function Loading() {
-  return (
-    <div role="status" className="space-y-5 py-8">
-      <span className="text-sm text-muted-foreground">Loading workspace…</span>
-      <div aria-hidden="true" className="space-y-3">
-        <Skeleton className="h-4 w-2/3 max-w-sm" />
-        <Skeleton className="h-4 w-full max-w-xl" />
-        <Skeleton className="h-4 w-1/2 max-w-xs" />
-      </div>
-    </div>
-  );
+  return null;
 }
 export function Empty({
   title,

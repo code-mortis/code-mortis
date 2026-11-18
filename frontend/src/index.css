@@ -321,3 +321,15 @@
   .review-row-grid { grid-template-columns: minmax(0, 1fr) 6.5rem 10rem 1rem; }
   .review-row-grid > :first-child { grid-column: auto; }
 }
+
+.workspace-progress > div {
+  width: 35%;
+  animation: workspace-loading 1.2s ease-in-out infinite;
+}
+@keyframes workspace-loading {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(286%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-progress > div { width: 100%; animation: none; }
+}

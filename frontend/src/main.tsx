@@ -21,6 +21,7 @@ import {
   ErrorNotice,
   Field,
   Loading,
+  PageTitle,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
@@ -29,6 +30,7 @@ import { Brand } from "./components/brand";
 import raven from "./assets/raven.svg";
 import logo from "./assets/logo.svg";
 import { AppHeader } from "./components/app-header";
+import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
 import { AppBreadcrumb } from "./components/app-breadcrumb";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
@@ -50,12 +52,18 @@ function NavigationError() {
   return <div className="mb-4 space-y-2"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
 }
 
-function RepositoryOverview() {
+function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
+  const route = useLocation();
+  const params = new URLSearchParams(route.search);
   const { directory, repository } = useWorkspaceNavigation();
   if (directory.isPending) return <Loading />;
   if (directory.error) return <div className="space-y-3"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
   if (!repository) return <Empty title="Repository unavailable">Choose a repository from the navigation.</Empty>;
-  return <Suspense fallback={<Loading />}><Analytics key={repository.id} repository={repository} /></Suspense>;
+  if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
+    return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
+  }
+  if (!analytics) return <PageTitle title="Overview" />;
+  return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
 }
 
 const initialAppearance = readAppearance();
@@ -230,9 +238,10 @@ function App() {
   }, [session.data]);
   if (setup.isPending || (setup.data?.configured && session.isPending))
     return (
-      <div className="px-8">
-        <Loading />
-      </div>
+      <header className="relative flex min-h-14 items-center border-b bg-background px-4 sm:px-8">
+        <img src={logo} alt="Code Mortis" className="h-7 w-auto" width="232" height="192" />
+        <WorkspaceProgress />
+      </header>
     );
   if (setup.error)
     return (
@@ -290,7 +299,7 @@ function App() {
       <div className="flex min-w-0 flex-1">
       <AppSidebar admin={session.data.role === "admin"} />
       <div className="min-w-0 flex-1">
-        <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8">
+        <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8 has-[[data-slot=breadcrumb]]:pt-4">
           <div className="mx-auto max-w-6xl">
             <NavigationError />
             <AppBreadcrumb admin={session.data.role === "admin"} />
@@ -299,11 +308,12 @@ function App() {
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
               <Route path="/analytics" element={<LegacyAnalytics />} />
               <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview />} />
+              <Route path="/repositories/:repositoryId/analytics" element={<RepositoryOverview analytics />} />
               <Route path="/organizations/:owner/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/security" element={<Navigate to="/repositories" replace />} />
-              <Route path="/security/repositories/:id" element={<Suspense fallback={<Loading />}><SecurityRepository user={session.data} /></Suspense>} />
-              <Route path="/security/scans/:id" element={<Suspense fallback={<Loading />}><SecurityScan user={session.data} /></Suspense>} />
+              <Route path="/security/repositories/:id" element={<Suspense fallback={<WorkspaceProgressFallback />}><SecurityRepository user={session.data} /></Suspense>} />
+              <Route path="/security/scans/:id" element={<Suspense fallback={<WorkspaceProgressFallback />}><SecurityScan user={session.data} /></Suspense>} />
               <Route
                 path="/repositories/:repositoryId"
                 element={<Repositories admin={session.data.role === "admin"} />}
@@ -384,9 +394,11 @@ createRoot(document.getElementById("root")!, {
   <React.StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={cache}>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <WorkspaceProgressProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </WorkspaceProgressProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   </React.StrictMode>,

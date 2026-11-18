@@ -1,6 +1,6 @@
 name = "security_reviewer"
 description = "Review authorization, token/MCP scope, secrets, provider endpoints and untrusted-source isolation."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 developer_instructions = """
 Follow AGENTS.md and the parent assignment. Review source and callers without editing files

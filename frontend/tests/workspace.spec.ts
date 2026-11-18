@@ -699,7 +699,7 @@ async function mock(
 
 async function openNavigation(page: Page) {
   const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
-  if (page.viewportSize()!.width < 1024 && /^\/(?:repositories\/[^/]+(?:\/(?:settings|overview))?|pulls\/[^/]+|runs\/[^/]+|security\/(?:repositories|scans)\/[^/]+)\/?$/.test(new URL(page.url()).pathname)) {
+  if (page.viewportSize()!.width < 1024 && /^\/(?:repositories\/[^/]+(?:\/(?:settings|overview|analytics))?|pulls\/[^/]+|runs\/[^/]+|security\/(?:repositories|scans)\/[^/]+)\/?$/.test(new URL(page.url()).pathname)) {
     await expect(toggle).toBeVisible();
     await toggle.click();
   }
@@ -712,19 +712,20 @@ async function closeNavigation(page: Page) {
 
 async function chooseRepository(page: Page, name: string) {
   await closeNavigation(page);
-  const picker = page.getByRole("combobox", { name: "Repository", exact: true });
-  await picker.fill(name.split("/").at(-1)!);
+  await page.getByRole("combobox", { name: /^Repository:/ }).click();
+  await page.getByRole("combobox", { name: "Find a repository", exact: true }).fill(name.split("/").at(-1)!);
   await page.getByRole("option", { name: name.split("/").at(-1)!, exact: true }).click();
   await openNavigation(page);
   await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }).click();
 }
 
 async function breadcrumbAncestor(page: Page, name: string) {
-  if (page.viewportSize()!.width < 640) {
-    await page.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
-    return page.getByRole("menuitem", { name, exact: true });
-  }
-  return page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name, exact: true, disabled: false });
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  await expect(breadcrumb.getByRole("link", { name, exact: true, disabled: false, includeHidden: true })).toBeAttached();
+  const link = breadcrumb.getByRole("link", { name, exact: true, disabled: false });
+  if (await link.isVisible()) return link;
+  await breadcrumb.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
+  return page.getByRole("menuitem", { name, exact: true });
 }
 
 async function chooseOption(page: Page, input: Locator, choice: string) {
@@ -854,7 +855,7 @@ test("ignored run status keeps restoration navigation outside the live region", 
 test("workspace pages keep one visible heading and let keyboard users skip navigation", async ({ page }, info) => {
   await mock(page);
   for (const [name, path, heading] of [
-    ["repository", "/repositories/22", "acme/payments"],
+    ["repository", "/repositories/22", "Pull requests"],
     ["pull", "/pulls/pr", `#${pr.number} ${pr.title}`],
     ["run", "/runs/run", "Review run"],
     ["settings", "/settings", "Settings"],
@@ -890,11 +891,22 @@ test("skip navigation preserves the filtered repository return context", async (
   await expect(page.getByRole("main")).toBeFocused();
   expect(page.url()).toBe(detailUrl);
   expect(await page.evaluate(() => history.state)).toEqual(state);
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", repositoryPath);
   await back.click();
   await expect(page).toHaveURL(repositoryUrl);
   await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+  await pull.click();
+  await (await breadcrumbAncestor(page, "payments")).click();
+  await expect(page).toHaveURL("/repositories/22/overview");
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Analytics", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/22/analytics");
+  await page.getByRole("combobox", { name: "Date range", exact: true }).fill("7");
+  await page.getByRole("option", { name: "Last 7 days", exact: true }).click();
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }).click();
+  await expect(page).toHaveURL(repositoryUrl);
 });
 
 test("primary page tabs stay keyboard accessible when they wrap", async ({ page }, info) => {
@@ -929,25 +941,28 @@ test("home has only Inbox while organization and repository pickers open scoped 
   await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
   await expect(page.locator('[data-slot="sidebar-trigger"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Account menu for @carlos" })).toBeVisible();
-  const organization = page.getByRole("combobox", { name: "Organization", exact: true });
+  await page.getByRole("combobox", { name: "Organization: Workspace" }).press("Enter");
+  const organization = page.getByRole("combobox", { name: "Find an organization", exact: true });
+  await expect(organization).toBeFocused();
   await organization.fill("other");
   await page.getByRole("option", { name: "other", exact: true }).click();
   await expect(page).toHaveURL("/organizations/other/repositories");
   await expect(page.getByRole("navigation", { name: "Repositories in other" }).getByRole("link")).toHaveText(["other/service"]);
   await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
-  await page.getByRole("combobox", { name: "Repository", exact: true }).fill("service");
+  await page.getByRole("combobox", { name: "Repository: Choose repository", exact: true }).click();
+  await page.getByRole("combobox", { name: "Find a repository", exact: true }).fill("service");
   await page.getByRole("option", { name: "service", exact: true }).click();
   await expect(page).toHaveURL("/repositories/23/overview");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Repository sections" });
-  await expect(nav.getByRole("link")).toHaveText(["Overview", "Pull requests", "Security", "Repository settings"]);
+  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Security", "Repository settings"]);
   await expect(nav.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
   await nav.getByRole("link", { name: "Pull requests", exact: true }).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await expect(page.getByRole("dialog", { name: "Navigation" })).toHaveCount(0);
   await page.goto("/pulls/pr");
-  await expect(page.getByRole("combobox", { name: "Organization", exact: true })).toHaveValue("acme");
-  await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveValue("payments");
+  await expect(page.getByRole("combobox", { name: "Organization: acme", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
   await openNavigation(page);
   await expect(nav.getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
   if (info.project.name === "desktop") {
@@ -971,15 +986,16 @@ test("repository paths preserve legacy settings links and never fall back from a
   await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories?repo=23&configure=limits#settings");
   await expect(page).toHaveURL(/\/repositories\/23\/settings\?tab=limits$/);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toContainText("other/payments");
+  await expect(page.getByRole("combobox", { name: "Organization: other", exact: true })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository configuration" })).not.toContainText("other/payments");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
-  await (await breadcrumbAncestor(page, "other/payments")).click();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await page.goto("/repositories/22/settings?repo=23&configure=limits&state=all&q=retry&tab=connection");
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?state=all&q=retry&tab=limits$/);
-  const repositoryCrumb = await breadcrumbAncestor(page, repo.full_name);
+  const repositoryCrumb = await breadcrumbAncestor(page, "Pull requests");
   await expect(repositoryCrumb).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
   await repositoryCrumb.click();
   await expect(page).toHaveURL((url) => url.pathname === "/repositories/22" && url.searchParams.size === 2
@@ -1119,6 +1135,8 @@ test("repository activity and directory failures refresh without stale navigatio
     ? { status: failure, json: { detail: "Repositories unavailable" } }
     : { json: [{ ...repo, has_running_review: running }] }));
   await page.goto("/repositories/22");
+  const activityText = page.locator('[data-slot="page-title"]').getByText(/Review in progress/);
+  await expect(activityText).toBeVisible();
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Repository sections" });
   const activity = nav.getByRole("link", { name: "Pull requests", exact: true }).locator(".motion-safe\\:animate-spin");
@@ -1127,16 +1145,46 @@ test("repository activity and directory failures refresh without stale navigatio
   await page.clock.fastForward(6000);
   await expect(activity).toHaveCount(0);
   await closeNavigation(page);
+  await expect(activityText).toHaveCount(0);
   for (const status of [503, 403, 401]) {
     failure = status;
     await page.clock.fastForward(6000);
-    await expect(page.getByRole("combobox", { name: "Organization", exact: true })).toBeDisabled();
+    await expect(page.getByRole("combobox", { name: /^Organization:/ })).toBeDisabled();
     await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
-    await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: /^Repository:/ })).toHaveCount(0);
   }
   failure = 0;
   await page.getByRole("button", { name: "Retry repositories", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveValue("payments");
+  await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
+});
+
+test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }) => {
+  await mock(page);
+  const checked = "2026-11-18T10:30:00Z";
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
+    ...repo, last_pr_sync_check_at: checked,
+    latest_completed_review: {
+      run_id: "run", pull_request_id: "pr", number: 148, head_sha: "c".repeat(40),
+      finished_at: "2026-11-18T10:00:00Z",
+    },
+  }] }));
+  await page.goto("/repositories/22?q=148&state=open&ordering=title");
+  const header = page.locator('[data-slot="page-title"]');
+  await expect(header.getByText(/Last successful GitHub PR check/)).toBeVisible();
+  await expect(header.locator("time")).toHaveAttribute("datetime", checked);
+  const review = header.getByRole("link", { name: "Last completed review · PR #148 · ccccccc", exact: true });
+  await expect(review).toHaveAttribute("href", "/runs/run");
+  await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
+  const returnUrl = page.url();
+  await review.click();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
+  await expect(page).toHaveURL(returnUrl);
+  await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
+  await expect(header.getByText(/Last successful GitHub PR check|Last completed review/)).toHaveCount(0);
 });
 
 test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {
@@ -1166,18 +1214,18 @@ test("directory picks up repository changes after the GitHub installation callba
   let repositories: (typeof repo)[] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: repositories }));
   await page.goto("/settings?tab=github&installed=1");
-  const picker = page.getByRole("combobox", { name: "Organization", exact: true });
-  await picker.fill("acme");
+  const picker = page.getByRole("combobox", { name: /^Organization:/ });
+  await picker.click();
   await expect(page.getByRole("option", { name: "acme", exact: true })).toHaveCount(0);
-  await picker.press("Escape");
+  await page.getByRole("combobox", { name: "Find an organization" }).press("Escape");
   repositories = [repo];
   await page.clock.fastForward(6000);
-  await picker.fill("acme");
+  await picker.click();
   await expect(page.getByRole("option", { name: "acme", exact: true })).toBeVisible();
-  await picker.press("Escape");
+  await page.getByRole("combobox", { name: "Find an organization" }).press("Escape");
   repositories = [];
   await page.clock.fastForward(6000);
-  await picker.fill("acme");
+  await picker.click();
   await expect(page.getByRole("option", { name: "acme", exact: true })).toHaveCount(0);
 });
 
@@ -1228,11 +1276,11 @@ test("sidebar shortcut leaves editing controls alone", async ({ page }, info) =>
 
 test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ page }) => {
   await mock(page);
-  for (const [path, label] of [["/pulls/pr/", "Pull request #148"], ["/runs/run/", "Review run"]]) {
+  for (const [path, label] of [["/pulls/pr/", "#148"], ["/runs/run/", "Review run"]]) {
     await page.goto(path);
     const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(label);
-    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", `/repositories/${repo.id}`);
+    await expect(await breadcrumbAncestor(page, "payments")).toHaveAttribute("href", `/repositories/${repo.id}/overview`);
     await page.keyboard.press("Escape");
     await openNavigation(page);
     await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
@@ -1245,11 +1293,11 @@ test("repository breadcrumbs and sidebar match only supported routes", async ({ 
   const navigation = page.getByRole("navigation", { name: "Repository sections" });
   for (const suffix of ["", "/"]) {
     await page.goto(`/repositories/22${suffix}`);
-    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(repo.full_name);
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Pull requests");
     await page.goto(`/repositories/22/settings${suffix}?state=all&tab=limits`);
     await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", "/repositories/22?state=all");
+    await expect(await breadcrumbAncestor(page, "Pull requests")).toHaveAttribute("href", "/repositories/22?state=all");
     await page.keyboard.press("Escape");
     await openNavigation(page);
     const repository = navigation.getByRole("link", { name: "Pull requests", exact: true });
@@ -1287,8 +1335,9 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22");
-  const count = page.getByRole("heading", { name: "Pull requests", exact: true }).locator("..").getByRole("status");
+  const count = page.getByRole("region", { name: "Pull requests", exact: true }).locator(':scope > p[role="status"]');
   await expect(count).toHaveText("1 of 14 pull request");
+  await expect(page.locator('[data-slot="page-title"]').getByText("2 open pull requests", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
   const merged = page.getByRole("region", { name: "Merged", exact: true });
@@ -1357,7 +1406,7 @@ test("repository filters survive configuration and the pull request run round tr
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
   await noOverflow(page);
-  await (await breadcrumbAncestor(page, repo.full_name)).click();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/q=148&state=open&author=maria&findings=open$/);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await page.getByRole("tab", { name: "Run history" }).click();
@@ -1365,7 +1414,7 @@ test("repository filters survive configuration and the pull request run round tr
   await openNavigation(page);
   await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await closeNavigation(page);
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await back.click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
@@ -2320,7 +2369,7 @@ test("repository configuration sections retain navigation and fit both themes", 
   await page.goto("/repositories/22/settings?q=148&state=all&tab=connection");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=all");
   await page.keyboard.press("Escape");
   await openNavigation(page);
@@ -2346,7 +2395,7 @@ test("repository configuration sections retain navigation and fit both themes", 
   }
   await page.reload();
   await expect(page.getByLabel("Maximum files", { exact: true })).toBeVisible();
-  await (await breadcrumbAncestor(page, repo.full_name)).click();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/repositories\/22\?q=148&state=all$/);
   expect(requests).toEqual([]);
 });
@@ -2561,7 +2610,7 @@ test("repository navigation, filtering, and review workspace", async ({
   await mock(page);
   await page.goto("/repositories/22");
   await expect(
-    page.getByRole("heading", { name: repo.full_name, exact: true }),
+    page.locator('[data-slot="page-title"]').getByRole("heading", { level: 1, name: "Pull requests", exact: true }),
   ).toBeVisible();
   await page.getByLabel("Search pull requests").fill("148");
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
@@ -2626,11 +2675,17 @@ for (const entry of ["history", "feedback", "start"] as const) {
     await openNavigation(page);
     await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
-    await (await breadcrumbAncestor(page, "Pull request #148")).click();
+    await (await breadcrumbAncestor(page, "#148")).click();
     await expect(page).toHaveURL((url) => url.pathname === "/pulls/pr");
     await openNavigation(page);
     await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
+    if (entry === "history") {
+      await (await breadcrumbAncestor(page, "Pull requests")).click();
+      await expect(page).toHaveURL("/repositories/22?state=open");
+      await (await breadcrumbAncestor(page, "payments")).click();
+      await expect(page).toHaveURL("/repositories/22/overview");
+    }
     await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
     await expect(page).toHaveURL(inbox);
     await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
@@ -3334,7 +3389,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByText("6 recorded findings", { exact: true })).toHaveCount(0);
   expect((await page.getByRole("tab", { name: "Findings 6", exact: true }).boundingBox())!.y).toBeGreaterThan((await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox())!.y);
   await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveCount(0);
-  await expect(await breadcrumbAncestor(page, "Pull request #148")).toHaveAttribute("href", "/pulls/pr");
+  await expect(await breadcrumbAncestor(page, "#148")).toHaveAttribute("href", "/pulls/pr");
   await page.keyboard.press("Escape");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
@@ -4633,7 +4688,8 @@ test("current finding header waits for current evidence instead of showing the s
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByText("high", { exact: true })).toBeVisible();
   await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
-  await expect(sheet.getByRole("status")).toContainText("Loading workspace");
+  await expect(page.locator('header [role="progressbar"][aria-label="Loading workspace"]')).toBeVisible();
+  await expect(sheet.locator('[data-slot="skeleton"]')).toHaveCount(0);
   await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
   await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
   release();
@@ -5813,21 +5869,21 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   await page.goto("/runs/run");
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(current).toHaveText("Review run");
-  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/");
+  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveCount(0);
   await noOverflow(page);
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
     await page.screenshot({ path: `../.impeccable/review/header-${info.project.name}-${theme}.png`, animations: "disabled" });
   }
-  const parent = await breadcrumbAncestor(page, "Pull request #148");
+  const parent = await breadcrumbAncestor(page, "#148");
   await expect(parent).toHaveAttribute("href", "/pulls/pr");
   await parent.press("Enter");
-  await expect(current).toHaveText("Pull request #148");
-  await (await breadcrumbAncestor(page, "acme/payments")).click();
-  await expect(page).toHaveURL(/\/repositories\/22\?state=open$/);
-  await expect(current).toHaveText("acme/payments");
-  await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
+  await expect(current).toHaveText("#148");
+  await (await breadcrumbAncestor(page, "payments")).click();
+  await expect(page).toHaveURL("/repositories/22/overview");
+  await expect(current).toHaveText("Overview");
+  await page.getByRole("link", { name: "Code Mortis home", exact: true }).click();
   await expect(page).toHaveURL(/\?state=open$/);
   await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
   await expect(breadcrumb).toHaveCount(0);
@@ -5866,7 +5922,7 @@ test("breadcrumbs keep long names accessible without pushing the theme button of
     await expect(page.getByRole("navigation", { name: "Breadcrumb", exact: true }).locator('[aria-current="page"]')).toBeInViewport();
     await noOverflow(page);
   }
-  await expect(await breadcrumbAncestor(page, fullName)).toHaveAttribute("href", "/repositories/22");
+  await expect(await breadcrumbAncestor(page, fullName.split("/")[1])).toHaveAttribute("href", "/repositories/22/overview");
   await page.screenshot({ path: `../.impeccable/review/header-long-${info.project.name}.png`, animations: "disabled" });
 });
 
@@ -6923,10 +6979,13 @@ test("settings keep loading and failed requests distinct from empty connections"
     await route.fulfill({ status: 503, json: { detail: "Connections could not be loaded." } });
   });
   await page.goto("/settings");
-  await expect(page.getByText("Loading workspace…")).toBeVisible();
+  const progress = page.getByRole("banner").getByRole("progressbar", { name: "Loading workspace" });
+  await expect(progress).toBeVisible();
+  await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
   release();
   await expect(page.getByRole("alert")).toContainText("Connections could not be loaded");
+  await expect(progress).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Shared API connections" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your subscriptions" })).toHaveCount(0);
   await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [] }));

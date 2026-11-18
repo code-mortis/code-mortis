@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { CalendarIcon, RefreshCw } from "lucide-react";
 import { useApi, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
@@ -55,6 +55,7 @@ function UsageTable({ title, rows }: { title: string; rows: Schema["AnalyticsUsa
 
 export default function Analytics({ repository }: { repository: Pick<Schema["RepositoryOut"], "id" | "full_name"> }) {
   const [params, setParams] = useSearchParams();
+  const { state } = useLocation();
   const [tab, setTab] = useUrlTab("tab", [...analyticsTabs], "overview");
   const range = analyticsRange(params);
   useEffect(() => {
@@ -63,8 +64,8 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
     next.set("period", "custom");
     next.set("start", range.start);
     next.set("end", range.end);
-    setParams(next, { replace: true });
-  }, [params, setParams, range.period, range.error, range.start, range.end]);
+    setParams(next, { replace: true, state });
+  }, [params, setParams, state, range.period, range.error, range.start, range.end]);
   const valid = !range.error;
   const orderings = { count: tab === "usage" ? "Tokens" : "Count", key: "Name" };
   const ordering = normalizeOrdering(params.get("ordering"), orderings, "-count");
@@ -85,14 +86,14 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
     const next = new URLSearchParams(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(next);
+    setParams(next, { state });
   }
   function findingFilter(key: "severity" | "category", value: string) {
     const next = new URLSearchParams(params);
     next.set("tab", "findings");
     for (const filter of ["severity", "category", "status"]) next.delete(filter);
     next.set(key, value);
-    setParams(next);
+    setParams(next, { state });
   }
   function setPeriod(value: string) {
     const next = new URLSearchParams(params);
@@ -104,14 +105,14 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
     } else {
       next.delete("start"); next.delete("end");
     }
-    setParams(next);
+    setParams(next, { state });
   }
   const empty = scope && (tab === "overview" ? !overview.data?.findings && !overview.data?.trend.some((point) => point.runs)
     : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs
     : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
   return <div className="min-w-0 space-y-6">
-    <PageTitle title="Overview" />
+    <PageTitle title="Analytics" />
     <div role="group" aria-label="Analytics filters">
       <FilterBar filters={[]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
@@ -142,7 +143,7 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
         { key: "category", label: "Category", values: params.getAll("category"), choices: choices(findings.data?.category_options ?? params.getAll("category")), searchPlaceholder: "Find a category…" },
         { key: "status", label: "Status", values: params.getAll("status"), choices: choices(["open", "resolved", "dismissed"]) },
       ]} onChange={change}>
-        {["severity", "category", "status"].some((key) => params.has(key)) && <Button variant="ghost" onClick={() => { const next = new URLSearchParams(params); ["severity", "category", "status"].forEach((key) => next.delete(key)); setParams(next); }}>Clear finding filters</Button>}
+        {["severity", "category", "status"].some((key) => params.has(key)) && <Button variant="ghost" onClick={() => { const next = new URLSearchParams(params); ["severity", "category", "status"].forEach((key) => next.delete(key)); setParams(next, { state }); }}>Clear finding filters</Button>}
       </FilterBar></div>}
       {range.error ? <ErrorNotice error={range.error} /> : query.error ? <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => query.refetch()}>Retry analytics</Button></div> : query.isPending ? <Loading /> : <>
         {scope && !scope.repositories.length ? <Empty title="No repositories available">This repository is unavailable. <Link className="underline underline-offset-4" to="/settings?tab=github">Manage GitHub connections</Link>.</Empty> : empty ? <Empty title={tab === "findings" ? "No findings recorded in this period" : tab === "security" ? "No security activity in this period" : "No review activity in this period"}>Choose a wider date range. No findings does not establish complete review coverage.<Button variant="outline" className="mt-4" onClick={() => setPeriod("all")}>View all time</Button></Empty> : <>

@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
-import { ChartNoAxesCombined, GitPullRequest, LoaderCircle, Settings, ShieldCheck, X } from "lucide-react";
+import { ChartNoAxesCombined, House, GitPullRequest, LoaderCircle, Settings, ShieldCheck, X } from "lucide-react";
 import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
+import { getInboxReturn } from "../lib/inbox-filters";
 import { getRepositoryReturn } from "../lib/navigation";
 import { Button } from "./ui/button";
 import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarTrigger, useSidebar } from "./ui/sidebar";
@@ -18,13 +19,17 @@ export function AppSidebar({ admin }: { admin: boolean }) {
   if (!repository) return null;
   const base = `/repositories/${repository.id}`;
   const repositoryReturn = getRepositoryReturn(route.state);
+  const inbox = getInboxReturn(route.state);
   const search = new URLSearchParams(route.search);
   search.delete("tab");
-  const pullPath = repositoryReturn?.split("?")[0] === base ? repositoryReturn
-    : section === "settings" && search.size ? `${base}?${search}` : base;
+  const listPath = base + (search.size ? `?${search}` : "");
+  const savedList = repositoryReturn?.split("?")[0] === base ? repositoryReturn : null;
+  const pullPath = route.pathname.replace(/\/+$/, "") === base ? listPath
+    : savedList ?? (section === "settings" ? listPath : base);
   const running = ["queued", "running", "blocked"].includes(repository.security?.latest_status ?? "");
   const items = [
-    { key: "overview", label: "Overview", path: base + "/overview", icon: ChartNoAxesCombined },
+    { key: "overview", label: "Overview", path: base + "/overview", icon: House },
+    { key: "analytics", label: "Analytics", path: base + "/analytics", icon: ChartNoAxesCombined },
     { key: "pulls", label: "Pull requests", path: pullPath, icon: GitPullRequest },
     { key: "security", label: "Security", path: `/security/repositories/${repository.id}`, icon: ShieldCheck },
     ...(admin ? [{ key: "settings", label: "Repository settings", path: base + "/settings", icon: Settings }] : []),
@@ -38,7 +43,7 @@ export function AppSidebar({ admin }: { admin: boolean }) {
         <SidebarMenu>
           {items.map(({ key, label, path, icon: Icon }) => <SidebarMenuItem key={key}>
             <SidebarMenuButton asChild isActive={section === key} className="h-10">
-              <Link to={path} aria-label={key === "security" && running ? "Security, scan running" : undefined} aria-current={section === key ? "page" : undefined} onClick={() => setOpenMobile(false)}>
+              <Link to={path} state={{ inbox, repository: pullPath }} aria-label={key === "security" && running ? "Security, scan running" : undefined} aria-current={section === key ? "page" : undefined} onClick={() => setOpenMobile(false)}>
                 <Icon aria-hidden="true" /><span className="flex-1">{label}</span>
                 {((key === "security" && running) || (key === "pulls" && repository.has_running_review)) && <LoaderCircle aria-hidden="true" className="size-3 text-primary motion-safe:animate-spin" />}
               </Link>

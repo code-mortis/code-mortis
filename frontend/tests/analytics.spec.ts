@@ -49,6 +49,29 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
   return requests;
 }
 
+test("repository Overview stays empty before opening Analytics", async ({ page }, info) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/overview");
+  await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("heading")).toHaveCount(1);
+  await expect(page.getByRole("group", { name: "Analytics filters", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tabpanel")).toHaveCount(0);
+  expect(requests).toHaveLength(0);
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Analytics", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/22/analytics");
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
+  await expect.poll(() => requests.length).toBeGreaterThan(0);
+  expect(requests.every((url) => url.searchParams.get("repo") === "22")).toBe(true);
+});
+
+test("legacy repository Overview analytics filters open Analytics", async ({ page }) => {
+  await mock(page);
+  await page.goto("/repositories/23/overview?period=90&tab=usage");
+  await expect(page).toHaveURL("/repositories/23/analytics?period=90&tab=usage");
+  await expect(page.getByRole("heading", { name: "Usage by model", exact: true })).toBeVisible();
+});
+
 test("date presets and custom ranges preserve local calendar boundaries", () => {
   const today = new Date(2026, 9, 18, 12);
   for (const days of [7, 30, 90]) {
@@ -70,8 +93,8 @@ test("date presets and custom ranges preserve local calendar boundaries", () => 
 
 test("date range arrow opens and closes choices without typing", async ({ page }, info) => {
   await mock(page);
-  await page.goto("/repositories/22/overview");
-  await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
+  await page.goto("/repositories/22/analytics");
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   const period = page.getByRole("combobox", { name: "Date range", exact: true });
   const trigger = page.getByRole("group", { name: "Analytics filters", exact: true }).locator('button[aria-label="Show options"]');
   const toggle = () => info.project.name === "mobile" ? trigger.tap() : trigger.click();
@@ -100,7 +123,7 @@ test("date range arrow opens and closes choices without typing", async ({ page }
 test("last 30 days rolls forward by default while explicit custom dates stay fixed", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   const requests = await mock(page);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("combobox", { name: "Date range", exact: true })).toHaveValue("Last 30 days");
   await expect(page.getByRole("button", { name: "From", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Through", exact: true })).toHaveCount(0);
@@ -135,7 +158,7 @@ test("compact numbers preserve zero, missing values and magnitude boundaries", (
 test("compact metrics and table values expose full numbers on hover, focus and tap", async ({ page }, info) => {
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
   await mock(page, (view) => view === "overview" ? { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] } : view === "security" ? { ...security, scans: 1200 } : undefined);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   const metric = page.locator("dl").getByRole("button", { name: "441,757,065", exact: true });
   await expect(metric).toHaveText("441.8M");
   if (info.project.name === "mobile") await metric.tap();
@@ -171,8 +194,8 @@ test("compact metrics and table values expose full numbers on hover, focus and t
 
 test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22/overview");
-  await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
+  await page.goto("/repositories/22/analytics");
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Repository", exact: true }).first()).toBeVisible();
   expect(requests.every((url) => url.pathname.endsWith("/overview"))).toBe(true);
@@ -184,8 +207,8 @@ test("overview loads only its endpoint and charts offer data tables", async ({ p
 
 test("repository overview locks scope across tabs, URL filters, reload and retries", async ({ page }) => {
   const requests = await mock(page);
-  await page.goto("/repositories/23/overview?repo=22&repo=999");
-  await expect(page.getByRole("heading", { name: "Overview", exact: true, level: 1 })).toBeVisible();
+  await page.goto("/repositories/23/analytics?repo=22&repo=999");
+  await expect(page.getByRole("heading", { name: "Analytics", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByRole("group", { name: "Analytics filters", exact: true }).getByRole("button", { name: "Filters", exact: true })).toHaveCount(0);
   await page.getByRole("combobox", { name: "Date range", exact: true }).fill("90");
   await page.getByRole("option", { name: "Last 90 days", exact: true }).click();
@@ -215,7 +238,7 @@ test("severity controls open a filtered Findings tab and filters clear", async (
   const requests = await mock(page, (view, params) => view === "findings" && params.has("severity") ? {
     ...findings, total: 3, statuses: [{ key: "open", count: 1 }, { key: "resolved", count: 2 }, { key: "dismissed", count: 0 }],
   } : undefined);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   await page.getByRole("button", { name: "Critical: 3 findings", exact: true }).click();
   await expect(page).toHaveURL(/tab=findings/);
   await expect(page).toHaveURL(/severity=critical/);
@@ -241,7 +264,7 @@ test("severity controls open a filtered Findings tab and filters clear", async (
 test("custom dates validate before requesting and keyboard switches tabs", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   const requests = await mock(page);
-  await page.goto("/repositories/22/overview?period=custom&start=2026-02-30&end=bad");
+  await page.goto("/repositories/22/analytics?period=custom&start=2026-02-30&end=bad");
   await expect(page.getByRole("alert")).toContainText("Choose a valid");
   expect(requests).toHaveLength(0);
   await page.getByRole("button", { name: "From", exact: true }).click();
@@ -263,7 +286,7 @@ test("custom dates validate before requesting and keyboard switches tabs", async
 for (const tab of ["usage", "security"]) test(`permission loss hides cached ${tab} analytics and offers recovery`, async ({ page }) => {
   await mock(page);
   const heading = tab === "usage" ? "Usage by model" : "Security activity";
-  await page.goto(`/repositories/22/overview?tab=${tab}`);
+  await page.goto(`/repositories/22/analytics?tab=${tab}`);
   await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   await page.route(`**/api/v1/analytics/${tab}?**`, (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -274,7 +297,7 @@ for (const tab of ["usage", "security"]) test(`permission loss hides cached ${ta
 
 test("security analytics preserves filters and exposes accessible scan data", async ({ page }) => {
   const requests = await mock(page);
-  await page.goto("/repositories/23/overview?tab=security&period=90&repo=23&severity=critical&status=dismissed");
+  await page.goto("/repositories/23/analytics?tab=security&period=90&repo=23&severity=critical&status=dismissed");
   const tab = page.getByRole("tab", { name: "Security", exact: true });
   await expect(tab).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#analytics-panel dl dd")).toHaveText(["12", "12", "6", "3"]);
@@ -304,7 +327,7 @@ test("security distinguishes empty history from scans without findings", async (
   await mock(page, (view) => view === "security" ? { ...security, scans, findings: 0, open: 0, resolved: 0,
     trend: [], severities: [], kinds: [], states: [], outcomes: scans ? [{ key: "failed", count: 1 }] : [],
   } : undefined);
-  await page.goto("/repositories/22/overview?tab=security&period=7");
+  await page.goto("/repositories/22/analytics?tab=security&period=7");
   await expect(page.getByText("No security activity in this period", { exact: true })).toBeVisible();
   scans = 1;
   await page.getByRole("button", { name: "View all time", exact: true }).click();
@@ -318,7 +341,7 @@ test("date controls align, wrap and show themed calendar popovers", async ({ pag
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1581, height: 938 });
   await page.clock.setFixedTime(new Date("2026-10-18T12:00:00Z"));
   await mock(page);
-  await page.goto("/repositories/22/overview?period=custom&start=2026-09-19&end=2026-10-18");
+  await page.goto("/repositories/22/analytics?period=custom&start=2026-09-19&end=2026-10-18");
   await mkdir("../.impeccable/review", { recursive: true });
   for (const mode of ["light", "dark"]) {
     await page.evaluate((mode) => localStorage.setItem("theme", mode), mode);
@@ -347,7 +370,7 @@ test("date controls align, wrap and show themed calendar popovers", async ({ pag
 
 test("empty activity, filtered findings and unknown tokens remain distinct", async ({ page }) => {
   await mock(page, (view) => view === "overview" ? { ...overview, reviewed_prs: 0, findings: 0, trend: [] } : view === "findings" ? { ...findings, total: 0, statuses: findings.statuses.map((row) => ({ ...row, count: 0 })) } : view === "usage" ? { ...usage, total: { ...total, tokens: null, mean_per_run: null, mean_per_reviewed_pr: null } } : undefined);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   await expect(page.getByText("No review activity in this period", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Findings", exact: true }).click();
   await expect(page.getByText("No findings match these filters", { exact: true })).toBeVisible();
@@ -358,7 +381,7 @@ test("empty activity, filtered findings and unknown tokens remain distinct", asy
 
 test("charts follow every palette and remain keyboard accessible", async ({ page }) => {
   await mock(page);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   for (const theme of themes) for (const mode of ["light", "dark"]) {
     await page.evaluate(({ theme, mode }) => {
       localStorage.setItem("color-theme", theme);
@@ -384,7 +407,7 @@ test("charts follow every palette and remain keyboard accessible", async ({ page
 test("capture Analytics in each tab and theme with long labels", async ({ page }, info) => {
   await page.clock.setFixedTime(new Date("2026-09-30T12:00:00Z"));
   await mock(page, (view) => view === "usage" ? { ...usage, models: [{ key: "provider/a-very-long-model-identifier-that-must-wrap-without-widening-the-workspace", repository_id: null, usage: total }] } : undefined);
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   await mkdir("../.impeccable/review", { recursive: true });
   for (const tab of ["Overview", "Findings", "Reviews", "Usage", "Security"]) {
@@ -452,11 +475,11 @@ for (const tab of ["overview", "findings", "reviews", "usage", "security"] as co
   test(`analytics ${tab} hides ordering controls and preserves saved ordering`, async ({ page }, info) => {
     if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
     const requests = await mock(page);
-    await page.goto(`/repositories/22/overview?tab=${tab}&period=all`);
+    await page.goto(`/repositories/22/analytics?tab=${tab}&period=all`);
     await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
     await expect(page.getByRole("group", { name: "Ordering", exact: true })).toHaveCount(0);
     expect(requests.at(-1)?.searchParams.get("ordering")).toBe("-count");
-    await page.goto(`/repositories/22/overview?tab=${tab}&period=all&ordering=-key`);
+    await page.goto(`/repositories/22/analytics?tab=${tab}&period=all&ordering=-key`);
     await expect.poll(() => requests.at(-1)?.searchParams.get("ordering")).toBe("-key");
     await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
     expect(requests.at(-1)?.pathname).toBe(`/api/v1/analytics/${tab}`);
@@ -480,7 +503,7 @@ for (const path of ["/analytics", "/analytics?repo=22&repo=23", "/security"]) te
 test("legacy single repository analytics links preserve the selected period and tab", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/analytics?repo=23&period=90&tab=usage");
-  await expect(page).toHaveURL("/repositories/23/overview?period=90&tab=usage");
+  await expect(page).toHaveURL("/repositories/23/analytics?period=90&tab=usage");
   await expect(page.getByRole("heading", { name: "Usage by model", exact: true })).toBeVisible();
   expect(requests.every((url) => url.searchParams.getAll("repo").join() === "23")).toBe(true);
 });

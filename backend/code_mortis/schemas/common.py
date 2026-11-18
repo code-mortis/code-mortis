@@ -319,6 +319,14 @@ class SecuritySummary(StrictModel):
     counts: dict[str, int] = Field(default_factory=dict)
 
 
+class RepositoryReviewSummary(StrictModel):
+    run_id: str
+    pull_request_id: str
+    number: int
+    head_sha: str
+    finished_at: datetime
+
+
 class RepositoryOut(ORMModel):
     id: int
     installation_id: int
@@ -333,6 +341,8 @@ class RepositoryOut(ORMModel):
     settings: RepoSettings
     open_prs: int = 0
     has_running_review: bool = False
+    last_pr_sync_check_at: datetime | None = None
+    latest_completed_review: RepositoryReviewSummary | None = None
     security: SecuritySummary | None = None
 
 

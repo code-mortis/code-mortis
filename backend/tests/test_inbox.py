@@ -45,6 +45,41 @@ def get(client, query=""):
     return response.json()
 
 
+def test_repository_latest_review_is_scoped_completed_and_uses_reviewed_commit(visible, client):
+    finished = now().replace(microsecond=0)
+    with transaction() as db:
+        db.get(Repository, 22).last_pr_sync_check_at = finished - timedelta(minutes=5)
+        reviewed = pull(db, "reviewed")
+        run(db, reviewed, "completed", "older", finished_at=finished - timedelta(minutes=1))
+        run(db, reviewed, "completed", "latest-a", head_sha="c" * 40, finished_at=finished)
+        run(db, reviewed, "completed", "latest-z", head_sha="d" * 40, finished_at=finished)
+        run(db, reviewed, "failed", "failed", finished_at=finished + timedelta(minutes=1))
+        run(db, reviewed, "partial", "partial", finished_at=finished + timedelta(minutes=2))
+        run(db, reviewed, "completed", "unfinished")
+        db.add(Repository(id=23, installation_id=10, full_name="other/project"))
+        db.flush()
+        other = pull(db, "other", repo=23)
+        run(db, other, "completed", "other-run", finished_at=finished + timedelta(minutes=3))
+        number = reviewed.number
+    response = client.get("/api/v1/repositories")
+    assert response.status_code == 200, response.text
+    repository = response.json()[0]
+    assert len(response.json()) == 1
+    assert repository["latest_completed_review"] == {
+        "run_id": "latest-z", "pull_request_id": "reviewed", "number": number,
+        "head_sha": "d" * 40, "finished_at": finished.isoformat().replace("+00:00", "Z"),
+    }
+    assert repository["last_pr_sync_check_at"] == (finished - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+
+
+def test_repository_activity_has_no_invented_history(visible, client):
+    response = client.get("/api/v1/repositories")
+    assert response.status_code == 200, response.text
+    repository = response.json()[0]
+    assert repository["last_pr_sync_check_at"] is None
+    assert repository["latest_completed_review"] is None
+
+
 @pytest.mark.parametrize("state", ["open", "merged", "closed"])
 @pytest.mark.parametrize("status", ["running", "queued", "blocked", "completed", "failed"])
 def test_repository_review_activity(visible, github_stub, client, state, status):

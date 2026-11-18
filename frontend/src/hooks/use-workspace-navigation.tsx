@@ -13,6 +13,7 @@ function useNavigation() {
   const repositoryRoute = useMatch("/repositories/:repositoryId");
   const settingsRoute = useMatch("/repositories/:repositoryId/settings");
   const overviewRoute = useMatch("/repositories/:repositoryId/overview");
+  const analyticsRoute = useMatch("/repositories/:repositoryId/analytics");
   const securityRoute = useMatch("/security/repositories/:repositoryId");
   const scanRoute = useMatch("/security/scans/:scanId");
   const organizationRoute = useMatch("/organizations/:owner/repositories");
@@ -22,7 +23,7 @@ function useNavigation() {
     && !detail.error && ["closed", "merged"].includes(detail.data?.pull_request.state ?? "") && !detail.data?.has_active_run;
   const directory = useApi<Repository[]>("/repositories", (data) => idleCode && !data?.some(hasActivity) ? 60000 : 5000);
   const repositories = directory.error ? [] : directory.data ?? [];
-  const repositoryId = (repositoryRoute ?? settingsRoute ?? overviewRoute ?? securityRoute)?.params.repositoryId
+  const repositoryId = (repositoryRoute ?? settingsRoute ?? overviewRoute ?? analyticsRoute ?? securityRoute)?.params.repositoryId
     ?? (detailPath && !detail.error ? detail.data?.repository.id : undefined)
     ?? (scanRoute && !scan.error ? scan.data?.repository.id : undefined);
   const repository = repositories.find((repo) => String(repo.id) === String(repositoryId));
@@ -32,7 +33,7 @@ function useNavigation() {
   })).values()].sort((a, b) => a.localeCompare(b));
   const owner = repository?.full_name.split("/")[0] ?? organizationRoute?.params.owner;
   const organization = organizations.find((name) => name.toLowerCase() === owner?.toLowerCase());
-  const section = overviewRoute ? "overview" : settingsRoute ? "settings" : securityRoute || scanRoute ? "security" : "pulls";
+  const section = overviewRoute ? "overview" : analyticsRoute ? "analytics" : settingsRoute ? "settings" : securityRoute || scanRoute ? "security" : "pulls";
   return { directory, repositories, organizations, organization, repository, section, sync };
 }
 

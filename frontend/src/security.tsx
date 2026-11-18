@@ -314,10 +314,9 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
   const stateCounts = query.data.finding_state_counts;
-  const slash = repo.full_name.lastIndexOf("/");
   const Visibility = repo.private ? LockKeyhole : Globe;
   return <>
-    <PageTitle title={<span className="break-words [overflow-wrap:anywhere]"><span className="font-normal text-muted-foreground">{repo.full_name.slice(0, slash + 1)}</span>{repo.full_name.slice(slash + 1)}</span>} actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
+    <PageTitle title="Security" actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </div>}>
