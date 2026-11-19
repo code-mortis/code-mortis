@@ -1741,6 +1741,109 @@ def test_independent_batches_merge_transitive_conflicts():
     assert [row.id for row in assessment.independent_batch(rows[1:], keys, 4)] == ["1", "3"]
 
 
+@pytest.mark.parametrize("link", ["direct", "historical", "in_flight"])
+def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_history(pipeline, monkeypatch, link):
+    first, *slow, citation_related, fifth = independent_comments(6)
+    related = {**first, "content": "Reworded finding"}
+    quote = "logger.error(api_key)"
+    if link != "historical":
+        citation_related = {**citation_related, "existing_code": quote}
+    pipeline["comments"] = [first, related, *slow, citation_related, fifth]
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 4, "assessment_token_budget": None}
+    historical_id = new_run(assessed=True) if link == "historical" else None
+    identity = new_run(assessed=True, parallel=True)
+    with transaction() as db:
+        review_pipeline.update(db.get(ReviewRun, identity), "verification", "skipped", tokens=0)
+        if historical_id:
+            previous = db.get(ReviewRun, historical_id)
+            snapshot = {**citation_related, "source_sha": previous.head_sha}
+            finding = Finding(id="history-bridge", pr_id=previous.pr_id, fingerprint="history-bridge",
+                              path=snapshot["path"], content=snapshot["content"], severity="high", category="bug",
+                              start_line=7, end_line=7, last_seen_run_id=historical_id)
+            db.add(finding)
+            db.flush()
+            db.add(Occurrence(run_id=historical_id, finding_id=finding.id, snapshot=snapshot))
+            db.add(ReviewCandidate(run_id=historical_id, position=0, snapshot=snapshot, finding_id=finding.id,
+                                   status="completed", result={"verdict": "confirmed", "evidence": [
+                                       {"revision": "current", "path": "bridge.py", "quote": quote},
+                                   ]}))
+            previous.status = "completed"
+    barrier, lock, refilled, release = Barrier(4), Lock(), Event(), Event()
+    slow_contents = {item["content"] for item in slow}
+    replacement = citation_related if link == "in_flight" else fifth
+    waiting_contents = {related["content"]} if link == "in_flight" else {related["content"], citation_related["content"]}
+    quoting = {slow[0]["content"]} if link == "in_flight" else {first["content"], related["content"]}
+    started = []
+    active = peak = 0
+    original_context = assessment.build_context
+
+    def context_for(repo, env, fetch_env, run, snapshot, previous, stopped):
+        context = original_context(repo, env, fetch_env, run, snapshot, previous, stopped)
+        context["history"], context["prior_candidates"] = assessment.related_history(
+            repo, env, fetch_env, run.head_sha, snapshot, previous, stopped,
+        )
+        return context
+
+    def respond(context):
+        nonlocal active, peak
+        content = context["finding"]["content"]
+        with lock:
+            started.append(content)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if content == first["content"] or content in slow_contents:
+                barrier.wait(timeout=10)
+            if content in slow_contents:
+                assert release.wait(10)
+            if content == replacement["content"]:
+                refilled.set()
+                assert release.wait(10)
+            response = verdict(context)
+            if content in waiting_contents:
+                with transaction() as db:
+                    predecessor = db.scalar(select(ReviewCandidate).where(
+                        ReviewCandidate.run_id == identity, ReviewCandidate.position == 0,
+                    ))
+                    assert predecessor.status == "completed"
+                    assert predecessor.finding_id in {item["id"] for item in context["history"]}
+                    response["finding_id"] = predecessor.finding_id
+            if content in quoting:
+                response["evidence"][0].update(start_line=9, end_line=9, quote=quote)
+            return response
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(assessment, "build_context", context_for)
+    pipeline["respond"] = respond
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(perform_review, identity)
+        try:
+            assert refilled.wait(10)
+            with lock:
+                assert set(started) == slow_contents | {first["content"], replacement["content"]}
+                assert active == 4
+            with transaction() as db:
+                assert db.scalar(select(func.count()).select_from(Finding)) == int(bool(historical_id))
+        finally:
+            release.set()
+        future.result(timeout=10)
+    assert peak == 4 and len(started) == len(pipeline["comments"])
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                              .order_by(ReviewCandidate.position)))
+        assert all(row.usage == {"tokens": 25} for row in rows)
+        assert rows[0].finding_id == rows[1].finding_id
+        if link == "in_flight":
+            assert [row.status for row in rows] == ["completed"] * 5 + ["skipped", "completed"]
+            assert rows[5].failure_reason == "history_changed" and rows[5].finding_id is None
+        else:
+            assert all(row.status == "completed" for row in rows)
+            assert rows[0].finding_id == rows[5].finding_id
+
+
 @pytest.mark.parametrize("distinct", [False, True])
 def test_parallel_assessments_keep_related_candidates_ordered(pipeline, distinct):
     first, other = independent_comments(2)
