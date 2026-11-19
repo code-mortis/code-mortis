@@ -4,8 +4,10 @@ import json
 import re
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from contextlib import nullcontext
 from datetime import datetime, timedelta
-from threading import Event
+from functools import partial
+from threading import Event, Lock
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -322,11 +324,22 @@ def cancel_access(db, *, repository_ids=None, connection_id=None, actor_id=None,
         cancel(db, scan, reason=reason)
 
 
-def checkpoint(scan_id, key, state, **values):
+def executing(scan, claim):
+    return scan and scan.status == "running" and (claim is None or scan.progress.get("execution") == claim)
+
+
+def live_claim(db, claim, *, lock=False):
+    if claim is None:
+        return True
+    job_id, _, attempt = claim.rpartition(":")
+    return attempt.isdigit() and job_live(db.get(Job, job_id, with_for_update=lock or None), int(attempt), now())
+
+
+def checkpoint(scan_id, key, state, *, claim=None, **values):
     authorization_error = None
     with transaction() as db:
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-        if not scan or scan.status != "running" or scan.cancel_requested:
+        if not executing(scan, claim) or scan.cancel_requested or not live_claim(db, claim):
             raise ReviewStopped("Security scan is no longer running.")
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
@@ -361,10 +374,10 @@ def checkpoint(scan_id, key, state, **values):
     return tasks[key]
 
 
-def stage(scan_id, name, status, **values):
+def stage(scan_id, name, status, *, claim=None, **values):
     with transaction() as db:
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-        if scan and scan.status == "running":
+        if executing(scan, claim) and not scan.cancel_requested and live_claim(db, claim):
             previous = scan.stages.get(name, {})
             scan.stages = {**scan.stages, name: {**previous, "status": status, **values}}
             if previous.get("status") != status:
@@ -639,6 +652,13 @@ def perform(scan_id, claim):
     limits = config["limits"]
     concurrency = limits.get("concurrency", 1) if config["connection"]["kind"] == "api" else 1
     stop_workers = Event()
+    save_task = partial(checkpoint, scan_id, claim=claim)
+
+    def settlement_row(db):
+        if live_claim(db, claim, lock=True):
+            row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
+            if executing(row, claim):
+                return row
 
     def stopped():
         if stop_workers.is_set():
@@ -661,12 +681,12 @@ def perform(scan_id, claim):
             except (ValueError, RunnerBlocked):
                 return True
             job_id, _, attempt = claim.rpartition(":")
-            job = db.get(Job, job_id) if attempt.isdigit() else None
-            if job:
-                if job.status != "running" or job.attempts != int(attempt):
-                    return True
-                if not job.lease_until or job.lease_until < now() + timedelta(seconds=300):
-                    job.lease_until = now() + timedelta(seconds=360)
+            job = db.get(Job, job_id)
+            timestamp = now()
+            if not job_live(job, int(attempt), timestamp):
+                return True
+            if job.lease_until < timestamp + timedelta(seconds=300):
+                job.lease_until = timestamp + timedelta(seconds=360)
         if limits["timeout_seconds"] is not None and time.monotonic() - started >= limits["timeout_seconds"]:
             raise TimeoutError("Security scan reached its time limit. Start a new scan with a larger timeout.")
         return False
@@ -703,12 +723,12 @@ def perform(scan_id, claim):
     def ai(item, task, context, key, allowance=None, *, parallel=False, record_required_paths=None):
         context, identity, cached = task_input(task, context, key)
         if cached is not None:
-            checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
-                       **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
-                       **({"source_packing": cached["source_packing"]} if "source_packing" in cached else {}),
-                       **({"context_paths": cached["context_paths"]} if "context_paths" in cached else {}),
-                       **({"source_navigation": cached["source_navigation"]} if "source_navigation" in cached else {}),
-                       **({"proposal": context["proposal"]} if task == "assessment" else {}))
+            save_task(key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
+                      **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
+                      **({"source_packing": cached["source_packing"]} if "source_packing" in cached else {}),
+                      **({"context_paths": cached["context_paths"]} if "context_paths" in cached else {}),
+                      **({"source_navigation": cached["source_navigation"]} if "source_navigation" in cached else {}),
+                      **({"proposal": context["proposal"]} if task == "assessment" else {}))
             return cached["result"]
         with transaction() as db:
             row = db.get(SecurityScan, scan_id)
@@ -736,17 +756,17 @@ def perform(scan_id, claim):
             remaining = min(remaining, allowance)
         if remaining is not None:
             remaining = max(0, remaining)
-        checkpoint(scan_id, key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
+        save_task(key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
         usage = {}
         try:
             def select_packing(value):
-                return checkpoint(scan_id, key, "running", source_packing=value)["source_packing"]
+                return save_task(key, "running", source_packing=value)["source_packing"]
 
             def select_navigation(value):
-                return checkpoint(scan_id, key, "running", source_navigation=value)["source_navigation"]
+                return save_task(key, "running", source_navigation=value)["source_navigation"]
 
             def record_sources(paths):
-                checkpoint(scan_id, key, "running", context_paths=paths)
+                save_task(key, "running", context_paths=paths)
 
             def infer(context, *, schema, instructions, validator, budget, timeout, round):
                 from code_mortis.core.workflow_inference import execute
@@ -781,8 +801,8 @@ def perform(scan_id, claim):
                                                 select_packing=select_packing, navigation=navigation,
                                                 select_navigation=select_navigation, record_sources=record_sources,
                                                 record_required_paths=record_required_paths)
-            checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
-                       citation_contract=security_engine.CITATION_CONTRACT)
+            save_task(key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
+                      citation_contract=security_engine.CITATION_CONTRACT)
             return result
         except TransientAuthorizationError:
             raise
@@ -790,7 +810,7 @@ def perform(scan_id, claim):
             # Revocation blocks results, but already consumed inference still belongs in history.
             with transaction() as db:
                 row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-                if row and row.progress.get("execution") == claim:
+                if row and row.progress.get("execution") == claim and live_claim(db, claim):
                     tokens = getattr(exc, "usage", usage).get("tokens")
                     tokens = tokens if type(tokens) is int and tokens >= 0 else None
                     used = row.progress.get("tokens")
@@ -808,14 +828,14 @@ def perform(scan_id, claim):
                 feedback = security_engine.redacted_context(item, feedback) if feedback else None
             except Exception:
                 detail, feedback = f"AI task failed ({type(exc).__name__}); diagnostic text could not be safely sanitized.", None
-            checkpoint(scan_id, key, "failed", error=detail, tokens=tokens,
-                       **({"validation_feedback": feedback} if feedback else {}))
+            save_task(key, "failed", error=detail, tokens=tokens,
+                      **({"validation_feedback": feedback} if feedback else {}))
             raise
         except Exception:
-            checkpoint(scan_id, key, "failed", error="AI analysis was interrupted; token consumption is unknown.", tokens=None)
+            save_task(key, "failed", error="AI analysis was interrupted; token consumption is unknown.", tokens=None)
             raise
 
-    problems, observed, verdicts, advisories = [], set(), {}, {}
+    problems, observed = [], set()
     assessment_problems, uncertain_keys, assessment_blockers = [], set(), set()
     item = None
     try:
@@ -1002,11 +1022,18 @@ def perform(scan_id, claim):
                     remaining = [row for row in remaining if row not in batch]
             stage(scan_id, "assessment",
                   "completed" if len(problems) == assessment_problem_count and not assessment_problems else "partial")
-            stage(scan_id, "verification", "running", total=sum(old["id"] not in observed and
-                (old["state"] in {"open", "accepted_risk"} or old["pending_close"]) for old in previous), completed=0)
-            for old in previous:
-                if old["id"] in observed or (old["state"] not in {"open", "accepted_risk"} and not old["pending_close"]):
-                    continue
+            to_verify = [old for old in previous if old["id"] not in observed and
+                         (old["state"] in {"open", "accepted_risk"} or old["pending_close"])]
+            stage(scan_id, "verification", "running", claim=claim, total=len(to_verify), completed=0)
+            advisories = {}
+            advisory_locks = {old["evidence"].get("rule_id", ""): Lock() for old in to_verify
+                              if old["evidence"].get("kind") == "dependency"}
+
+            def advisory_lookup(evidence, packages):
+                with advisory_locks[evidence.get("rule_id", "")]:
+                    return dependency_advisory(evidence, packages, token, stopped, advisories)
+
+            def verify_one(old):
                 try:
                     if old["kind"] == "code":
                         original = old["evidence"]["source_sha"]
@@ -1017,26 +1044,51 @@ def perform(scan_id, claim):
                                        "current": {current_path: item.source(current_path)} if current_path in item.inventory else {}}}
                         verdict = ai(item, "verification", context, "verification:" + old["id"])
                     else:
-                        verdict = deterministic_fix(item, old, result, advisory_lookup=lambda evidence, packages:
-                            dependency_advisory(evidence, packages, token, stopped, advisories))
+                        verdict = deterministic_fix(item, old, result, advisory_lookup=advisory_lookup)
                 except (ValueError, KeyError) as exc:
                     verdict = {"verdict": "uncertain", "explanation": item.redact(str(exc))[:1000]}
-                if verdict["verdict"] == "fixed" and uncertain_keys:
-                    fix_keys = assessment_keys(old, item) | assessment_keys({
-                        "path": old["path"], "evidence": verdict.get("evidence", []),
-                    }, item)
-                    if uncertain_keys & fix_keys:
-                        assessment_blockers.add(old["id"])
-                verdicts[old["id"]] = {**verdict, "finding_version": old["version"]}
-                stage(scan_id, "verification", "running", completed=len(verdicts))
-            stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values()) else "completed", findings=len(verdicts))
+                return {**verdict, "finding_version": old["version"]}
+
+            # Versions and Assessment blockers are applied after verification over the pinned snapshot.
+            verdicts, fatal = {}, None
+            rolling = concurrency > 1 and len(to_verify) > 1 and limits["token_budget"] is None
+            with ThreadPoolExecutor(max_workers=concurrency) if rolling else nullcontext() as pool:
+                stop_admitting = Event()
+                pending = (rolling_analysis(to_verify, concurrency, lambda old: pool.submit(verify_one, old),
+                                            stopped, stop_admitting) if pool else ((old, None) for old in to_verify))
+                for old, future in pending:
+                    try:
+                        verdict = future.result() if future is not None else verify_one(old)
+                        if verdict["verdict"] == "fixed" and uncertain_keys:
+                            fix_keys = assessment_keys(old, item) | assessment_keys({
+                                "path": old["path"], "evidence": verdict.get("evidence", []),
+                            }, item)
+                            if uncertain_keys & fix_keys:
+                                assessment_blockers.add(old["id"])
+                        verdicts[old["id"]] = verdict
+                        stage(scan_id, "verification", "running", claim=claim, completed=len(verdicts))
+                    except BaseException as exc:
+                        if pool is None:
+                            raise
+                        if fatal is None or isinstance(fatal, TransientAuthorizationError):
+                            fatal = exc
+                        stop_admitting.set()
+                        # Let admitted peers settle their real usage across a temporary authorization outage.
+                        if not isinstance(exc, TransientAuthorizationError):
+                            stop_workers.set()
+                if fatal:
+                    raise fatal
+            verdicts = {old["id"]: verdicts[old["id"]] for old in to_verify}
+            if stopped():
+                raise ReviewStopped("Security scan cancelled.")
+            stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values())
+                  else "completed", claim=claim, findings=len(verdicts))
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]),
-                   assessment_problems=assessment_problems, assessment_blockers=assessment_blockers)
+                   claim=claim, assessment_problems=assessment_problems, assessment_blockers=assessment_blockers)
     except TransientAuthorizationError:
         with transaction() as db:
-            row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-            if row and row.status == "running" and row.progress.get("execution") == claim:
+            if row := settlement_row(db):
                 interrupt_work(row)
                 row.status = "queued"
                 row.progress = {**row.progress, "execution": None}
@@ -1045,7 +1097,8 @@ def perform(scan_id, claim):
         raise
     except ReviewStopped:
         with transaction() as db:
-            cancel(db, db.get(SecurityScan, scan_id))
+            if row := settlement_row(db):
+                cancel(db, row)
     except Exception as exc:
         try:
             message = clean_text(item.redact(str(exc)) if item else str(exc),
@@ -1053,8 +1106,7 @@ def perform(scan_id, claim):
         except Exception:
             message = f"Security scan failed ({type(exc).__name__}); diagnostic text could not be safely sanitized."
         with transaction() as db:
-            row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-            if row and row.status in ACTIVE:
+            if row := settlement_row(db):
                 row.status = "blocked" if isinstance(exc, RunnerBlocked) else "partial" if observed else "failed"
                 row.error, row.finished_at = message[:2000], now()
                 row.stages = {name: {**value, "status": "failed" if value.get("status") == "running" else "skipped"}
@@ -1063,24 +1115,32 @@ def perform(scan_id, claim):
                 activity(db, "scan_failed", scan=row, reason=row.error)
 
 
-def finish(scan_id, verdicts, problems, freshness, supported, *, assessment_problems=(), assessment_blockers=()):
+def finish(scan_id, verdicts, problems, freshness, supported, *, claim=None,
+           assessment_problems=(), assessment_blockers=()):
     with transaction() as db:
         scan = db.get(SecurityScan, scan_id)
-        if not scan or scan.status != "running" or scan.cancel_requested:
+        if not executing(scan, claim) or scan.cancel_requested or not live_claim(db, claim):
             return
         from code_mortis.api_tokens import provenance as _pat
         from code_mortis.mcp import provenance as _mcp
 
+        reason = None
         if _mcp.scan_revoked(db, scan, repository_id=scan.repository_id):
-            cancel(db, scan, reason=_mcp.REVOKED_MESSAGE)
-            return
-        if _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
-            cancel(db, scan, reason=_pat.REVOKED_MESSAGE)
+            reason = _mcp.REVOKED_MESSAGE
+        elif _pat.scan_revoked(db, scan, repository_id=scan.repository_id):
+            reason = _pat.REVOKED_MESSAGE
+        if reason:
+            if live_claim(db, claim, lock=True):
+                db.refresh(scan, with_for_update=True)
+                if executing(scan, claim):
+                    cancel(db, scan, reason=reason)
             return
         authorize(db, db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id))
     with transaction() as db:
+        if not live_claim(db, claim, lock=True):
+            return
         scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
-        if not scan or scan.status != "running" or scan.cancel_requested:
+        if not executing(scan, claim) or scan.cancel_requested:
             return
         repo, actor, connection = db.get(Repository, scan.repository_id), db.get(User, scan.actor_id), db.get(Connection, scan.connection_id)
         authorize(db, repo, actor, connection, fresh=False)

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -912,6 +912,122 @@ def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypa
         db.get(ReviewRun, scenario["run"]).status = "running"
     perform_review(scenario["run"])
     assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
+
+
+@pytest.mark.parametrize("fault", [None, "version", "cancel", "unknown"])
+def test_parallel_fix_verification_refills_and_fences_results(scenario, monkeypatch, fault):
+    run_id, finding_id = scenario["run"], scenario["finding"]
+    with transaction() as db:
+        run = db.get(ReviewRun, run_id)
+        run.config = {**run.config, "pipeline_version": 2, "settings": {
+            **run.config["settings"], "concurrency": 4, "verification_token_budget": None, "max_files": None,
+        }}
+        run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
+        pipeline.update(run, "summary", "skipped")
+        original = db.get(Finding, finding_id)
+        occurrence = db.scalar(select(Occurrence).where(Occurrence.finding_id == finding_id))
+        # Same-file findings still have independent, pinned verification evidence.
+        for index in range(5):
+            other = Finding(id=f"finding-{index}", fingerprint=f"verification-{index}",
+                            pr_id=original.pr_id, path=original.path, content=f"Prior observation {index}",
+                            start_line=original.start_line, end_line=original.end_line,
+                            last_seen_run_id=original.last_seen_run_id)
+            db.add(other)
+            db.flush()
+            db.add(Occurrence(finding_id=other.id, run_id=occurrence.run_id,
+                              snapshot={**occurrence.snapshot, "content": other.content}))
+    perform_review(run_id)
+    with transaction() as db:
+        job_id = db.scalar(select(Job.id).where(Job.kind == "verify_fixes", Job.payload["run_id"].as_string() == run_id))
+        rows = list(db.scalars(select(FindingVerification).where(FindingVerification.run_id == run_id)
+                               .order_by(FindingVerification.created_at, FindingVerification.id)))
+        target = next(row for row in rows if row.finding_id == finding_id)
+        target.created_at = rows[0].created_at - timedelta(seconds=1)
+        ordered = [target.id, *(row.id for row in rows if row.id != target.id)]
+    initial, fast, replacement = set(ordered[:4]), ordered[1], ordered[4]
+    barrier, lock, release, refilled, unknown_saved = Barrier(4), Lock(), Event(), Event(), Event()
+    started = set()
+    active = peak = 0
+
+    def verify(_connection, _credentials, _context, allowance, _remaining, _stopped, *, task_key, **kwargs):
+        nonlocal active, peak
+        identity = task_key.removeprefix("verify:")
+        assert allowance is None
+        with lock:
+            assert identity not in started
+            started.add(identity)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if identity in initial:
+                barrier.wait(timeout=10)
+            if identity == replacement:
+                refilled.set()
+            if identity != fast:
+                assert release.wait(10)
+            if fault == "unknown" and identity == fast:
+                raise verification.VerificationOutputError("Provider usage unavailable.", {"tokens": None})
+            return copy.deepcopy(RESULT), {"tokens": 50}
+        finally:
+            with lock:
+                active -= 1
+
+    real_finish = verification.finish
+
+    def finish(db, row, **kwargs):
+        real_finish(db, row, **kwargs)
+        if kwargs.get("usage") == {"tokens": None}:
+            unknown_saved.set()
+
+    monkeypatch.setattr(verification, "mortis_verify", verify)
+    monkeypatch.setattr(verification, "finish", finish)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(jobs.execute_job.run, job_id)
+        try:
+            if fault == "unknown":
+                assert unknown_saved.wait(10)
+            else:
+                assert refilled.wait(10)
+                with lock:
+                    assert started == initial | {replacement} and active == peak == 4
+                with transaction() as db:
+                    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                    assert run.stages["verification"]["status"] == "running"
+                    assert run.progress["verification"]["completed"] == 1
+                    assert db.get(FindingVerification, fast).usage == {"tokens": 50}
+                    finding = db.get(Finding, finding_id)
+                    assert finding.desired_status is None
+                    if fault == "version":
+                        finding.sync_version += 1
+                    elif fault == "cancel":
+                        reviews.cancel_review(db, run)
+        finally:
+            release.set()
+        future.result(timeout=10)
+    pipeline.finalize(run_id)
+    with transaction() as db:
+        run = db.get(ReviewRun, run_id)
+        finding = db.get(Finding, finding_id)
+        assert peak == 4
+        if fault == "unknown":
+            assert started == initial
+            assert [db.get(FindingVerification, identity).status for identity in ordered[4:]] == ["skipped"] * 2
+            assert db.get(FindingVerification, fast).usage == {"tokens": None}
+        elif fault == "cancel":
+            assert started == initial | {replacement}
+            assert run.status == "cancelled"
+        else:
+            assert started == set(ordered)
+            assert run.progress["verification"]["completed"] == 6
+        checked = db.get(FindingVerification, ordered[0])
+        if fault == "version":
+            assert checked.verdict == "fixed" and checked.resolution == "skipped"
+        assert finding.status == "open"
+        if fault in {"version", "cancel"}:
+            assert finding.desired_status is None
+            assert not db.scalar(select(Job.id).where(Job.kind == "resolve", Job.payload["finding_id"].as_string() == finding_id))
+        else:
+            assert finding.desired_status == "resolved"
 
 
 def test_file_limit_skips_verification_and_queues_notice(scenario, monkeypatch):

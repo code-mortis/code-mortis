@@ -1108,6 +1108,167 @@ def test_independent_resolution_preserves_global_guards_and_finding_versions(see
                     ids[0]: "not_observed", ids[1]: "fixed", ids[2]: "uncertain"}
 
 
+@pytest.mark.parametrize("condition", [
+    "version", "cancel", "unknown_usage", "replacement", "job_replaced", "transient", "finite_budget",
+])
+def test_security_fix_verification_refills_and_keeps_resolution_guards(
+    seed, security_github, monkeypatch, tmp_path, condition,
+):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {"app.py": {"code": True, "hash": digest("current"), "lines": 1}}
+    item.read = lambda path, sha=None: "previous" if sha else "current"
+    item.renamed = lambda sha, path: path
+    item.diff = lambda sha, **kwargs: "Source changed"
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [], "targets": {}, "problems": [], "metadata": {},
+    })
+    budget = 1000 if condition == "finite_budget" else None
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed")
+        finding_ids = {saved_finding(db, seed, prior).id for _ in range(5)}
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=4, token_budget=budget,
+        )).id
+
+    barrier, lock = Barrier(4), Lock()
+    refilled, skipped, release = Event(), Event(), Event()
+    auth_failed, auth_handled = Event(), Event()
+    calls, allowances = [], []
+    active = peak = 0
+
+    def ask(*args, **kwargs):
+        nonlocal active, peak
+        task, context, allowance = args[3:6]
+        if task == "analysis":
+            return {"findings": [], "required_paths": []}, {"tokens": 1}
+        assert task == "verification"
+        with lock:
+            index = len(calls)
+            calls.append(context["finding"]["id"])
+            allowances.append(allowance)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if budget is None:
+                if index < 4:
+                    barrier.wait(timeout=10)
+                if index == 4:
+                    refilled.set()
+                if index:
+                    assert release.wait(10)
+                if condition == "transient" and args[7]():
+                    raise security.ReviewStopped("Interrupted before inference")
+            if condition == "unknown_usage" and index == 0:
+                raise security.verification.VerificationOutputError("Usage unavailable", {"tokens": None})
+            return {"verdict": "fixed", "explanation": "Pinned fix verified", "evidence": []}, {"tokens": 2}
+        finally:
+            with lock:
+                active -= 1
+
+    original_stage = security.stage
+
+    def stage(scan_id, name, status, **values):
+        original_stage(scan_id, name, status, **values)
+        if name == "verification" and values.get("completed") == 2:
+            skipped.set()
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security, "stage", stage)
+    if condition == "transient":
+        original_checkpoint, original_rolling = security.checkpoint, security.rolling_analysis
+
+        def checkpoint(scan_id, key, state, **values):
+            saved = original_checkpoint(scan_id, key, state, **values)
+            if state == "completed" and calls and key == "verification:" + calls[0] and not auth_failed.is_set():
+                auth_failed.set()
+                raise pat_provenance.TransientAuthorizationError("Temporary authorization outage")
+            return saved
+
+        def rolling(*args):
+            for entry in original_rolling(*args):
+                yield entry
+                if isinstance(entry[1].exception(), pat_provenance.TransientAuthorizationError):
+                    auth_handled.set()
+
+        monkeypatch.setattr(security, "checkpoint", checkpoint)
+        monkeypatch.setattr(security, "rolling_analysis", rolling)
+
+    if budget is not None:
+        perform_security(identity, "test:1")
+    else:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            worker = executor.submit(perform_security, identity, "test:1")
+            try:
+                unknown = condition == "unknown_usage"
+                transient = condition == "transient"
+                if transient:
+                    assert auth_handled.wait(10)
+                else:
+                    assert (skipped if unknown else refilled).wait(10), "Verification waited for a complete batch."
+                with lock:
+                    assert len(calls) == (4 if unknown or transient else 5)
+                    assert active == (3 if unknown or transient else 4)
+                    fast = calls[0]
+                with transaction() as db:
+                    scan = db.get(SecurityScan, identity)
+                    assert scan.stages["verification"]["completed"] == {"transient": 0, "unknown_usage": 2}.get(condition, 1)
+                    assert db.get(SecurityFinding, fast).state == "open"
+                    if condition == "version":
+                        db.get(SecurityFinding, fast).version += 1
+                    elif condition == "cancel":
+                        security.cancel(db, scan)
+                    elif condition == "replacement":
+                        scan.progress = {**scan.progress, "execution": "replacement:2"}
+                    elif condition == "job_replaced":
+                        db.get(Job, scan.progress["execution"].rsplit(":", 1)[0]).attempts += 1
+            finally:
+                release.set()
+            if condition == "transient":
+                with pytest.raises(pat_provenance.TransientAuthorizationError):
+                    worker.result(timeout=10)
+                with transaction() as db:
+                    scan = db.get(SecurityScan, identity)
+                    assert scan.status == "queued" and scan.progress["tokens"] == 9
+                    assert all(scan.progress["tasks"]["verification:" + key]["status"] == "completed" for key in calls)
+                perform_security(identity, "retry:2")
+            else:
+                worker.result(timeout=10)
+
+    assert peak == (1 if budget is not None else 4)
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        findings = {key: db.get(SecurityFinding, key).state for key in finding_ids}
+        if condition in {"cancel", "replacement", "job_replaced"}:
+            assert set(findings.values()) == {"open"}
+            assert scan.status == ("cancelled" if condition == "cancel" else "running")
+            assert scan.stages["verification"]["completed"] == 1
+            assert not db.scalar(select(SecurityOccurrence.id).where(SecurityOccurrence.scan_id == identity))
+            if condition == "replacement":
+                assert scan.progress["execution"] == "replacement:2"
+            if condition != "cancel":
+                assert scan.progress["tokens"] == 3
+            return
+        assert scan.stages["verification"]["completed"] == scan.stages["verification"]["total"] == 5
+        if condition == "finite_budget":
+            assert allowances == [999, 997, 995, 993, 991]
+            assert scan.status == "completed", scan.error
+            assert set(findings.values()) == {"resolved"}
+        elif condition == "transient":
+            assert scan.status == "completed", scan.error
+            assert set(findings.values()) == {"resolved"}
+            assert scan.progress["tokens"] == 11 and len(calls) == 5
+        else:
+            assert scan.status == "partial", scan.error
+            assert findings[fast] == "open"
+            if condition == "unknown_usage":
+                assert scan.progress["tokens"] is None
+                assert findings[finding_ids.difference(calls).pop()] == "open"
+                assert all(findings[key] == "resolved" for key in calls[1:])
+            else:
+                assert all(findings[key] == "resolved" for key in finding_ids - {fast})
+
+
 def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "regular file")
     item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha=None: "unsafe", diff=lambda sha, **kwargs: "",
