@@ -3,10 +3,12 @@
 import json
 import re
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from functools import partial
+from itertools import groupby
 from threading import Event, Lock
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -130,6 +132,10 @@ def without_request_timeout(config):
     connection = config["connection"]
     return {**config, "connection": {**connection, "options": {
         key: value for key, value in connection["options"].items() if key != "timeout_sec"}}}
+
+
+def checkpoint_config(config):
+    return {**config, "limits": {key: value for key, value in config["limits"].items() if key != "concurrency"}}
 
 
 def create_scan(db, repo, actor, body, remote=None, parent=None):
@@ -395,8 +401,11 @@ def assessment_keys(value, item, history=()):
     source_sha = item.sha
     if isinstance(evidence, dict):
         source_sha = evidence["source_sha"]
+        ai_analysis = evidence.get("ai_analysis", {})
         citations = [*evidence.get("evidence", []), *evidence.get("locations", []),
-                     *evidence.get("ai_analysis", {}).get("evidence", [])]
+                     *ai_analysis.get("evidence", []),
+                     *(evidence.get("assessment") or {}).get("evidence", []),
+                     *(ai_analysis.get("assessment") or {}).get("evidence", [])]
     else:
         citations = evidence
     paths = {value["path"], *(citation["path"] for citation in citations)}
@@ -426,6 +435,83 @@ def assessment_batch(rows, history, item, concurrency):
     return assessment.independent_batch(rows, keys, concurrency)
 
 
+def merged_observation(snapshot, evidence):
+    previous = snapshot["evidence"]
+    combined = combine_observation_sources({**previous, "ai_analysis": evidence}, evidence)
+    return {**snapshot, "version": snapshot["version"] + 1, "evidence": combined}
+
+
+def combine_observation_sources(evidence, previous):
+    return {**evidence, "sources": sorted(set(previous.get("sources", [])) | set(evidence.get("sources", [])))}
+
+
+def assessment_replay(db, sources, findings):
+    if not findings or not any(key.startswith("assessment:") for source in sources for key in source.progress.get("tasks", {})):
+        return {}
+    changes, matching, recognized = {}, dict(findings), {}
+    observations = {}
+    source_ids = [scan.id for scan in sources]
+    merges = {}
+    for row in db.scalars(select(SecurityActivity).where(
+        SecurityActivity.scan_id.in_(source_ids), SecurityActivity.action == "ai_evidence_merged",
+    )):
+        merges.setdefault((row.scan_id, row.finding_id), []).append(row.detail["evidence"])
+    first_scans = dict(db.execute(select(SecurityFinding.id, SecurityFinding.first_scan_id).where(
+        SecurityFinding.id.in_(list(findings)))).all())
+    for row in db.scalars(select(SecurityOccurrence).where(
+        SecurityOccurrence.scan_id.in_(source_ids), SecurityOccurrence.outcome == "present",
+    )):
+        observations.setdefault(row.scan_id, []).append(row)
+    for source in sources:
+        confirmed = [(int(key.split(":", 1)[1]), task["proposal"], task["result"])
+                     for key, task in source.progress.get("tasks", {}).items()
+                     if key.startswith("assessment:") and task.get("status") == "completed"
+                     and task.get("proposal") and task.get("result", {}).get("verdict") == "confirmed"]
+        for occurrence in observations.get(source.id, ()):
+            identity, after = occurrence.finding_id, occurrence.snapshot
+            current = matching.get(identity)
+            merged = merges.get((source.id, identity), [])
+            merge_before = None
+            # If Trivy did not observe the finding, the first occurrence already contains the merge.
+            if len(merged) == 1 and after["kind"] != "code" and after["evidence"].get("ai_analysis") != merged[0]:
+                merge_before, after = after, merged_observation(after, merged[0])
+            if current is None:
+                continue
+            if after != current:
+                steps, scanner_only = recognized.get(identity, (0, False))
+                if not steps or after["version"] != current["version"] - steps:
+                    continue
+                prior = {**current, "version": after["version"]}
+                if prior != after:
+                    # A child may record Trivy's evidence and stop before restoring the matching AI merge.
+                    scanner_evidence = {key: value for key, value in after["evidence"].items() if key != "ai_analysis"}
+                    if not scanner_only or len(merged) != 1 or prior != {**after, "evidence": scanner_evidence}:
+                        continue
+            recognized[identity] = (1 if merge_before is None else 2,
+                                    after["kind"] != "code" and not merged and "ai_analysis" not in after["evidence"])
+            matching[identity] = after
+            evidence = after["evidence"]
+            model = evidence.get("ai_analysis", evidence)
+            positions = [position for position, proposal, result in confirmed if model.get("assessment") == result
+                         and all(model.get(key) == value for key, value in proposal.items())]
+            if len(positions) != 1:
+                if model.get("kind") != "code":
+                    changes.setdefault(source.id, {})[identity] = (-1, None, after)
+                continue
+            before = merge_before
+            if before is None and first_scans[identity] != source.id:
+                if source.started_at is None:
+                    continue
+                before = db.scalar(select(SecurityOccurrence.snapshot).where(
+                    SecurityOccurrence.finding_id == identity, SecurityOccurrence.created_at < source.started_at,
+                ).order_by(SecurityOccurrence.created_at.desc(), SecurityOccurrence.id).limit(1))
+                if before is None or before.get("version") != after["version"] - 1:
+                    continue
+                before = {key: before[key] for key in after if key in before}
+            changes.setdefault(source.id, {})[identity] = (positions[0], before, after)
+    return changes
+
+
 def observe(db, scan, evidence, existing_id=None):
     scan = db.scalar(select(SecurityScan).where(SecurityScan.id == scan.id).with_for_update().execution_options(populate_existing=True))
     if scan.status != "running" or scan.cancel_requested:
@@ -433,6 +519,7 @@ def observe(db, scan, evidence, existing_id=None):
     query = select(SecurityFinding).where(SecurityFinding.id == existing_id) if existing_id else select(SecurityFinding).where(
         SecurityFinding.repository_id == scan.repository_id, SecurityFinding.fingerprint == evidence["fingerprint"])
     finding = db.scalar(query.with_for_update().execution_options(populate_existing=True))
+    previous = None
     if finding and finding.repository_id != scan.repository_id:
         raise ValueError("Finding identity belongs to another repository.")
     if finding is None:
@@ -443,6 +530,19 @@ def observe(db, scan, evidence, existing_id=None):
         db.flush()
         activity(db, "finding_created", scan=scan, finding=finding)
     else:
+        previous = db.scalar(select(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id,
+                                                             SecurityOccurrence.finding_id == finding.id))
+        if (previous and previous.outcome == "present" and finding.last_scan_id == scan.id
+                and finding.state != "resolved"):
+            snapshot, current = previous.snapshot, finding_snapshot(finding)
+            observed = snapshot["evidence"]
+            same_evidence = combine_observation_sources(evidence, observed) == observed
+            merged = finding.evidence.get("ai_analysis")
+            if snapshot == current and (same_evidence or (finding.kind != "code" and evidence == merged)):
+                return finding
+            if (finding.kind != "code" and merged and (same_evidence or evidence == merged)
+                    and merged_observation(snapshot, merged) == current):
+                return finding
         finding.version += 1
         if finding.state == "resolved":
             finding.state, finding.rotation = "open", None
@@ -462,8 +562,6 @@ def observe(db, scan, evidence, existing_id=None):
             enqueue(db, "security_issue_sync", {"finding_id": finding.id})
         elif finding.state == "open" and finding.issue.get("desired_state") == "closed":
             finding.issue = {**finding.issue, "desired_state": None, "sync_status": "synced", "error": None}
-    previous = db.scalar(select(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id,
-                                                         SecurityOccurrence.finding_id == finding.id))
     if not previous:
         db.add(SecurityOccurrence(id=uid(), scan_id=scan.id, finding_id=finding.id, outcome="present",
                                   snapshot=finding_snapshot(finding)))
@@ -489,7 +587,7 @@ def safe_dependency_version(current, fixed):
     return actual >= max(branch or fixes)
 
 
-def dependency_advisory(evidence, packages, token, stopped, cache):
+def dependency_advisory(evidence, packages, installation_token, stopped, cache):
     rule = evidence.get("rule_id", "")
     if evidence.get("package_type") not in {"bun", "npm", "yarn", "pnpm"} or not re.fullmatch(r"CVE-\d{4}-\d{4,}", rule):
         return None
@@ -497,7 +595,8 @@ def dependency_advisory(evidence, packages, token, stopped, cache):
         raise ReviewStopped("Security scan stopped before advisory verification.")
     if rule not in cache:
         try:
-            cache[rule] = (github.request("GET", f"/advisories?cve_id={rule}&type=reviewed&per_page=100", token), now().isoformat())
+            cache[rule] = (github.request("GET", f"/advisories?cve_id={rule}&type=reviewed&per_page=100",
+                                          installation_token()), now().isoformat())
         except github.GitHubError as exc:
             cache[rule] = exc
     if stopped():
@@ -645,20 +744,57 @@ def perform(scan_id, claim):
         scan.progress = {**scan.progress, "freshness": branch_head(repo.full_name, token)}
         previous = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
             SecurityFinding.repository_id == repo.id))]
-        saved, saved_config = scan.progress.get("tasks", {}), config
-        if scan.parent_id:
-            parent = db.get(SecurityScan, scan.parent_id)
-            saved, saved_config = parent.progress.get("tasks", {}), parent.config
+        cache_config = checkpoint_config(config)
+        sources, saved = [], {}
+        source, seen = scan, set()
+        while source and source.id not in seen:
+            if (source.repository_id, source.branch, source.head_sha) != (scan.repository_id, scan.branch, scan.head_sha):
+                break
+            source_config = checkpoint_config(source.config)
+            if without_request_timeout(source_config) != without_request_timeout(cache_config):
+                break
+            sources.append(source)
+            seen.add(source.id)
+            for key, saved_task in source.progress.get("tasks", {}).items():
+                saved.setdefault(key, []).append((source.id, source_config, saved_task))
+            source = db.get(SecurityScan, source.parent_id) if source.parent_id else None
+        replayed = {row["id"]: row for row in previous}
+        replay = assessment_replay(db, sources, replayed)
+        replay_merges = {}
+        for changes in replay.values():
+            for identity, (_, before, after) in changes.items():
+                if before and after["kind"] != "code":
+                    replay_merges.setdefault(identity, []).extend((before, after))
     limits = config["limits"]
     concurrency = limits.get("concurrency", 1) if config["connection"]["kind"] == "api" else 1
     stop_workers = Event()
     save_task = partial(checkpoint, scan_id, claim=claim)
+
+    def fresh_installation_token():
+        with transaction() as db:
+            fresh_token = github.installation_token(db, db.get(Repository, scan.repository_id).installation_id)
+        item.secret_values.append(fresh_token)
+        return fresh_token
+
+    def remember_observation(finding):
+        if finding.id in replayed:
+            previous_snapshot = replayed[finding.id]
+            observed_snapshot = finding_snapshot(finding)
+            candidates = (previous_snapshot, *replay_merges.get(finding.id, ()))
+            if any(observed_snapshot == {**candidate, "version": previous_snapshot["version"] + 1,
+                                         "evidence": combine_observation_sources(candidate["evidence"], previous_snapshot["evidence"])}
+                   for candidate in candidates):
+                replayed[finding.id] = observed_snapshot
 
     def settlement_row(db):
         if live_claim(db, claim, lock=True):
             row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
             if executing(row, claim):
                 return row
+
+    def check_deadline():
+        if limits["timeout_seconds"] is not None and time.monotonic() - started >= limits["timeout_seconds"]:
+            raise TimeoutError("Security scan reached its time limit. Start a new scan with a larger timeout.")
 
     def stopped():
         if stop_workers.is_set():
@@ -687,8 +823,7 @@ def perform(scan_id, claim):
                 return True
             if job.lease_until < timestamp + timedelta(seconds=300):
                 job.lease_until = timestamp + timedelta(seconds=360)
-        if limits["timeout_seconds"] is not None and time.monotonic() - started >= limits["timeout_seconds"]:
-            raise TimeoutError("Security scan reached its time limit. Start a new scan with a larger timeout.")
+        check_deadline()
         return False
 
     def timeout():
@@ -701,28 +836,37 @@ def perform(scan_id, claim):
             return remaining
         return max(1, int(remaining))
 
-    def task_input(task, context, key):
+    def task_input(task, context, key, saved_histories=None):
         context = {**context, "language": config.get("language", "English"),
                    "task_contract": config.get("task_contract", "security-task/v2")}
         if task == "assessment":
             supplement = (security_engine.policy.instructions(task)
                           if context["task_contract"] == security_engine.TASK_CONTRACT else "")
             context["assessment_policy"] = digest(security_engine.INSTRUCTIONS + security_engine.ASSESSMENT_INSTRUCTIONS + supplement)
-        cache_config = {**config, "limits": {key: value for key, value in limits.items() if key != "concurrency"}}
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
-        parent_cache_config = {**saved_config, "limits": {
-            key: value for key, value in saved_config["limits"].items() if key != "concurrency"}}
-        identities = {identity}
-        if without_request_timeout(cache_config) == without_request_timeout(parent_cache_config):
-            identities.add(digest(json.dumps([parent_cache_config, context], sort_keys=True)))
-        cached = saved.get(key, {})
-        reusable = (cached.get("status") == "completed" and cached.get("input_hash") in identities
-                    and cached.get("result", {}).get("verdict") != "uncertain" and payload.reusable_source_context(cached))
-        return context, identity, cached if reusable else None
+        for source_id, saved_config, cached in saved.get(key, ()):
+            if (cached.get("status") != "completed" or cached.get("result", {}).get("verdict") == "uncertain"
+                    or not payload.reusable_source_context(cached)):
+                continue
+            contexts = [context]
+            if saved_histories and source_id in saved_histories:
+                contexts.append({**context, "history": saved_histories[source_id]})
+            for candidate in contexts:
+                if cached.get("input_hash") == digest(json.dumps([saved_config, candidate], sort_keys=True)):
+                    try:
+                        if security_engine.redacted_context(item, cached["result"]) != cached["result"]:
+                            break
+                    except verification.VerificationOutputError:
+                        break
+                    return context, digest(json.dumps([cache_config, candidate], sort_keys=True)), (source_id, cached)
+        return context, identity, None
 
-    def ai(item, task, context, key, allowance=None, *, parallel=False, record_required_paths=None):
-        context, identity, cached = task_input(task, context, key)
-        if cached is not None:
+    def ai(item, task, context, key, allowance=None, *, parallel=False, record_required_paths=None, saved_histories=None):
+        context, identity, checkpoint_match = task_input(task, context, key, saved_histories)
+        if checkpoint_match is not None:
+            source_id, cached = checkpoint_match
+            if source_id == scan_id:
+                return cached["result"]
             save_task(key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
                       **({"citation_contract": cached["citation_contract"]} if "citation_contract" in cached else {}),
                       **({"source_packing": cached["source_packing"]} if "source_packing" in cached else {}),
@@ -742,7 +886,7 @@ def perform(scan_id, claim):
             authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
             used = row.progress.get("tokens")
             packing, navigation = None, None
-            for prior in (row.progress.get("tasks", {}).get(key, {}), saved.get(key, {})):
+            for prior in (row.progress.get("tasks", {}).get(key, {}), *(entry[2] for entry in saved.get(key, ()))):
                 if not payload.reusable_source_context(prior):
                     continue
                 if packing is None:
@@ -876,6 +1020,7 @@ def perform(scan_id, claim):
                                 and p["evidence"].get("resource") == evidence.get("resource")
                                 and item.renamed(p["evidence"]["source_sha"], p["path"]) == evidence["path"]), None)
                     finding = observe(db, row, evidence, old["id"] if old and evidence["kind"] != "secret" else None)
+                    remember_observation(finding)
                     observed.add(finding.id)
             stage(scan_id, "trivy", "completed" if not result["problems"] else "partial", findings=len(result["findings"]))
             candidates = []
@@ -937,67 +1082,184 @@ def perform(scan_id, claim):
             stage(scan_id, "analysis", "partial" if failed else "completed", files=len(code_paths), candidates=len(candidates))
             assessment_completed, assessment_failed = 0, 0
             assessment_problem_count = len(problems)
-            stage(scan_id, "assessment", "running", total=len(candidates), completed=0, failed=0, concurrency=concurrency)
+            stage(scan_id, "assessment", "running", claim=claim,
+                  total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
+            rolling = parallel and limits["token_budget"] is None
+
+            def assessment_history_snapshot(db, *, lock=False):
+                query = select(SecurityFinding).where(SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id)
+                return [finding_snapshot(row) for row in db.scalars(query.with_for_update() if lock else query)]
+
+            def assessment_context(candidate, history, current_progress):
+                paths = list(dict.fromkeys(citation["path"] for citation in candidate.proposal["evidence"]))
+                if config.get("task_contract") == security_engine.TASK_CONTRACT:
+                    analysis_task = current_progress.get("tasks", {}).get("analysis:" + candidate.proposal["path"], {})
+                    # Assess with the same source context, including guards not quoted in the allegation.
+                    paths = sorted(set(paths) | set(analysis_task.get("context_paths", [])))
+                context = {"proposal": candidate.proposal,
+                    "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
+                    "sources": {"current": {path: item.source(path) for path in paths}}}
+                # Reconstruct history only to recognize cached inputs. New requests use live history.
+                saved_histories = {}
+                for source_id, _, _ in saved.get(f"assessment:{candidate.id}", ()):
+                    changes = replay.get(source_id)
+                    if not changes:
+                        continue
+                    recovered = []
+                    for row in history:
+                        update = changes.get(row["id"])
+                        if update and replayed.get(row["id"]) == row:
+                            position, before, after = update
+                            row = before if candidate.position <= position else after
+                        if row is not None:
+                            recovered.append(row)
+                    saved_histories[source_id] = assessment_history(candidate.proposal, recovered, item)
+                return context, saved_histories
+
+            def submit_assessment(pool, candidate, context, required_paths, allowance=None):
+                paths = required_paths[candidate.id] = []
+                return pool.submit(ai, item, "assessment", context[0], f"assessment:{candidate.id}", allowance,
+                                   parallel=parallel, record_required_paths=paths.extend, saved_histories=context[1])
+
+            def assessment_responses(pool, ready, admitted, history, current_progress, required_paths, stop_admitting):
+                futures, prepared = {}, {}
+                settled = 0
+                try:
+                    while True:
+                        while ready and len(futures) < concurrency and not stop_admitting.is_set():
+                            if stopped():
+                                raise ReviewStopped("Security scan cancelled.")
+                            candidate = ready[0]
+                            if candidate.id not in prepared:
+                                prepared[candidate.id] = assessment_context(candidate, history, current_progress)
+                            if settled:
+                                with transaction() as db:
+                                    current = db.get(SecurityScan, scan_id)
+                                    if current.progress.get("tokens") is None or assessment_history_snapshot(db) != history:
+                                        stop_admitting.set()
+                                        break
+                            if any(future.done() for future in futures):
+                                break
+                            ready.popleft()
+                            admitted[candidate.id] = settled
+                            futures[submit_assessment(pool, candidate, prepared.pop(candidate.id), required_paths)] = candidate
+                        if not futures:
+                            return
+                        done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            settled += 1
+                            yield futures.pop(future), future
+                except BaseException:
+                    stop_workers.set()
+                    for future in futures:
+                        future.cancel()
+                    raise
+
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
                 while remaining:
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
                     with transaction() as db:
-                        history = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
-                            SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id))]
+                        history = assessment_history_snapshot(db)
                         current_progress = db.get(SecurityScan, scan_id).progress
                         used = current_progress.get("tokens")
-                    batch = assessment_batch(remaining, history, item, concurrency)
-                    contexts = {}
-                    for candidate in batch:
-                        paths = list(dict.fromkeys(citation["path"] for citation in candidate.proposal["evidence"]))
-                        if config.get("task_contract") == security_engine.TASK_CONTRACT:
-                            analysis_task = current_progress.get("tasks", {}).get("analysis:" + candidate.proposal["path"], {})
-                            # Assess with the same source context, including guards not quoted in the allegation.
-                            paths = sorted(set(paths) | set(analysis_task.get("context_paths", [])))
-                        contexts[candidate.id] = {"proposal": candidate.proposal,
-                            "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
-                            "sources": {"current": {path: item.source(path) for path in paths}}}
-                    needed = sum(task_input("assessment", contexts[row.id], f"assessment:{row.id}")[2] is None for row in batch)
                     if used is None:
                         raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
-                    allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
-                    pending, required_paths = {}, {candidate.id: [] for candidate in batch}
-                    for candidate in batch:
-                        pending[pool.submit(ai, item, "assessment", contexts[candidate.id], f"assessment:{candidate.id}", allowance,
-                                            parallel=parallel, record_required_paths=required_paths[candidate.id].extend)] = candidate
+
+                    required_paths = {}
+                    stop_admitting = Event()
+                    if rolling:
+                        initial_keys = {row.id: assessment_keys(row.proposal, item, history) for row in remaining}
+                        keys = initial_keys.copy()
+                        candidate_keys = set().union(*initial_keys.values())
+                        admitted, added_citations = {}, {}
+                        ready = deque(assessment.independent_batch(remaining, keys))
+                        pending = assessment_responses(
+                            pool, ready, admitted, history, current_progress, required_paths, stop_admitting,
+                        )
+                    else:
+                        batch = assessment_batch(remaining, history, item, concurrency)
+                        contexts = {row.id: assessment_context(row, history, current_progress) for row in batch}
+                        needed = sum(task_input("assessment", contexts[row.id][0], f"assessment:{row.id}",
+                                                contexts[row.id][1])[2] is None for row in batch)
+                        allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
+                        futures = {submit_assessment(pool, row, contexts[row.id], required_paths, allowance): row for row in batch}
+                        pending = ((futures[future], future) for future in as_completed(futures))
+
                     results, fatal = {}, None
-                    for future in as_completed(pending):
-                        candidate = pending[future]
+                    first_failed_wave = len(remaining)
+                    for candidate, future in pending:
                         try:
-                            results[candidate.id] = future.result()
+                            assessed = results[candidate.id] = future.result()
                             assessment_completed += 1
-                        except verification.VerificationOutputError as exc:
-                            if exc.feedback and type(exc.usage.get("tokens")) is int:
+                            if rolling and assessed["verdict"] == "confirmed":
+                                cited = assessment_keys({"path": candidate.proposal["path"], "evidence": assessed["evidence"]}, item)
+                                added = (cited & candidate_keys) - initial_keys[candidate.id]
+                                if added:
+                                    added_citations[candidate.id] = added
+                                    keys[candidate.id] = initial_keys[candidate.id] | added
+                                    ready.clear()
+                                    ready.extend(assessment.independent_batch(remaining, keys, admitted=admitted))
+                        except Exception as exc:
+                            if (isinstance(exc, verification.VerificationOutputError) and exc.feedback
+                                    and type(exc.usage.get("tokens")) is int):
                                 assessment_failed += 1
                                 problems.append(validation_problem(candidate.proposal["path"], exc.feedback, task="assessment"))
                             else:
-                                fatal = fatal or exc
-                                stop_workers.set()
-                        except Exception as exc:
-                            if fatal is None or isinstance(exc, RunnerBlocked):
-                                fatal = exc
-                            stop_workers.set()
-                        stage(scan_id, "assessment", "running", completed=assessment_completed, failed=assessment_failed)
+                                if fatal is None or isinstance(fatal, TransientAuthorizationError) or isinstance(exc, RunnerBlocked):
+                                    fatal = exc
+                                if rolling:
+                                    first_failed_wave = min(first_failed_wave, admitted[candidate.id])
+                                stop_admitting.set()
+                                if not isinstance(exc, TransientAuthorizationError):
+                                    stop_workers.set()
+                        stage(scan_id, "assessment", "running", claim=claim, completed=assessment_completed, failed=assessment_failed)
                     if fatal:
-                        raise fatal
+                        if not (rolling and first_failed_wave and isinstance(fatal, (verification.VerificationOutputError, RunnerBlocked))):
+                            raise fatal
+                        # All peers have drained. Recheck authority before saving any earlier successful waves.
+                        stop_workers.clear()
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
+                    stale_results = {}
+                    if rolling:
+                        settling = {identity: wave for identity, wave in admitted.items() if wave < first_failed_wave}
+                        batch = [row for row in remaining if row.id in settling]
+                        earlier_citations = set()
+                        # A later admission may finish before an earlier response reveals their dependency.
+                        for _, wave in groupby(settling, key=settling.__getitem__):
+                            wave_citations = set()
+                            for identity in wave:
+                                if identity not in results:
+                                    continue
+                                if initial_keys[identity] & earlier_citations:
+                                    stale_results[identity] = results[identity] = {
+                                        **results[identity], "verdict": "uncertain", "finding_id": None,
+                                        "explanation": "Finding history changed during assessment. Retry this security scan to evaluate the candidate with the updated history.",
+                                    }
+                                else:
+                                    wave_citations.update(added_citations.get(identity, ()))
+                            earlier_citations.update(wave_citations)
                     with transaction() as db:
                         row = db.get(SecurityScan, scan_id)
+                        if not executing(row, claim) or row.cancel_requested or not live_claim(db, claim):
+                            raise ReviewStopped("Security scan cancelled.")
                         authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id), db.get(Connection, row.connection_id))
-                        # Check once before this batch's own ordered history updates.
-                        current = [finding_snapshot(row) for row in db.scalars(select(SecurityFinding).where(
-                            SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id).with_for_update())]
-                        if current != history:
+                    with transaction() as db:
+                        row = settlement_row(db)
+                        if row is None or row.cancel_requested:
+                            raise ReviewStopped("Security scan cancelled.")
+                        if (_mcp.scan_revoked(db, row, repository_id=row.repository_id)
+                                or _pat.scan_revoked(db, row, repository_id=row.repository_id, network=False)):
+                            raise ReviewStopped("The originating security scan permission was revoked.")
+                        authorize(db, db.get(Repository, row.repository_id), db.get(User, row.actor_id),
+                                  db.get(Connection, row.connection_id), fresh=False)
+                        # Admitted candidates share one history snapshot until their ordered observations are saved.
+                        if assessment_history_snapshot(db, lock=True) != history:
                             raise ValueError("Finding history changed during assessment. Retry this security scan.")
+                        check_deadline()
                         for candidate in batch:
                             assessed = results.get(candidate.id)
                             if assessed is None:
@@ -1017,11 +1279,22 @@ def perform(scan_id, claim):
                                         "source_hash": item.inventory[proposal["path"]]["hash"], "assessment": assessed,
                                         "fingerprint": digest(json.dumps(["code", proposal["path"], proposal["category"],
                                                                           proposal["evidence"][0]["quote"], proposal["title"]]))}
-                            finding = observe(db, db.get(SecurityScan, scan_id), evidence, assessed["finding_id"])
+                            finding = observe(db, row, evidence, assessed["finding_id"])
+                            remember_observation(finding)
                             observed.add(finding.id)
-                    remaining = [row for row in remaining if row not in batch]
+                        if stale_results:
+                            tasks = dict(row.progress["tasks"])
+                            for identity, assessed in stale_results.items():
+                                key = f"assessment:{identity}"
+                                tasks[key] = {**tasks[key], "result": assessed}
+                            row.progress = {**row.progress, "tasks": tasks}
+                    if fatal:
+                        raise fatal
+                    done = {row.id for row in batch}
+                    remaining = [row for row in remaining if row.id not in done]
             stage(scan_id, "assessment",
-                  "completed" if len(problems) == assessment_problem_count and not assessment_problems else "partial")
+                  "completed" if len(problems) == assessment_problem_count and not assessment_problems else "partial",
+                  claim=claim)
             to_verify = [old for old in previous if old["id"] not in observed and
                          (old["state"] in {"open", "accepted_risk"} or old["pending_close"])]
             stage(scan_id, "verification", "running", claim=claim, total=len(to_verify), completed=0)
@@ -1031,7 +1304,7 @@ def perform(scan_id, claim):
 
             def advisory_lookup(evidence, packages):
                 with advisory_locks[evidence.get("rule_id", "")]:
-                    return dependency_advisory(evidence, packages, token, stopped, advisories)
+                    return dependency_advisory(evidence, packages, fresh_installation_token, stopped, advisories)
 
             def verify_one(old):
                 try:
@@ -1083,6 +1356,7 @@ def perform(scan_id, claim):
                 raise ReviewStopped("Security scan cancelled.")
             stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values())
                   else "completed", claim=claim, findings=len(verdicts))
+            token = fresh_installation_token()
             fresh = branch_head(full_name, token)
             finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]),
                    claim=claim, assessment_problems=assessment_problems, assessment_blockers=assessment_blockers)

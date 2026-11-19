@@ -664,6 +664,8 @@ def test_security_auth_outage_preserves_usage_before_retry(seed, security_github
         assert scan.progress["tokens"] == (None if gate == "provider" else 7)
         if gate == "provider":
             assert "Token usage is unknown" in scan.error
+        else:
+            assert scan.progress["tasks"]["analysis:app.py"]["tokens"] == 7
     assert len(paid_calls) == 1
 
 
@@ -1031,14 +1033,21 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
         "targets": {"bun.lock": {"packages": packages}}})
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Dependency verification must not dispatch inference"))
     request = github.request
-    lookups = []
+    lookups, tokens = [], []
+
+    def installation_token(db, installation_id):
+        tokens.append(f"installation-{len(tokens)}")
+        return tokens[-1]
 
     def advisory_request(method, path, token, **kwargs):
         if path.startswith("/advisories?"):
             lookups.append(path)
+            assert token == tokens[-1] and token != tokens[1]
+            assert token in item.secret_values
             return [deepcopy(DEPENDENCY_ADVISORY)] if advisory_available else []
         return request(method, path, token, **kwargs)
 
+    monkeypatch.setattr(github, "installation_token", installation_token)
     monkeypatch.setattr(github, "request", advisory_request)
     with transaction() as db:
         prior = saved_scan(db, seed, status="completed")
@@ -1509,12 +1518,12 @@ def test_dependency_advisory_range_requires_current_matching_reviewed_evidence(m
 
     monkeypatch.setattr(github, "request", request)
     cache = {}
-    proof = security.dependency_advisory(evidence, packages, "token", lambda: False, cache)
+    proof = security.dependency_advisory(evidence, packages, lambda: "token", lambda: False, cache)
     assert bool(proof) == (case in {"valid", "other_package"})
     if proof:
         assert proof["affected_range"] == "<= 4.2.0" and proof["current_versions"] == ["4.3.0"]
         assert proof["url"] == advisory["html_url"] and proof["updated_at"] == advisory["updated_at"]
-        assert security.dependency_advisory(evidence, packages, "token", lambda: False, cache) == proof
+        assert security.dependency_advisory(evidence, packages, lambda: "token", lambda: False, cache) == proof
     assert len(calls) == (0 if case == "unsupported_ecosystem" else 1)
 
 
@@ -1537,7 +1546,7 @@ def test_dependency_advisory_lookup_stops_safely_without_manufacturing_a_fix(mon
     monkeypatch.setattr(github, "request", request)
     error = ValueError if failure == "network" else TimeoutError if failure == "timeout" else security.ReviewStopped
     with pytest.raises(error):
-        security.dependency_advisory(evidence, [{"name": evidence["package"], "version": "4.3.0"}], "token", stopped, {})
+        security.dependency_advisory(evidence, [{"name": evidence["package"], "version": "4.3.0"}], lambda: "token", stopped, {})
     assert len(calls) == int(failure in {"network", "cancel_after"})
 
 
@@ -2004,10 +2013,17 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     calls, configurations, active = [], [], [0, 0]
     original_ask = security_engine.ask
     lock, barrier = Lock(), Barrier(concurrency)
+    gate_failure = concurrency > 1 and budget is None and failure in {"usage", "quota", "cancel", "timeout"}
+    failure_collected = Event()
+    original_stage = security.stage
     clock = [0]
     if failure == "timeout":
         monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
 
+    def stage(scan_id, name, status, **values):
+        original_stage(scan_id, name, status, **values)
+        if name == "assessment" and status == "running" and "failed" in values and "total" not in values:
+            failure_collected.set()
 
     def ask(*args, **kwargs):
         task, context, allowance = args[3:6]
@@ -2024,6 +2040,8 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
             active[1] = max(active)
             calls.append((path, allowance))
         barrier.wait(timeout=10)
+        if gate_failure and path != "bad.py":
+            assert failure_collected.wait(10), "A fault result must be collected before other slots free up."
         with lock:
             active[0] -= 1
         assert callable(kwargs["infer"])
@@ -2046,6 +2064,8 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
+    if gate_failure:
+        monkeypatch.setattr(security, "stage", stage)
     monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
     with transaction() as db:
@@ -2098,6 +2118,148 @@ def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
     item = SimpleNamespace(sha=SHA, renamed=lambda sha, path: "new.py" if path == "old.py" else path)
     assert [row.id for row in security.assessment_batch(rows, history, item, 4)] == [0, 5]
     assert [row.id for row in security.assessment_batch(rows[1:], history, item, 4)] == [1, 5]
+
+
+@pytest.mark.parametrize("discovery", ["queued", "in_flight", "external_history", "late_quota", "late_unknown"])
+def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
+    seed, security_github, monkeypatch, tmp_path, discovery,
+):
+    paths = ("first.py", "slow1.py", "slow2.py", "slow3.py", "linked.py", "fifth.py")
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {"code": True, "hash": digest(path), "lines": 1} for path in paths}
+    item.source = lambda path, sha=None: path
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [], "targets": {}, "problems": [], "metadata": {},
+    })
+
+    def citation(path):
+        return {"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": path}
+
+    initial = set(paths[:4])
+    late_failure = discovery in {"late_quota", "late_unknown"}
+    refilled_path = "linked.py" if discovery == "in_flight" or late_failure else "fifth.py"
+    barrier, lock = Barrier(4), Lock()
+    release, refilled, first_collected = Event(), Event(), Event()
+    initial_collected = Event()
+    started = []
+    active = peak = 0
+    original_stage = security.stage
+
+    def stage(scan_id, name, status, **values):
+        original_stage(scan_id, name, status, **values)
+        if name == "assessment":
+            if values.get("completed") == 1:
+                first_collected.set()
+            if values.get("completed") == 4:
+                initial_collected.set()
+
+    def ask(*args, **kwargs):
+        nonlocal active, peak
+        task, context = args[3:5]
+        if task == "analysis":
+            path = context["assigned_path"]
+            proposal = {"title": path, "category": "test", "severity": "low", "path": path,
+                        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact",
+                        "remediation": "Fix", "verification": "Test", "evidence": [citation(path)]}
+            proposals = [proposal, {**proposal, "title": "Related"}] if path == "first.py" else [proposal]
+            return {"findings": proposals, "required_paths": []}, {"tokens": 12}
+        assert task == "assessment"
+        proposal = context["proposal"]
+        title = proposal["title"]
+        with lock:
+            started.append(title)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if title in initial:
+                barrier.wait(timeout=10)
+            if title == refilled_path:
+                refilled.set()
+                assert release.wait(10)
+                if late_failure:
+                    assert initial_collected.wait(10)
+                    if discovery == "late_quota":
+                        raise RunnerBlocked("quota", {"tokens": 12})
+                    raise security_engine.verification.VerificationOutputError("Unknown usage", {"tokens": None})
+            if title in initial - {"first.py"}:
+                assert release.wait(10)
+            if late_failure and title == "fifth.py":
+                assert initial_collected.wait(10)
+            if title == "first.py" and discovery == "external_history":
+                with transaction() as db:
+                    saved_finding(db, seed, db.get(SecurityScan, identity), path="external.py")
+            finding_id = None
+            if title == "Related" or discovery == "queued" and title == "linked.py":
+                accepted, = context["history"]
+                assert accepted["path"] == "first.py"
+                with transaction() as db:
+                    assert db.scalar(select(SecurityOccurrence.id).where(
+                        SecurityOccurrence.scan_id == identity, SecurityOccurrence.finding_id == accepted["id"]))
+                if title == "Related":
+                    finding_id = accepted["id"]
+            evidence = proposal["evidence"]
+            if (discovery == "queued" and title in {"first.py", "Related"}
+                    or discovery == "in_flight" and title == "slow1.py"):
+                evidence = [*evidence, citation("linked.py")]
+            return {"verdict": "confirmed", "finding_id": finding_id, "explanation": "Checked",
+                    "evidence": evidence, "required_paths": []}, {"tokens": 12}
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security, "stage", stage)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=4)).id
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(perform_security, identity, "test:1")
+        try:
+            if discovery == "external_history":
+                assert first_collected.wait(10)
+            else:
+                assert refilled.wait(10), "The next independent candidate waited for the whole batch."
+                with lock:
+                    assert set(started) == initial | {refilled_path} and active == 4
+                with transaction() as db:
+                    scan = db.get(SecurityScan, identity)
+                    assert scan.stages["assessment"]["completed"] == 1
+                    assert not db.scalar(select(SecurityOccurrence.id).where(SecurityOccurrence.scan_id == identity))
+        finally:
+            release.set()
+        worker.result(timeout=10)
+
+    assert peak == 4
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        if discovery == "external_history":
+            assert len(started) == 4 and set(started) == initial
+            assert scan.status == "failed" and "history changed" in scan.error
+            assert scan.progress["tokens"] == 120
+            assert not db.scalar(select(SecurityOccurrence.id).where(SecurityOccurrence.scan_id == identity))
+        elif late_failure:
+            assert scan.status == ("blocked" if discovery == "late_quota" else "partial"), scan.error
+            assert ("selected provider limit" if discovery == "late_quota" else "Unknown usage") in scan.error
+            assert scan.stages["assessment"]["status"] == "failed"
+            assert set(db.scalars(select(SecurityFinding.path))) == initial
+            assert {finding["path"] for finding in scan.report["findings"]} == initial
+            assert "Related" not in started
+            assert scan.progress["tokens"] == (72 + 12 * len(started) if discovery == "late_quota" else None)
+        else:
+            assert len(started) == scan.stages["assessment"]["completed"] == 7
+            assert scan.progress["tokens"] == 156
+            if discovery == "queued":
+                assert scan.status == "completed", scan.error
+                assert started[-2:] == ["Related", "linked.py"]
+            else:
+                assert scan.status == "partial"
+                task = scan.progress["tasks"]["assessment:5"]
+                assert task["tokens"] == 12 and task["result"]["verdict"] == "uncertain"
+                assert "history changed" in task["result"]["explanation"]
+                assert not db.scalar(select(SecurityFinding.id).where(SecurityFinding.path == "linked.py"))
+                assert scan.report["unsettled_candidates"][0]["assessment"] == task["result"]
 
 
 @pytest.mark.parametrize("history_changed", [False, True])
@@ -2239,6 +2401,162 @@ def test_explicit_security_retry_rechecks_uncertainty_and_reuses_settled_work(
         assert db.get(SecurityScan, parent_id).progress == original_progress
         assert db.get(SecurityScan, parent_id).status == "partial"
         assert all(finding.state == "open" for finding in db.scalars(select(SecurityFinding)))
+
+
+@pytest.mark.parametrize("retry_change", ["none", "triage", "cancelled_child", "job_resume", "redaction"])
+@pytest.mark.parametrize("trivy_observed", [True, False])
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_security_retry_after_final_github_error_reuses_completed_inference(
+    seed, security_github, monkeypatch, tmp_path, retry_change, trivy_observed, concurrency,
+):
+    paths = ["app.py", "repeat.py", "old.py", "merge.py", "pending.py"]
+    item = SimpleNamespace(inventory={path: {"code": True, "hash": digest(path), "lines": 1} for path in paths},
+        excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
+        renamed=lambda sha, path: path, diff=lambda sha, **kwargs: "source changed", redact=lambda text: text,
+        sha=SHA, git=tmp_path, files=tmp_path / "files", env={})
+    proposals = {path: [{"title": f"{path} {index}", "category": "test", "severity": "low", "path": path,
+        "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+        "verification": "Test", "evidence": [{"revision": "current", "path": path,
+            "start_line": 1, "end_line": 1, "quote": path}]} for index in range(count)]
+        for path, count in zip(paths, (3, 1, 0, 1, 1), strict=True)}
+    credential = "synthetic private supplementary evidence"
+    if retry_change == "redaction":
+        proposals["pending.py"][0]["remediation"] = credential
+    item.redact = lambda text: text.replace(credential, "[redacted]") if retrying and retry_change == "redaction" else text
+    calls, issued = [], []
+    retrying, expired = False, False
+    snapshot_token = None
+    request = github.request
+
+    def installation_token(db, installation_id):
+        issued.append(f"installation-{len(issued)}")
+        return issued[-1]
+
+    def github_request(method, path, token, **kwargs):
+        if expired:
+            assert token == issued[-1] and token != snapshot_token
+            assert token in item.secret_values
+            if not retrying:
+                raise github.GitHubError(401, "GitHub authorization expired. Sign in again.")
+        return request(method, path, token, **kwargs)
+
+    def ask(item, connection, credentials, task, context, allowance, timeout, stopped, identity, **kwargs):
+        nonlocal expired
+        if task == "analysis":
+            path = context["assigned_path"]
+            calls.append((task, path))
+            validated = security_engine.redacted_context(item, proposals[path])
+            return {"findings": validated, "required_paths": []}, {"tokens": 7}
+        if task == "verification":
+            calls.append((task, context["finding"]["path"]))
+            expired = True
+            return {"verdict": "still_present", "explanation": "Checked", "evidence": []}, {"tokens": 7}
+        proposal = context["proposal"]
+        title = proposal["title"]
+        calls.append((task, title))
+        if title == "pending.py 0" and not retrying:
+            raise security.verification.VerificationOutputError("Invalid evidence", {"tokens": 7},
+                feedback={"kind": "citation_selection", "reason": "invalid source line range"})
+        verdict = "confirmed" if title in {"app.py 1", "repeat.py 0", "merge.py 0"} else "rejected"
+        return {"verdict": verdict, "finding_id": {"repeat.py 0": existing_id, "merge.py 0": merged_id}.get(title),
+                "explanation": "Checked", "evidence": proposal["evidence"], "required_paths": []}, {"tokens": 7}
+
+    def snapshot(name, sha, previous_shas, token, stopped):
+        nonlocal snapshot_token
+        snapshot_token = token
+        return nullcontext(item)
+
+    monkeypatch.setattr(github, "installation_token", installation_token)
+    monkeypatch.setattr(github, "request", github_request)
+    monkeypatch.setattr(security_engine, "snapshot", snapshot)
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [deterministic] if trivy_observed else [], "targets": {}, "problems": [], "metadata": {},
+    })
+    monkeypatch.setattr(security_engine, "ask", ask)
+    body = {"connection_id": "connection", "concurrency": concurrency}
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed")
+        saved_finding(db, seed, prior, path="old.py")
+        existing = saved_finding(db, seed, prior, path="repeat.py")
+        existing_id = existing.id
+        merged = saved_finding(db, seed, prior, kind="infrastructure", path="merge.py", rule_id="synthetic",
+                               sources=["trivy"], source_sha=SHA, source_hash=digest("merge.py"))
+        merged_id, deterministic = merged.id, merged.evidence
+        db.add(SecurityOccurrence(scan_id=prior.id, finding_id=merged_id, outcome="present",
+            snapshot=security.finding_snapshot(merged)))
+        db.add(SecurityOccurrence(scan_id=prior.id, finding_id=existing.id, outcome="present",
+            snapshot={**security.finding_snapshot(existing), "verification": {"verdict": "still_present"}}))
+        parent_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid())).id
+    perform_security(parent_id, "test:1")
+    assert expired
+    expired = False
+    with transaction() as db:
+        parent = db.get(SecurityScan, parent_id)
+        assert parent.status == "partial" and parent.error == "GitHub authorization expired. Sign in again."
+        assert parent.stages["verification"]["status"] == "completed"
+        assert parent.progress["tokens"] == 84
+        original = deepcopy((parent.progress, parent.report))
+        if retry_change == "triage":
+            changed = db.get(SecurityFinding, existing_id)
+            changed.state, changed.version = "accepted_risk", changed.version + 1
+        retry_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()), parent=parent).id
+
+    if retry_change == "cancelled_child":
+        stage = security.stage
+
+        def stop_after_trivy(scan_id, name, status, **kwargs):
+            stage(scan_id, name, status, **kwargs)
+            if name == "trivy" and status == "completed":
+                raise security.ReviewStopped("Interrupted after Trivy")
+
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(security, "stage", stop_after_trivy)
+            perform_security(retry_id, "cancelled-child:1")
+        with transaction() as db:
+            child = db.get(SecurityScan, retry_id)
+            assert child.status == "cancelled" and child.progress["tasks"] == {}
+            if trivy_observed:
+                assert "ai_analysis" not in db.get(SecurityFinding, merged_id).evidence
+            retry_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(**body, request_key=uid()), parent=child).id
+
+    calls.clear()
+    retrying = True
+    if retry_change == "job_resume":
+        finish = security.finish
+        interruptions = 2
+        def interrupted_finish(*args, **kwargs):
+            nonlocal interruptions
+            if interruptions:
+                interruptions -= 1
+                raise pat_provenance.TransientAuthorizationError("Temporary authorization outage")
+            return finish(*args, **kwargs)
+        monkeypatch.setattr(security, "finish", interrupted_finish)
+        with transaction() as db:
+            job_id = db.scalar(select(Job.id).where(Job.kind == "security_scan",
+                Job.payload["scan_id"].as_string() == retry_id))
+        for status in ("queued", "queued", "completed"):
+            jobs.execute_job(job_id)
+            with transaction() as db:
+                db.get(Job, job_id).available_at = now()
+                assert db.get(SecurityScan, retry_id).status == status
+    else:
+        perform_security(retry_id, "retry:1")
+    with transaction() as db:
+        retry, parent = db.get(SecurityScan, retry_id), db.get(SecurityScan, parent_id)
+        assert retry.status == "completed", retry.error
+        expected = [("assessment", "pending.py 0")]
+        if retry_change == "triage":
+            expected.append(("assessment", "repeat.py 0"))
+            assert db.get(SecurityFinding, existing_id).state == "accepted_risk"
+        if retry_change == "redaction":
+            expected.insert(0, ("analysis", "pending.py"))
+            assert retry.progress["tasks"]["analysis:pending.py"]["result"]["findings"][0]["remediation"] == "[redacted]"
+        assert sorted(calls) == expected
+        assert retry.progress["tokens"] == 7 * len(expected)
+        assert sum(bool(task.get("reused")) for task in retry.progress["tasks"].values()) == 12 - len(expected)
+        assert (parent.progress, parent.report) == original
+        assert db.get(SecurityFinding, merged_id).evidence["ai_analysis"]["assessment"]["verdict"] == "confirmed"
+        assert issued[-1] != snapshot_token and issued[-1] in item.secret_values
 
 
 @pytest.mark.parametrize("context_changed", [False, True])
