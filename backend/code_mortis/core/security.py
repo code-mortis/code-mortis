@@ -36,20 +36,26 @@ def safe_endpoint(url: str) -> str:
         raise ValueError("Provider URLs cannot contain credentials, query parameters, or fragments")
     config = settings()
     trusted = {h.strip().lower() for h in config.trusted_endpoint_hosts.split(",") if h.strip()}
-    if parsed.hostname.lower() in trusted:
-        return url.rstrip("/")
-    if parsed.scheme != "https" and not config.allow_private_endpoints:
+    explicitly_trusted = parsed.hostname.lower() in trusted
+    if parsed.scheme != "https" and not (config.allow_private_endpoints or explicitly_trusted):
         raise ValueError("This server does not allow unencrypted HTTP provider URLs. Use HTTPS or ask the administrator to review CM_ALLOW_PRIVATE_ENDPOINTS for a trusted local provider.")
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80),
+                                       type=socket.SOCK_STREAM)
     except OSError as exc:
         raise ValueError("The provider address could not be found. Check the URL and ask the administrator to check server DNS if it is correct.") from exc
+    if not addresses:
+        raise ValueError("The provider address could not be found. Check the URL and server DNS.")
+    if explicitly_trusted:
+        return url.rstrip("/")
     for entry in addresses:
         address = ipaddress.ip_address(entry[4][0])
         if address.is_link_local or address.is_unspecified or address.is_multicast:
             raise ValueError("This provider URL points to a protected system or local-network address. Choose a different provider URL.")
         if not address.is_global and not config.allow_private_endpoints:
             raise ValueError("This server does not allow private-network provider addresses. Use an allowed provider or ask the administrator to review CM_ALLOW_PRIVATE_ENDPOINTS for your trusted provider.")
+        if parsed.scheme == "http" and not (address.is_private or address.is_loopback):
+            raise ValueError("Public provider addresses require HTTPS or explicit trust through CM_TRUSTED_ENDPOINT_HOSTS.")
     return url.rstrip("/")
 
 

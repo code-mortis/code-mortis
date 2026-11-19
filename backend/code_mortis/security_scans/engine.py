@@ -50,6 +50,14 @@ ASSESSMENT_INSTRUCTIONS = native.ASSESSMENT_INSTRUCTIONS
 relative_path = native.relative_path
 
 
+def _supported_path(path):
+    try:
+        relative_path(path)
+    except ValueError:
+        return False
+    return True
+
+
 def secure_digest(value):
     return native.secure_digest(value, settings().encryption_key.encode())
 
@@ -117,13 +125,15 @@ class Snapshot:
             if not entry:
                 continue
             metadata, path = entry.split("\t", 1)
-            relative_path(path)
             mode, kind, blob, size = metadata.split()
             if any(part in EXCLUDED for part in PurePosixPath(path).parts):
                 self.excluded.append({"path": path, "reason": "Generated, dependency or cache directory"})
                 continue
             if mode not in {"100644", "100755"} or kind != "blob":
                 self.excluded.append({"path": path, "reason": "Symlink or submodule is not followed"})
+                continue
+            if not _supported_path(path):
+                self.problems.append({"path": path, "reason": "Repository path cannot be used as security evidence"})
                 continue
             if int(size) > 4_000_000:
                 self.problems.append({"path": path, "reason": "File exceeds the 4 MB evidence limit"})
@@ -157,12 +167,16 @@ class Snapshot:
         if model_context:
             changed = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                                      "--name-only", "-z", original, self.sha, stopped=self.stopped)
-            paths = {relative_path(path) for path in changed.split("\0") if path}
+            changed_paths = {path for path in changed.split("\0") if path}
+            paths = {path for path in changed_paths if _supported_path(path)}
             if not paths:
+                if changed_paths:
+                    raise ValueError("No changed repository path can be used as security evidence")
                 return ""
             self.renamed(original, next(iter(paths)))
             for before, after in self.renames[original].items():
-                if file_policy.excluded(before) or file_policy.excluded(after):
+                if (not _supported_path(before) or not _supported_path(after)
+                        or file_policy.excluded(before) or file_policy.excluded(after)):
                     paths.difference_update((before, after))
             paths = sorted(path for path in paths if not file_policy.excluded(path))
             if not paths:
@@ -172,25 +186,26 @@ class Snapshot:
                                    original, self.sha, *scope, stopped=self.stopped))
 
     def renamed(self, original, path):
-        if original in self.renames:
-            return self.renames[original].get(path, path)
-        try:
-            names = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z",
-                            "--find-renames", original, self.sha, stopped=self.stopped).split("\0")
-        except ValueError:
-            self.renames[original] = {}
-            raise
-        renames = {}
-        i = 0
-        while i < len(names) - 1:
-            kind = names[i]
-            if kind.startswith("R"):
-                renames[names[i + 1]] = relative_path(names[i + 2])
-                i += 3
-            else:
-                i += 2
-        self.renames[original] = renames
-        return renames.get(path, path)
+        if original not in self.renames:
+            try:
+                names = git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv",
+                                       "--name-status", "-z", "--find-renames", original, self.sha,
+                                       stopped=self.stopped).split("\0")
+            except ValueError:
+                self.renames[original] = {}
+                raise
+            renames = {}
+            i = 0
+            while i < len(names) - 1:
+                kind = names[i]
+                if kind.startswith("R"):
+                    renames[names[i + 1]] = names[i + 2]
+                    i += 3
+                else:
+                    i += 2
+            self.renames[original] = renames
+        target = self.renames[original].get(path)
+        return target if target and _supported_path(target) else path
 
 
 @contextmanager

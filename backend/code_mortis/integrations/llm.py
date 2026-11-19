@@ -33,10 +33,35 @@ def input_fingerprint(request: Request):
     return analysis.fingerprint(request.model_dump(mode="json", exclude={"session_id"}))
 
 
+def engine_connection(connection, *, preserve_cache_key_budget=False):
+    """Let Engine manage the prompt cache key without changing the saved connection."""
+    protocol = connection.get("protocol")
+    if protocol not in {"openai", "openai-responses", "anthropic"}:
+        return connection
+    options = connection.get("options", {})
+    extra = options.get("extra_body")
+    if not isinstance(extra, dict):
+        return connection
+    filtered = {key: value for key, value in extra.items()
+                if not (isinstance(key, str) and key.partition(".")[0] == "prompt_cache_key")}
+    if len(filtered) == len(extra):
+        return connection
+    options = {**options, "extra_body": filtered}
+    ceiling = options.get("prompt_token_ceiling")
+    if preserve_cache_key_budget and ceiling is not None and "prompt_cache_key" in extra:
+        cache_key = extra["prompt_cache_key"]
+        if cache_key is None or isinstance(cache_key, str):
+            value_bytes = len(json.dumps(cache_key, ensure_ascii=False).encode())
+            # Native planning sees a quoted 64-digit hash for Responses and no field for other protocols.
+            delta = 66 - value_bytes if protocol == "openai-responses" else -len(',"prompt_cache_key":') - value_bytes
+            options["prompt_token_ceiling"] = ceiling + delta
+    return {**connection, "options": options}
+
+
 def reservation(connection, request):
     if connection.get("execution_limits") == analysis.EXECUTION_LIMITS:
         estimate = request if request.max_output_tokens else request.model_copy(update={"max_output_tokens": 5_000_000})
-        return engine_gateway.reservation(connection, estimate)
+        return engine_gateway.reservation(engine_connection(connection), estimate)
     protocol = connection["protocol"]
     body = llm_http.encode_request("anthropic" if protocol == "anthropic-bedrock" else protocol,
                                    connection, request)
@@ -49,6 +74,19 @@ def reservation(connection, request):
     if ceiling is not None and tokens > ceiling:
         raise ValueError("Inference request exceeds the connection prompt token ceiling")
     return tokens
+
+
+class _EngineClient:
+    """Track when Engine hands a request to HTTPX for transport."""
+
+    def __init__(self, client):
+        self.client = client
+        self.build_request = client.build_request
+        self.dispatched = False
+
+    async def send(self, request, **kwargs):
+        self.dispatched = True
+        return await self.client.send(request, **kwargs)
 
 
 async def send(connection, credentials, request, *, client, stopped=lambda: False, timeout=None):
@@ -67,6 +105,8 @@ async def send(connection, credentials, request, *, client, stopped=lambda: Fals
             if connection.get("base_url"):
                 try:
                     await engine_http._bounded(asyncio.to_thread(safe_endpoint, connection["base_url"]), stopped, timeout)
+                except ValueError as exc:
+                    raise InferenceError("endpoint_policy", str(exc), consumption_unknown=False) from exc
                 except engine_http.InferenceError as exc:
                     exc.consumption_unknown = False
                     raise
@@ -90,8 +130,15 @@ async def send(connection, credentials, request, *, client, stopped=lambda: Fals
                     raise engine_http.InferenceError("model_capacity", "Anthropic did not report the model's output capacity.",
                                                      request_id=identity, consumption_unknown=False)
                 request = request.model_copy(update={"max_output_tokens": min(request.max_output_tokens, capacity)})
-            return await engine_gateway.send(connection, credentials, request, client=client, stopped=stopped,
-                timeout=timeout - (time.monotonic() - started) if timeout is not None else None)
+            transport = _EngineClient(client)
+            try:
+                return await engine_gateway.send(engine_connection(connection), credentials, request,
+                    client=transport, stopped=stopped,
+                    timeout=timeout - (time.monotonic() - started) if timeout is not None else None)
+            except ValueError as exc:
+                if transport.dispatched:
+                    raise
+                raise InferenceError("request_validation", str(exc), consumption_unknown=False) from exc
         except engine_http.InferenceError as exc:
             raise InferenceError(exc.code, str(exc), usage=exc.usage, request_id=exc.request_id, retryable=exc.retryable,
                                  consumption_unknown=exc.consumption_unknown, status_code=exc.status_code,
