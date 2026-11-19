@@ -811,6 +811,45 @@ def test_automatic_reviews_skip_forks_and_drafts(seed, github_stub, monkeypatch)
         assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
 
 
+def test_repository_sync_check_records_success_and_preserves_newer_observations(seed, github_stub, monkeypatch):
+    checked = now().replace(microsecond=0)
+    monkeypatch.setattr(jobs, "now", lambda: checked)
+    monkeypatch.setattr(github, "pages", lambda *a, **k: [{"number": 3}])
+    jobs.scan_repository(22)
+    with transaction() as db:
+        assert db.get(Repository, 22).last_pr_sync_check_at == checked
+        assert db.scalar(select(Job).where(Job.kind == "sync_pr")).status == "queued"
+        db.get(Repository, 22).last_pr_sync_check_at = checked + timedelta(minutes=1)
+    jobs.scan_repository(22)
+    with transaction() as db:
+        assert db.get(Repository, 22).last_pr_sync_check_at == checked + timedelta(minutes=1)
+
+
+@pytest.mark.parametrize("failure", ["fetch", "enqueue", "disabled", "inactive"])
+def test_repository_sync_check_keeps_last_success_on_failure_or_noop(seed, github_stub, monkeypatch, failure):
+    checked = now().replace(microsecond=0) - timedelta(minutes=5)
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        repo.last_pr_sync_check_at = checked
+        if failure == "disabled":
+            repo.enabled = False
+        if failure == "inactive":
+            repo.active = False
+    def fail(*args, **kwargs):
+        raise RuntimeError("Synthetic check failure")
+    monkeypatch.setattr(github, "pages", fail if failure == "fetch" else lambda *a, **k: [{"number": 3}])
+    if failure == "enqueue":
+        monkeypatch.setattr(jobs, "enqueue_reconciliation", fail)
+    if failure in {"fetch", "enqueue"}:
+        with pytest.raises(RuntimeError, match="Synthetic check failure"):
+            jobs.scan_repository(22)
+    else:
+        jobs.scan_repository(22)
+    with transaction() as db:
+        assert db.get(Repository, 22).last_pr_sync_check_at == checked
+        assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "sync_pr")) == 0
+
+
 @pytest.mark.parametrize("login", ["dependabot[bot]", "automation"])
 def test_repository_scans_skip_bot_prs_but_allow_manual_reviews(seed, github_stub, monkeypatch, client, login):
     data = remote("c" * 40)

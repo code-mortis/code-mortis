@@ -128,6 +128,10 @@ class RunLimits(StrictModel):
     token_budget: int | None = Field(default=None, ge=1000, le=5000000)
 
 
+class ScanSettings(RunLimits):
+    concurrency: int = Field(default=4, ge=1, le=8, strict=True)
+
+
 class RepoSettings(RunLimits):
     analysis_engine: Literal["mortis"] = "mortis"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -174,6 +178,7 @@ class RepositoryInput(StrictModel):
     code_graph_limits: CodeGraphLimits | None = None
     connection_id: str | None = None
     settings: RepoSettings = Field(default_factory=RepoSettings)
+    scan_settings: ScanSettings | None = None
 
 
 class BackgroundInput(StrictModel):
@@ -319,6 +324,14 @@ class SecuritySummary(StrictModel):
     counts: dict[str, int] = Field(default_factory=dict)
 
 
+class RepositoryReviewSummary(StrictModel):
+    run_id: str
+    pull_request_id: str
+    number: int
+    head_sha: str
+    finished_at: datetime
+
+
 class RepositoryOut(ORMModel):
     id: int
     installation_id: int
@@ -331,8 +344,11 @@ class RepositoryOut(ORMModel):
     connection_id: str | None
     connection_requires_setup: bool = False
     settings: RepoSettings
+    scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False
+    last_pr_sync_check_at: datetime | None = None
+    latest_completed_review: RepositoryReviewSummary | None = None
     security: SecuritySummary | None = None
 
 

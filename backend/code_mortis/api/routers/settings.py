@@ -4,7 +4,7 @@ from sqlalchemy import select
 from code_mortis.api.dependencies import ADMIN, DB
 from code_mortis.core.config import settings
 from code_mortis.integrations import github
-from code_mortis.models import Installation, Job, Membership
+from code_mortis.models import Installation, Job, Membership, User
 
 router = APIRouter()
 
@@ -23,8 +23,10 @@ def instance_settings(db: DB, user: ADMIN) -> dict:
             for row in db.scalars(select(Installation).where(Installation.archived.is_(False)))
         ],
         "members": [
-            {"id": row.github_id, "login": row.login, "role": row.role}
-            for row in db.scalars(select(Membership))
+            {"id": row.github_id, "login": row.login, "role": row.role, "avatar_url": avatar_url or ""}
+            for row, avatar_url in db.execute(
+                select(Membership, User.avatar_url).outerjoin(User, User.id == Membership.github_id)
+            )
         ],
         "failed_jobs": [
             {

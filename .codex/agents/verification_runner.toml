@@ -1,6 +1,6 @@
 name = "verification_runner"
 description = "Verify the final change with relevant existing checks; exclusively own shared local backend test execution."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "medium"
 developer_instructions = """
 Follow AGENTS.md and the parent assignment. Inspect the final diff and existing checks;

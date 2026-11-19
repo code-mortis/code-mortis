@@ -1,6 +1,6 @@
 name = "workflow_reviewer"
 description = "Review lifecycle, inference, recovery, persistence and migration changes for concrete correctness regressions."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 developer_instructions = """
 Follow AGENTS.md and the parent assignment. Review the stable diff and connected callers

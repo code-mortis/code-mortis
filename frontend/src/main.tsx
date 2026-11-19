@@ -21,6 +21,7 @@ import {
   ErrorNotice,
   Field,
   Loading,
+  PageTitle,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
@@ -29,6 +30,10 @@ import { Brand } from "./components/brand";
 import raven from "./assets/raven.svg";
 import logo from "./assets/logo.svg";
 import { AppHeader } from "./components/app-header";
+import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
+import { AppBreadcrumb } from "./components/app-breadcrumb";
+import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
+import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
@@ -37,9 +42,29 @@ import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from ".
 import "./index.css";
 
 const Analytics = lazy(() => import("./analytics"));
-const SecurityOverview = lazy(() => import("./security").then((module) => ({ default: module.SecurityOverview })));
 const SecurityRepository = lazy(() => import("./security").then((module) => ({ default: module.SecurityRepository })));
 const SecurityScan = lazy(() => import("./security").then((module) => ({ default: module.SecurityScan })));
+
+function NavigationError() {
+  const { directory } = useWorkspaceNavigation();
+  const path = useLocation().pathname;
+  if (!directory.error || /^\/(?:repositories|organizations)(?:\/|$)/.test(path) || path === "/analytics") return null;
+  return <div className="mb-4 space-y-2"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
+}
+
+function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
+  const route = useLocation();
+  const params = new URLSearchParams(route.search);
+  const { directory, repository } = useWorkspaceNavigation();
+  if (directory.isPending) return <Loading />;
+  if (directory.error) return <div className="space-y-3"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
+  if (!repository) return <Empty title="Repository unavailable">Choose a repository from the navigation.</Empty>;
+  if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
+    return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
+  }
+  if (!analytics) return <PageTitle title="Overview" />;
+  return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
+}
 
 const initialAppearance = readAppearance();
 const initialDark = initialAppearance.mode === "dark" || (initialAppearance.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -213,9 +238,10 @@ function App() {
   }, [session.data]);
   if (setup.isPending || (setup.data?.configured && session.isPending))
     return (
-      <div className="px-8">
-        <Loading />
-      </div>
+      <header className="relative flex min-h-14 items-center border-b bg-background px-4 sm:px-8">
+        <img src={logo} alt="Code Mortis" className="h-7 w-auto" width="232" height="192" />
+        <WorkspaceProgress />
+      </header>
     );
   if (setup.error)
     return (
@@ -263,25 +289,33 @@ function App() {
     window.location.reload();
   }
   return (
-    <SidebarProvider>
+    <WorkspaceNavigationProvider>
+    <SidebarProvider className="flex-col">
       <a href="#main-content" onClick={(event) => {
         event.preventDefault();
         document.getElementById("main-content")?.focus();
       }} className="sr-only z-50 rounded-md bg-background px-4 py-3 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Skip to content</a>
-      <AppSidebar user={session.data} onLogout={logout} signingOut={action.isPending} />
+      <AppHeader user={session.data} onLogout={logout} signingOut={action.isPending} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
+      <div className="flex min-w-0 flex-1">
+      <AppSidebar admin={session.data.role === "admin"} />
       <div className="min-w-0 flex-1">
-        <AppHeader admin={session.data.role === "admin"} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
-        <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8">
+        <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8 has-[[data-slot=breadcrumb]]:pt-4">
           <div className="mx-auto max-w-6xl">
+            <NavigationError />
+            <AppBreadcrumb admin={session.data.role === "admin"} />
             <ErrorNotice error={action.error} />
             <Routes>
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
-              <Route path="/analytics" element={<Suspense fallback={<Loading />}><Analytics /></Suspense>} />
-              <Route path="/security" element={<Suspense fallback={<Loading />}><SecurityOverview user={session.data} /></Suspense>} />
-              <Route path="/security/repositories/:id" element={<Suspense fallback={<Loading />}><SecurityRepository user={session.data} /></Suspense>} />
-              <Route path="/security/scans/:id" element={<Suspense fallback={<Loading />}><SecurityScan user={session.data} /></Suspense>} />
+              <Route path="/analytics" element={<LegacyAnalytics />} />
+              <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview />} />
+              <Route path="/repositories/:repositoryId/analytics" element={<RepositoryOverview analytics />} />
+              <Route path="/organizations/:owner/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
+              <Route path="/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
+              <Route path="/security" element={<Navigate to="/repositories" replace />} />
+              <Route path="/security/repositories/:id" element={<Suspense fallback={<WorkspaceProgressFallback />}><SecurityRepository user={session.data} /></Suspense>} />
+              <Route path="/security/scans/:id" element={<Suspense fallback={<WorkspaceProgressFallback />}><SecurityScan user={session.data} /></Suspense>} />
               <Route
-                path="/repositories/:repositoryId?"
+                path="/repositories/:repositoryId"
                 element={<Repositories admin={session.data.role === "admin"} />}
               />
               <Route
@@ -318,8 +352,10 @@ function App() {
           </div>
         </main>
       </div>
+      </div>
       <Toaster theme={dark ? "dark" : "light"} />
     </SidebarProvider>
+    </WorkspaceNavigationProvider>
   );
 }
 class ErrorBoundary extends React.Component<
@@ -358,9 +394,11 @@ createRoot(document.getElementById("root")!, {
   <React.StrictMode>
     <ErrorBoundary>
       <QueryClientProvider client={cache}>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <WorkspaceProgressProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </WorkspaceProgressProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   </React.StrictMode>,

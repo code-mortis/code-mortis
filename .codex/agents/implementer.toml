@@ -1,6 +1,6 @@
 name = "implementer"
 description = "Implement a bounded Code Mortis change, including affected callers, contracts and regression tests."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 developer_instructions = """
 Follow AGENTS.md and the parent assignment. Read relevant current docs via docs/README.md;

@@ -699,7 +699,10 @@ async function mock(
 
 async function openNavigation(page: Page) {
   const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
-  if (page.viewportSize()!.width < 1024) await toggle.click();
+  if (page.viewportSize()!.width < 1024 && /^\/(?:repositories\/[^/]+(?:\/(?:settings|overview|analytics))?|pulls\/[^/]+|runs\/[^/]+|security\/(?:repositories|scans)\/[^/]+)\/?$/.test(new URL(page.url()).pathname)) {
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+  }
 }
 
 async function closeNavigation(page: Page) {
@@ -707,12 +710,22 @@ async function closeNavigation(page: Page) {
   if (await close.isVisible()) await close.click();
 }
 
+async function chooseRepository(page: Page, name: string) {
+  await closeNavigation(page);
+  await page.getByRole("combobox", { name: /^Repository:/ }).click();
+  await page.getByRole("combobox", { name: "Find a repository", exact: true }).fill(name.split("/").at(-1)!);
+  await page.getByRole("option", { name: name.split("/").at(-1)!, exact: true }).click();
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }).click();
+}
+
 async function breadcrumbAncestor(page: Page, name: string) {
-  if (page.viewportSize()!.width < 640) {
-    await page.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
-    return page.getByRole("menuitem", { name, exact: true });
-  }
-  return page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name, exact: true, disabled: false });
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
+  await expect(breadcrumb.getByRole("link", { name, exact: true, disabled: false, includeHidden: true })).toBeAttached();
+  const link = breadcrumb.getByRole("link", { name, exact: true, disabled: false });
+  if (await link.isVisible()) return link;
+  await breadcrumb.getByRole("button", { name: "Show breadcrumb ancestors" }).click();
+  return page.getByRole("menuitem", { name, exact: true });
 }
 
 async function chooseOption(page: Page, input: Locator, choice: string) {
@@ -842,7 +855,7 @@ test("ignored run status keeps restoration navigation outside the live region", 
 test("workspace pages keep one visible heading and let keyboard users skip navigation", async ({ page }, info) => {
   await mock(page);
   for (const [name, path, heading] of [
-    ["repository", "/repositories/22", "acme/payments"],
+    ["repository", "/repositories/22", "Pull requests"],
     ["pull", "/pulls/pr", `#${pr.number} ${pr.title}`],
     ["run", "/runs/run", "Review run"],
     ["settings", "/settings", "Settings"],
@@ -878,11 +891,22 @@ test("skip navigation preserves the filtered repository return context", async (
   await expect(page.getByRole("main")).toBeFocused();
   expect(page.url()).toBe(detailUrl);
   expect(await page.evaluate(() => history.state)).toEqual(state);
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", repositoryPath);
   await back.click();
   await expect(page).toHaveURL(repositoryUrl);
   await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
+  await pull.click();
+  await (await breadcrumbAncestor(page, "payments")).click();
+  await expect(page).toHaveURL("/repositories/22/overview");
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Analytics", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/22/analytics");
+  await page.getByRole("combobox", { name: "Date range", exact: true }).fill("7");
+  await page.getByRole("option", { name: "Last 7 days", exact: true }).click();
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }).click();
+  await expect(page).toHaveURL(repositoryUrl);
 });
 
 test("primary page tabs stay keyboard accessible when they wrap", async ({ page }, info) => {
@@ -909,68 +933,51 @@ test("primary page tabs stay keyboard accessible when they wrap", async ({ page 
   await page.screenshot({ path: `../.impeccable/review/cohesive-run-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
 });
 
-test("sidebar repositories navigate, show activity, and collapse accessibly", async ({ page }, info) => {
+test("home has only Inbox while organization and repository pickers open scoped navigation", async ({ page }, info) => {
   await mock(page);
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [
-    { ...repo, has_running_review: true },
-    { ...repo, id: 23, full_name: "other/payments", enabled: false },
-    { ...repo, id: 24, full_name: "legacy-repository" },
-  ] }));
-  await mockRepositoryPulls(page, 23, () => []);
-  await page.goto("/repositories");
-  await expect(page.getByRole("heading", { name: repo.full_name, exact: true })).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Repository", exact: true })).toHaveCount(0);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo, { ...repo, id: 23, full_name: "other/service" }] }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
+  await expect(page.locator('[data-slot="sidebar-trigger"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Account menu for @carlos" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Organization: Workspace" }).press("Enter");
+  const organization = page.getByRole("combobox", { name: "Find an organization", exact: true });
+  await expect(organization).toBeFocused();
+  await organization.fill("other");
+  await page.getByRole("option", { name: "other", exact: true }).click();
+  await expect(page).toHaveURL("/organizations/other/repositories");
+  await expect(page.getByRole("navigation", { name: "Repositories in other" }).getByRole("link")).toHaveText(["other/service"]);
+  await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Repository: Choose repository", exact: true }).click();
+  await page.getByRole("combobox", { name: "Find a repository", exact: true }).fill("service");
+  await page.getByRole("option", { name: "service", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/23/overview");
   await openNavigation(page);
-  const nav = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(nav.getByRole("link", { name: "Inbox", exact: true })).toHaveAccessibleDescription("6 open pull requests");
-  await expect(nav.getByRole("link", { name: "legacy-repository", exact: true }).locator(".font-medium")).toHaveText("legacy-repository");
-  const running = nav.getByRole("link", { name: "acme/payments, review running", exact: true });
-  await expect(running).toHaveAttribute("aria-current", "page");
-  await expect(running).not.toContainText("Running");
-  await expect(running.locator(".motion-safe\\:animate-spin")).toBeVisible();
-  await expect(running.locator(".animate-spin, .motion-safe\\:animate-spin")).toHaveCSS("animation-name", "none");
-  await nav.getByRole("link", { name: "other/payments", exact: true }).click();
+  const nav = page.getByRole("navigation", { name: "Repository sections" });
+  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Security", "Repository settings"]);
+  await expect(nav.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
+  await nav.getByRole("link", { name: "Pull requests", exact: true }).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
-  await expect(page.getByRole("heading", { name: "other/payments", exact: true })).toBeVisible();
-  if (info.project.name === "mobile") {
-    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
-  }
+  await expect(page.getByRole("dialog", { name: "Navigation" })).toHaveCount(0);
+  await page.goto("/pulls/pr");
+  await expect(page.getByRole("combobox", { name: "Organization: acme", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
   await openNavigation(page);
-  await expect(nav.getByRole("link", { name: "other/payments", exact: true })).toHaveAttribute("aria-current", "page");
-  for (const theme of ["light", "dark"]) {
-    await closeNavigation(page);
-    const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
-    if (await toggle.isVisible()) await toggle.click();
-    await openNavigation(page);
-    await noOverflow(page);
-    await page.screenshot({ path: `../.impeccable/review/sidebar-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
-  }
+  await expect(nav.getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
   if (info.project.name === "desktop") {
-    await page.setViewportSize({ width: 1400, height: 938 });
-    await noOverflow(page);
-    await page.screenshot({ path: "../.impeccable/review/sidebar-1400.png", fullPage: true, animations: "disabled" });
     await page.getByRole("button", { name: "Hide sidebar" }).click();
     await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
-    await expect(page.locator('[data-slot="sidebar-container"]')).not.toBeInViewport();
     await page.getByRole("button", { name: "Show sidebar" }).press("Enter");
-    await expect(nav).toBeInViewport();
-    await nav.getByRole("link", { name: "other/payments", exact: true }).focus();
+    await nav.getByRole("link", { name: "Pull requests", exact: true }).focus();
     await page.keyboard.press("Control+b");
     await expect(page.getByRole("button", { name: "Show sidebar" })).toBeFocused();
-    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
     await page.keyboard.press("Enter");
-    await expect(nav).toBeInViewport();
   } else {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Open navigation" })).toBeFocused();
   }
-  for (const path of ["/pulls/pr", "/runs/run"]) {
-    await page.goto(path);
-    await openNavigation(page);
-    await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveAttribute("aria-current", "page");
-    await expect(nav.getByRole("link", { name: "Inbox", exact: true })).not.toHaveAttribute("aria-current", "page");
-  }
+  await noOverflow(page);
 });
 
 test("repository paths preserve legacy settings links and never fall back from an unknown id", async ({ page }) => {
@@ -979,15 +986,16 @@ test("repository paths preserve legacy settings links and never fall back from a
   await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories?repo=23&configure=limits#settings");
   await expect(page).toHaveURL(/\/repositories\/23\/settings\?tab=limits$/);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toContainText("other/payments");
+  await expect(page.getByRole("combobox", { name: "Organization: other", exact: true })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository configuration" })).not.toContainText("other/payments");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
-  await (await breadcrumbAncestor(page, "other/payments")).click();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await page.goto("/repositories/22/settings?repo=23&configure=limits&state=all&q=retry&tab=connection");
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?state=all&q=retry&tab=limits$/);
-  const repositoryCrumb = await breadcrumbAncestor(page, repo.full_name);
+  const repositoryCrumb = await breadcrumbAncestor(page, "Pull requests");
   await expect(repositoryCrumb).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
   await repositoryCrumb.click();
   await expect(page).toHaveURL((url) => url.pathname === "/repositories/22" && url.searchParams.size === 2
@@ -995,20 +1003,19 @@ test("repository paths preserve legacy settings links and never fall back from a
   await page.goto("/repositories/999");
   await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
-  await openNavigation(page);
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).locator('[aria-current="page"]')).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
   await closeNavigation(page);
   const documentRequests: string[] = [];
   page.on("request", (request) => {
     if (request.isNavigationRequest()) documentRequests.push(request.url());
   });
   await page.getByRole("link", { name: "View available repositories", exact: true }).click();
-  await expect(page).toHaveURL(/\/repositories\/22\?state=open$/);
+  await expect(page).toHaveURL("/repositories");
   expect(documentRequests).toEqual([]);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
   await page.goto("/repositories");
   await expect(page.getByRole("heading", { name: "Connect your first repository", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Connect repository", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "GitHub settings", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
 });
 
@@ -1029,14 +1036,11 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
     await route.fulfill({ json: {} });
   });
   await page.goto("/repositories/22");
-  await openNavigation(page);
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await page.goto("/repositories/22");
-  await openNavigation(page);
   const account = page.getByRole("button", { name: "Account menu for @carlos", exact: true });
   await expect(account.locator('[data-slot="avatar-image"]')).toHaveAttribute("src", avatar);
-  await expect(account).toContainText("Administrator");
   await account.focus();
   await page.keyboard.press("Enter");
   const settings = page.getByRole("menuitem", { name: "AI connections", exact: true });
@@ -1046,7 +1050,6 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
   await expect(page).toHaveURL(/\/settings\?tab=connections$/);
   await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
-  await openNavigation(page);
   await account.press("Enter");
   await page.keyboard.press("End");
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeFocused();
@@ -1054,17 +1057,12 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
   await expect(account).toBeFocused();
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toHaveCount(0);
   for (const theme of ["light", "dark"]) {
-    if (info.project.name === "mobile") {
-      await page.getByRole("button", { name: "Close navigation", exact: true }).click();
-      await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toHaveCount(0);
-    }
     await expect(page.getByRole("button", { name: /Switch to (light|dark) mode/ })).toBeVisible();
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
     if (theme === "dark") await expect(page.locator("html")).toHaveClass("dark");
     else await expect(page.locator("html")).not.toHaveClass("dark");
-    await openNavigation(page);
-    await account.click();
+      await account.click();
     await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeInViewport();
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/account-${info.project.name}-${theme}.png`, animations: "disabled" });
@@ -1074,7 +1072,7 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
   await account.press("Enter");
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).press("Enter");
   await expect(account).toBeDisabled();
-  await expect(account).toContainText("Signing out…");
+  await expect(account.locator(".motion-safe\\:animate-spin")).toHaveCount(1);
   completeLogout();
   await expect(page.getByRole("link", { name: "Continue with GitHub", exact: true })).toBeVisible();
 });
@@ -1082,18 +1080,15 @@ test("sidebar account shows the GitHub avatar and signs out through its keyboard
 test("sidebar account keeps an initials fallback for missing or failed avatars and long names", async ({ page }) => {
   await mock(page, { role: "member" });
   await page.goto("/repositories/22");
-  await openNavigation(page);
   await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true }).locator('[data-slot="avatar-fallback"]')).toHaveText("CA");
   const login = "account-with-a-long-github-username";
   let avatarFailed = false;
   await page.route("**/missing-avatar.png", (route) => { avatarFailed = true; return route.fulfill({ status: 404 }); });
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { id: 7, login, role: "member", avatar_url: "/missing-avatar.png", csrf: "csrf-from-session" } }));
   await page.reload();
-  await openNavigation(page);
   await expect.poll(() => avatarFailed).toBe(true);
   const account = page.getByRole("button", { name: `Account menu for @${login}`, exact: true });
   await expect(account).toHaveAttribute("title", `@${login}`);
-  await expect(account).toContainText("Member");
   await expect(account.locator('[data-slot="avatar-fallback"]')).toHaveText("AC");
   await expect(account.locator('[data-slot="avatar-image"]')).toHaveCount(0);
   await account.click();
@@ -1111,8 +1106,7 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
     ? [["connections", "AI connections"], ["api-tokens", "API tokens"], ["mcp", "MCP access"], ["appearance", "Appearance"], ["github", "GitHub"], ["team", "Team"]]
     : [["connections", "AI connections"], ["api-tokens", "API tokens"], ["mcp", "MCP access"], ["appearance", "Appearance"]];
   for (const [tab, label] of sections) {
-    await openNavigation(page);
-    await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
+      await page.getByRole("button", { name: "Account menu for @carlos", exact: true }).click();
     const menu = page.getByRole("menu");
     await expect(menu).toContainText("carlos");
     await expect(menu).toContainText(role === "admin" ? "Administrator" : "Member");
@@ -1132,123 +1126,134 @@ for (const role of ["admin", "member"]) test(`sidebar account links to the setti
   }
 });
 
-test("sidebar activity refreshes and does not present failed polling as current", async ({ page }) => {
+test("repository activity and directory failures refresh without stale navigation", async ({ page }) => {
   await mock(page);
   await page.clock.install();
   let running = true;
   let failure = 0;
-  let openPrs = 2;
   await page.route("**/api/v1/repositories", (route) => route.fulfill(failure
     ? { status: failure, json: { detail: "Repositories unavailable" } }
-    : { json: [{ ...repo, open_prs: openPrs, has_running_review: running }] }));
-  await page.goto("/settings");
+    : { json: [{ ...repo, has_running_review: running }] }));
+  await page.goto("/repositories/22");
+  const activityText = page.locator('[data-slot="page-title"]').getByText(/Review in progress/);
+  await expect(activityText).toBeVisible();
   await openNavigation(page);
-  const nav = page.getByRole("navigation", { name: "Main navigation" });
-  const activity = nav.getByRole("link", { name: "acme/payments, review running", exact: true }).locator(".motion-safe\\:animate-spin");
-  const inbox = nav.getByRole("link", { name: "Inbox", exact: true });
-  const count = nav.locator('[data-slot="sidebar-menu-badge"]');
-  await expect(inbox).toHaveAccessibleDescription("2 open pull requests");
-  await expect(inbox).toHaveAttribute("title", "2 open pull requests");
+  const nav = page.getByRole("navigation", { name: "Repository sections" });
+  const activity = nav.getByRole("link", { name: "Pull requests", exact: true }).locator(".motion-safe\\:animate-spin");
   await expect(activity).toBeVisible();
   running = false;
-  openPrs = 0;
   await page.clock.fastForward(6000);
   await expect(activity).toHaveCount(0);
-  await expect(count).toHaveText("0 open pull requests");
-  await expect(inbox).toHaveAccessibleDescription("0 open pull requests");
-  await expect(inbox).toHaveAttribute("title", "0 open pull requests");
-  running = true;
-  openPrs = 1;
-  await page.clock.fastForward(6000);
-  await expect(activity).toBeVisible();
-  await expect(inbox).toHaveAccessibleDescription("1 open pull request");
-  await expect(inbox).toHaveAttribute("title", "1 open pull request");
-  failure = 503;
-  await page.clock.fastForward(6000);
-  await expect(nav.getByRole("alert")).toHaveText("Repository activity unavailable.");
-  await expect(nav.getByRole("link", { name: repo.full_name, exact: true })).toBeVisible();
-  await expect(activity).toHaveCount(0);
-  await expect(count).toHaveCount(0);
-  await expect(inbox).not.toHaveAttribute("title");
+  await closeNavigation(page);
+  await expect(activityText).toHaveCount(0);
+  for (const status of [503, 403, 401]) {
+    failure = status;
+    await page.clock.fastForward(6000);
+    await expect(page.getByRole("combobox", { name: /^Organization:/ })).toBeDisabled();
+    await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: /^Repository:/ })).toHaveCount(0);
+  }
   failure = 0;
-  await nav.getByRole("button", { name: "Retry repositories" }).click();
-  await expect(activity).toBeVisible();
-  await expect(inbox).toHaveAccessibleDescription("1 open pull request");
-  failure = 403;
-  await page.clock.fastForward(6000);
-  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
-  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
-  await expect(nav.getByRole("link", { name: /^acme\/payments/ })).toHaveCount(0);
-  await expect(count).toHaveCount(0);
-  failure = 401;
-  await page.clock.fastForward(6000);
-  await expect(nav.getByRole("alert")).toHaveText("Repository access denied.");
-  await expect(nav.getByRole("button", { name: "Retry repositories" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry repositories", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
 });
 
-test("sidebar picks up repository changes after the GitHub installation callback", async ({ page }) => {
+test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }) => {
+  await mock(page);
+  const checked = "2026-11-18T10:30:00Z";
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
+    ...repo, last_pr_sync_check_at: checked,
+    latest_completed_review: {
+      run_id: "run", pull_request_id: "pr", number: 148, head_sha: "c".repeat(40),
+      finished_at: "2026-11-18T10:00:00Z",
+    },
+  }] }));
+  await page.goto("/repositories/22?q=148&state=open&ordering=title");
+  const header = page.locator('[data-slot="page-title"]');
+  await expect(header.getByText(/Last successful GitHub PR check/)).toBeVisible();
+  await expect(header.locator("time")).toHaveAttribute("datetime", checked);
+  const review = header.getByRole("link", { name: "Last completed review · PR #148 · ccccccc", exact: true });
+  await expect(review).toHaveAttribute("href", "/runs/run");
+  await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
+  const returnUrl = page.url();
+  await review.click();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
+  await expect(page).toHaveURL(returnUrl);
+  const pulls = page.getByRole("region", { name: "Pull requests", exact: true });
+  await expect(pulls.getByLabel("Search pull requests")).toHaveValue("148");
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
+  await expect(header.getByText(/Last successful GitHub PR check|Last completed review/)).toHaveCount(0);
+});
+
+test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {
+  await mock(page);
+  await page.clock.install();
+  let failure = false;
+  await page.route("**/api/v1/repositories", (route) => route.fulfill(failure
+    ? { status: 503, json: { detail: "Repository directory temporarily unavailable" } }
+    : { json: [repo] }));
+  await page.goto("/repositories/22/settings?tab=background");
+  await repositorySection(page, "Project context");
+  const background = page.getByRole("textbox", { name: "Project context", exact: true });
+  await background.fill("Unsaved project context");
+  failure = true;
+  await page.clock.fastForward(6000);
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository directory temporarily unavailable");
+  await expect(background).toHaveValue("Unsaved project context");
+  failure = false;
+  await page.getByRole("button", { name: "Retry repositories", exact: true }).click();
+  await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
+  await expect(background).toHaveValue("Unsaved project context");
+});
+
+test("directory picks up repository changes after the GitHub installation callback", async ({ page }) => {
   await mock(page);
   await page.clock.install();
   let repositories: (typeof repo)[] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: repositories }));
   await page.goto("/settings?tab=github&installed=1");
-  await openNavigation(page);
-  const nav = page.getByRole("navigation", { name: "Main navigation" });
-  const repository = nav.getByRole("link", { name: repo.full_name, exact: true });
-  await expect(nav.getByRole("link", { name: "Connect your first repository" })).toBeVisible();
-
+  const picker = page.getByRole("combobox", { name: /^Organization:/ });
+  await picker.click();
+  await expect(page.getByRole("option", { name: "acme", exact: true })).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Find an organization" }).press("Escape");
   repositories = [repo];
   await page.clock.fastForward(6000);
-  await expect(repository).toBeVisible();
-
+  await picker.click();
+  await expect(page.getByRole("option", { name: "acme", exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "Find an organization" }).press("Escape");
   repositories = [];
   await page.clock.fastForward(6000);
-  await expect(repository).toHaveCount(0);
-  await expect(nav.getByRole("link", { name: "Connect your first repository" })).toBeVisible();
+  await picker.click();
+  await expect(page.getByRole("option", { name: "acme", exact: true })).toHaveCount(0);
 });
 
-test("sidebar handles long repository lists and empty access", async ({ page }, info) => {
+test("organization directory handles long names, empty access and member navigation", async ({ page }) => {
   await mock(page, { role: "member" });
-  const name = "organization-with-a-long-name/repository-with-a-very-long-name";
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: Array.from({ length: 40 }, (_, i) => ({ ...repo, id: i + 22, full_name: `${name}-${i}`, has_running_review: i === 0 })) }));
-  await page.route("**/api/v1/repositories/*/pulls?**", (route) => route.fulfill({ json: repositoryPage([], new URL(route.request().url()).searchParams) }));
-  await page.goto("/settings");
-  await openNavigation(page);
-  const nav = page.getByRole("navigation", { name: "Main navigation" });
-  await expect(nav.getByRole("link", { name: new RegExp(name) })).toHaveCount(40);
-  await expect(nav.getByRole("link", { name: "Security", exact: true })).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Account menu for @carlos", exact: true })).toBeInViewport();
-  const last = nav.getByRole("link", { name: `${name}-39`, exact: true });
-  await last.scrollIntoViewIfNeeded();
-  await last.focus();
-  await expect(last).toBeInViewport();
-  await expect(last).toHaveAttribute("title", `${name}-39`);
-  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  const owner = "organization-with-a-long-name";
+  const name = owner + "/repository-with-a-very-long-name";
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: Array.from({ length: 40 }, (_, i) => ({ ...repo, id: i + 22, full_name: `${name}-${i}` })) }));
+  await page.goto(`/organizations/${owner}/repositories`);
+  const directory = page.getByRole("navigation", { name: `Repositories in ${owner}` });
+  await expect(directory.getByRole("link")).toHaveCount(40);
   await noOverflow(page);
-  await expect(page.getByRole("link", { name: "Manage repositories", exact: true })).toHaveCount(0);
-  await last.click();
-  await expect(page.getByRole("heading", { name: `${name}-39`, exact: true })).toBeVisible();
+  await directory.getByRole("link", { name: `${name}-39`, exact: true }).click();
+  await expect(page).toHaveURL("/repositories/61/overview");
+  await openNavigation(page);
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings" })).toHaveCount(0);
+  await closeNavigation(page);
   await noOverflow(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
-  await page.reload();
-  await openNavigation(page);
-  await expect(nav).toContainText("No repositories available.");
-  if (info.project.name === "desktop") {
-    await page.setViewportSize({ width: 1023, height: 800 });
-    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
-    await openNavigation(page);
-    await expect(page.getByRole("dialog", { name: "Navigation", exact: true })).toBeVisible();
-    await noOverflow(page);
-    await closeNavigation(page);
-    await page.setViewportSize({ width: 1024, height: 800 });
-    await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeVisible();
-    await expect(nav).toBeVisible();
-  }
+  await page.goto(`/organizations/${owner}/repositories`);
+  await expect(page.getByRole("heading", { name: "No repositories available", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Repository sections" })).toHaveCount(0);
 });
 
 test("sidebar shortcut leaves editing controls alone", async ({ page }, info) => {
   await mock(page);
-  await page.goto("/");
+  await page.goto("/repositories/22");
   const toggle = page.locator('[data-slot="sidebar-trigger"]');
   await expect(toggle).toBeVisible();
   await page.evaluate(() => {
@@ -1272,32 +1277,32 @@ test("sidebar shortcut leaves editing controls alone", async ({ page }, info) =>
 
 test("sidebar and breadcrumbs agree on trailing-slash detail routes", async ({ page }) => {
   await mock(page);
-  for (const [path, label] of [["/pulls/pr/", "Pull request #148"], ["/runs/run/", "Review run"]]) {
+  for (const [path, label] of [["/pulls/pr/", "#148"], ["/runs/run/", "Review run"]]) {
     await page.goto(path);
     const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(label);
-    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", `/repositories/${repo.id}`);
+    await expect(await breadcrumbAncestor(page, "payments")).toHaveAttribute("href", `/repositories/${repo.id}/overview`);
     await page.keyboard.press("Escape");
     await openNavigation(page);
-    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
   }
 });
 
 test("repository breadcrumbs and sidebar match only supported routes", async ({ page }) => {
   await mock(page);
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
-  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  const navigation = page.getByRole("navigation", { name: "Repository sections" });
   for (const suffix of ["", "/"]) {
     await page.goto(`/repositories/22${suffix}`);
-    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText(repo.full_name);
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Pull requests");
     await page.goto(`/repositories/22/settings${suffix}?state=all&tab=limits`);
     await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-    await expect(await breadcrumbAncestor(page, repo.full_name)).toHaveAttribute("href", "/repositories/22?state=all");
+    await expect(await breadcrumbAncestor(page, "Pull requests")).toHaveAttribute("href", "/repositories/22?state=all");
     await page.keyboard.press("Escape");
     await openNavigation(page);
-    const repository = navigation.getByRole("link", { name: repo.full_name, exact: true });
-    await expect(repository).toHaveAttribute("aria-current", "page");
+    const repository = navigation.getByRole("link", { name: "Pull requests", exact: true });
+    await expect(navigation.getByRole("link", { name: "Repository settings", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(repository).toHaveAttribute("href", "/repositories/22?state=all");
     await closeNavigation(page);
   }
@@ -1306,7 +1311,7 @@ test("repository breadcrumbs and sidebar match only supported routes", async ({ 
     await expect(page.getByRole("heading", { name: "Page not found", exact: true })).toBeVisible();
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Page not found");
     await openNavigation(page);
-    await expect(navigation.getByRole("link", { name: repo.full_name, exact: true })).not.toHaveAttribute("aria-current", "page");
+    await expect(navigation).toHaveCount(0);
     await closeNavigation(page);
   }
 });
@@ -1331,8 +1336,9 @@ test("repository workspace shares inbox filters, groups, and bounded pagination"
   })), { ...pr, id: "closed", title: "Closed proposal", state: "closed", latest_run: null, draft: true, fork: true }];
   await mockRepositoryPulls(page, 22, () => items);
   await page.goto("/repositories/22");
-  const count = page.getByRole("heading", { name: "Pull requests", exact: true }).locator("..").getByRole("status");
+  const count = page.getByRole("region", { name: "Pull requests", exact: true }).locator(':scope > p[role="status"]');
   await expect(count).toHaveText("1 of 14 pull request");
+  await expect(page.locator('[data-slot="page-title"]').getByText("2 open pull requests", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Review configuration" })).toContainText("Automatic reviews");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", "https://github.com/acme/payments");
   const merged = page.getByRole("region", { name: "Merged", exact: true });
@@ -1401,15 +1407,15 @@ test("repository filters survive configuration and the pull request run round tr
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
   await noOverflow(page);
-  await (await breadcrumbAncestor(page, repo.full_name)).click();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/q=148&state=open&author=maria&findings=open$/);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await page.getByRole("tab", { name: "Run history" }).click();
   await page.getByRole("link", { name: /automatic.*aaaaaaa/ }).click();
   await openNavigation(page);
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true })).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await closeNavigation(page);
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=open&author=maria&findings=open");
   await back.click();
   await expect(page.getByLabel("Search pull requests")).toHaveValue("148");
@@ -1448,7 +1454,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   await expect(slider).toHaveValue("0");
   await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
   await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByRole("textbox", { name: "Review rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
   await repositorySection(page, "Review behavior");
   await expect(slider).toHaveValue("0");
@@ -1493,7 +1499,7 @@ test("repository configuration keeps drafts and stays on the selected section af
   await page.getByRole("switch", { name: "Automatic reviews", exact: true }).uncheck();
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Keep this draft while changing sections.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await page.getByLabel("Maximum files", { exact: true }).fill("75");
   await repositorySection(page, "Review behavior");
   await expect(effort).toHaveValue("high");
@@ -1562,8 +1568,45 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-settings-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+  const body = requests.find((request) => request.path === "/repositories/22")?.body;
+  expect(body).not.toHaveProperty("scan_settings");
+  expect(body).toMatchObject({
     settings: { summary_token_budget: 45000, summary_timeout_seconds: 240, token_budget: 200000, timeout_seconds: 900 },
+  });
+});
+
+test("repository scan limits validate across sections and save independently of review limits", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings?tab=scan-limits");
+  const form = page.getByRole("form", { name: "Repository configuration" });
+  const budget = form.getByLabel("Scan token budget", { exact: true });
+  const unlimitedBudget = form.getByLabel("Unlimited scan token budget", { exact: true });
+  const unlimitedTimeout = form.getByLabel("Unlimited scan timeout (seconds)", { exact: true });
+  const concurrency = form.getByLabel("Scan concurrency", { exact: true });
+  await expect(unlimitedBudget).toBeChecked();
+  await expect(unlimitedTimeout).toBeChecked();
+  await expect(concurrency).toHaveValue("4");
+  await unlimitedBudget.uncheck();
+  await budget.fill("250000");
+  await unlimitedBudget.check();
+  await expect(budget).toBeDisabled();
+  await unlimitedBudget.uncheck();
+  await expect(budget).toHaveValue("250000");
+  await unlimitedTimeout.uncheck();
+  await form.getByLabel("Scan timeout (seconds)", { exact: true }).fill("1200");
+  await concurrency.fill("9");
+  await repositorySection(page, "Reviews");
+  await expect(form.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page).toHaveURL(/tab=scan-limits$/);
+  await expect(concurrency).toBeFocused();
+  expect(requests).toHaveLength(0);
+  await concurrency.fill("6");
+  await noOverflow(page);
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    scan_settings: { token_budget: 250000, timeout_seconds: 1200, concurrency: 6 },
+    settings: { token_budget: 200000, timeout_seconds: 900, concurrency: 2 },
   });
 });
 
@@ -1575,7 +1618,7 @@ test("stage budgets and optional overview content save independently", async ({ 
     await expect(toggle).not.toBeChecked();
     await toggle.check();
   }
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await page.getByLabel("Analysis token budget", { exact: true }).fill("11000");
   await page.getByLabel("Assessment token budget", { exact: true }).fill("22000");
   await page.getByLabel("Unlimited verification token budget", { exact: true }).check();
@@ -2332,7 +2375,7 @@ test("repository configuration validates hidden fields and retains drafts after 
   await expect(page.getByRole("alert")).toContainText("Repository settings could not be saved");
   await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
 });
 
@@ -2343,7 +2386,7 @@ test("repository configuration shows connection failures across every section", 
   await page.goto("/repositories/22/settings");
   const form = page.getByRole("form", { name: "Repository configuration" });
   const notice = form.getByRole("alert").filter({ hasText: error });
-  for (const section of ["Review behavior", "Project context", "Limits & rules", "AI connection"]) {
+  for (const section of ["Review behavior", "Project context", "Reviews", "Security scan", "AI connection"]) {
     await repositorySection(page, section);
     await expect(notice).toBeVisible();
     await expect(notice).toHaveCount(1);
@@ -2364,18 +2407,18 @@ test("repository configuration sections retain navigation and fit both themes", 
   await page.goto("/repositories/22/settings?q=148&state=all&tab=connection");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-  const back = await breadcrumbAncestor(page, repo.full_name);
+  const back = await breadcrumbAncestor(page, "Pull requests");
   await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=all");
   await page.keyboard.press("Escape");
   await openNavigation(page);
-  const repository = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true });
-  await expect(repository).toHaveAttribute("aria-current", "page");
+  const repository = page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true });
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(repository).toHaveAttribute("href", "/repositories/22?q=148&state=all");
   await closeNavigation(page);
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
-    for (const name of ["Review behavior", "AI connection", "Project context", "Code graph", "Limits & rules"]) {
+    for (const name of ["Review behavior", "AI connection", "Project context", "Code graph", "Reviews", "Security scan"]) {
       const link = page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name, exact: true });
       await expect(link.locator("svg[aria-hidden=true]")).toBeVisible();
       await link.focus();
@@ -2385,17 +2428,18 @@ test("repository configuration sections retain navigation and fit both themes", 
       await expect(footer).toHaveCSS("border-top-width", "0px");
       await expect(footer.getByRole("button")).toHaveText(["Save"]);
       await noOverflow(page);
-      await page.screenshot({ path: `../.impeccable/review/repository-settings-${name.split(" ")[0].toLowerCase()}-${info.project.name}-${theme}.png`, fullPage: true });
+      await page.screenshot({ path: `../.impeccable/review/repository-settings-${name.toLowerCase().replaceAll(" ", "-").replace("&-", "")}-${info.project.name}-${theme}.png`, fullPage: true });
     }
   }
   await page.reload();
-  await expect(page.getByLabel("Maximum files", { exact: true })).toBeVisible();
-  await (await breadcrumbAncestor(page, repo.full_name)).click();
+  await expect(page).toHaveURL(/tab=scan-limits$/);
+  await expect(page.getByLabel("Scan concurrency", { exact: true })).toBeVisible();
+  await (await breadcrumbAncestor(page, "Pull requests")).click();
   await expect(page).toHaveURL(/repositories\/22\?q=148&state=all$/);
   expect(requests).toEqual([]);
 });
 
-test("selected tabs retain the light style and have a clearer neutral dark surface", async ({ page }, info) => {
+test("page tabs retain themed text, underlines and keyboard selection", async ({ page }, info) => {
   test.setTimeout(60_000);
   await mock(page);
   await page.addInitScript(() => localStorage.setItem("theme", "system"));
@@ -2422,13 +2466,12 @@ test("selected tabs retain the light style and have a clearer neutral dark surfa
         }
         const list = getComputedStyle(tab.closest('[role="tablist"]')!).backgroundColor;
         const style = getComputedStyle(tab);
-        const background = composite(list, style.backgroundColor);
-        return { list: composite(list, list), background, count: composite(background, getComputedStyle(tab.querySelector("span")!).color) };
+        const surface = composite(getComputedStyle(document.body).backgroundColor, list);
+        const background = composite(surface, style.backgroundColor);
+        return { list: surface, background, count: composite(background, getComputedStyle(tab.querySelector("span")!).color), underline: getComputedStyle(tab, "::after").opacity };
       });
-      if (mode === "light") {
-        expect(rendered.background).toBe(theme.light["--background"]);
-        await expect(findings).toHaveCSS("border-color", "rgba(0, 0, 0, 0)");
-      } else expect(contrast(rendered.background, rendered.list), theme.label).toBeGreaterThanOrEqual(1.25);
+      expect(rendered.background).toBe(theme[mode]["--background"]);
+      expect(rendered.underline).toBe("1");
       expect(contrast(rendered.count, rendered.background), `${theme.label} ${mode} count`).toBeGreaterThanOrEqual(4.5);
       const tabs = [findings, page.getByRole("tab", { name: /^Resolved/ }), page.getByRole("tab", { name: /^Dismissed/ }), history];
       for (let index = 1; index < tabs.length; index++) {
@@ -2494,12 +2537,12 @@ test("repository sync pending state stays with its repository", async ({ page })
   await page.getByRole("button", { name: "Sync", exact: true }).click();
   await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
   await openNavigation(page);
-  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: other.full_name, exact: true }).click();
+  await chooseRepository(page, other.full_name);
   const sync = page.getByRole("button", { name: "Sync", exact: true });
   await expect(sync).toBeEnabled();
   await expect(sync.locator("svg")).not.toHaveClass(/animate-spin/);
   await openNavigation(page);
-  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: repo.full_name, exact: true }).click();
+  await chooseRepository(page, repo.full_name);
   await expect(page.getByRole("button", { name: "Queuing sync…" })).toBeDisabled();
   release();
   await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeEnabled();
@@ -2592,7 +2635,7 @@ test("repository state filters retain running reviews and reset when switching r
   await expect(page.getByRole("link", { name: /Running review/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
   await openNavigation(page);
-  await page.getByRole("link", { name: "acme/other", exact: true }).click();
+  await chooseRepository(page, "acme/other");
   await expect(page).toHaveURL(/repositories\/23\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
   await expect(page.getByRole("region", { name: "Review configuration" }).getByText("Paused", { exact: true })).toBeVisible();
@@ -2604,9 +2647,9 @@ test("repository navigation, filtering, and review workspace", async ({
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await mock(page);
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await expect(
-    page.getByRole("heading", { name: repo.full_name, exact: true }),
+    page.locator('[data-slot="page-title"]').getByRole("heading", { level: 1, name: "Pull requests", exact: true }),
   ).toBeVisible();
   await page.getByLabel("Search pull requests").fill("148");
   await expect(page.getByText("Validate webhook signatures")).toHaveCount(0);
@@ -2666,18 +2709,22 @@ for (const entry of ["history", "feedback", "start"] as const) {
       await page.getByRole("button", { name: "Run review", exact: true }).click();
     }
     await expect(page).toHaveURL(/\/runs\/run$/);
-    await openNavigation(page);
-    const inboxNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Inbox", exact: true });
+    const inboxNav = page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false });
     await expect(inboxNav).toHaveAttribute("href", inbox);
-    await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
+    await openNavigation(page);
+    await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
-    await (await breadcrumbAncestor(page, "Pull request #148")).click();
+    await (await breadcrumbAncestor(page, "#148")).click();
     await expect(page).toHaveURL((url) => url.pathname === "/pulls/pr");
     await openNavigation(page);
-    await expect(inboxNav).not.toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "acme/payments", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
     await closeNavigation(page);
+    if (entry === "history") {
+      await (await breadcrumbAncestor(page, "Pull requests")).click();
+      await expect(page).toHaveURL("/repositories/22?state=open");
+      await (await breadcrumbAncestor(page, "payments")).click();
+      await expect(page).toHaveURL("/repositories/22/overview");
+    }
     await page.getByRole("navigation", { name: "Breadcrumb", exact: true }).getByRole("link", { name: "Inbox", exact: true, disabled: false }).click();
     await expect(page).toHaveURL(inbox);
     await expect(page.getByRole("textbox", { name: "Search pull requests", exact: true })).toHaveValue("retry");
@@ -3381,7 +3428,7 @@ test("review run workspace filters saved findings and separates original evidenc
   await expect(page.getByText("6 recorded findings", { exact: true })).toHaveCount(0);
   expect((await page.getByRole("tab", { name: "Findings 6", exact: true }).boundingBox())!.y).toBeGreaterThan((await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox())!.y);
   await expect(page.getByRole("link", { name: `#148 · ${pr.title}` })).toHaveCount(0);
-  await expect(await breadcrumbAncestor(page, "Pull request #148")).toHaveAttribute("href", "/pulls/pr");
+  await expect(await breadcrumbAncestor(page, "#148")).toHaveAttribute("href", "/pulls/pr");
   await page.keyboard.press("Escape");
   const list = page.getByRole("region", { name: "Findings at this run", exact: true });
   await expect(list.getByRole("button")).toHaveCount(6);
@@ -3594,10 +3641,10 @@ test("review run retains live progress and recovery actions while evidence is pe
   await expect(publication).toContainText("Waiting to publish");
   await expect(publication.getByText("Comments are published after review results are saved.", { exact: true })).toHaveCount(0);
   await expect(publication.locator(":scope > p")).toHaveCount(0);
-  const heading = page.getByRole("heading", { name: "Review run running", exact: true });
+  const heading = page.getByRole("heading", { name: "Review run", exact: true });
   await expect(heading).toBeVisible();
-  await expect(heading.locator("[data-slot=badge]")).toHaveText("running");
-  await expect(heading.locator("svg")).toHaveClass(/lucide-loader-circle/);
+  await expect(heading.locator("..").locator("[data-slot=badge]")).toHaveText("running");
+  await expect(heading.locator("..").locator("svg")).toHaveClass(/lucide-loader-circle/);
   await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("Review progress count", { exact: true })).toHaveText("3 / 8 files");
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -3628,7 +3675,7 @@ for (const publication of ["failed", "partially_published"]) {
     await expect(page.getByRole("region", { name: "Review outcome" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).locator(":scope > p")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Retry GitHub publication" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Review run running", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   });
 }
 
@@ -3637,7 +3684,7 @@ test("partial review and publication retry remain distinct", async ({
 }, info) => {
   const requests = await mock(page);
   await page.goto("/runs/run");
-  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(page.getByLabel("Run statistics")).toContainText("Duration: 1m 30s");
   await expect(
     page.getByRole("region", { name: "Review outcome" }),
@@ -3707,7 +3754,7 @@ test("GitHub check handles pending, errors, conclusion-only, and empty states", 
 
   checkState.check_conclusion = null;
   await page.reload();
-  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(page.getByText("GitHub check", { exact: true })).toHaveCount(0);
   await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
   await noOverflow(page);
@@ -3730,10 +3777,9 @@ test("read-only members cannot change findings or instance settings", async ({
   await mock(page, { role: "member", canWrite: false });
   await page.goto("/pulls/pr");
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("link", { name: "Settings", exact: true })).toHaveCount(1);
   await openNavigation(page);
-  await expect(
-    page.getByRole("link", { name: "Settings", exact: true }),
-  ).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings", exact: true })).toHaveCount(0);
   await closeNavigation(page);
   await expect(
     page.getByRole("button", { name: "Run review", exact: true }),
@@ -4185,7 +4231,7 @@ test("repository model choices follow its selected connection", async ({ page },
   const requests = await mock(page);
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection", model: "second-model" }] }));
   await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "AI connection");
   const model = page.getByLabel("Model override (optional)");
@@ -4222,7 +4268,7 @@ test("project background generates an editable draft with unsaved selections and
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
   const requests = await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
@@ -4278,7 +4324,7 @@ for (const outcome of ["done", "failed"] as const) {
     test(`project background discards a late ${outcome} result after changing ${change}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
-      await page.goto("/repositories");
+      await page.goto("/repositories/22");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
       const field = page.getByRole("textbox", { name: "Project context", exact: true });
@@ -4291,7 +4337,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await repositorySection(page, "AI connection");
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "token budget" || change === "timeout") {
-        await repositorySection(page, "Limits & rules");
+        await repositorySection(page, "Reviews");
         await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Analysis token budget", { exact: true })
           .fill(change === "timeout" ? "1200" : "450000");
       }
@@ -4317,7 +4363,7 @@ for (const outcome of ["done", "failed"] as const) {
         id: "feedback-job", status: outcome, background: "A generated draft", error: "The provider denied model access.",
       };
       await mock(page, { background });
-      await page.goto("/repositories");
+      await page.goto("/repositories/22");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
       await repositorySection(page, "Project context");
@@ -4333,7 +4379,7 @@ for (const outcome of ["done", "failed"] as const) {
       if (change === "connection") await repositorySection(page, "AI connection");
       if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
       if (change === "limits") {
-        await repositorySection(page, "Limits & rules");
+        await repositorySection(page, "Reviews");
         await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
       }
       await repositorySection(page, "Project context");
@@ -4356,7 +4402,7 @@ for (const transient of ["network", "server"] as const) {
         else await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } });
       } else await route.fulfill({ json: background });
     });
-    await page.goto("/repositories");
+    await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
     await repositorySection(page, "Project context");
@@ -4381,7 +4427,7 @@ for (const phase of ["start", "poll"] as const) {
       await response;
       await route.fulfill({ status: 403, json: { detail: "Access denied for the old selections" } });
     });
-    await page.goto("/repositories");
+    await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
     const sent = page.waitForRequest((request) => new URL(request.url()).pathname === path);
@@ -4404,7 +4450,7 @@ test("project background preserves text on failure and explains missing selectio
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "failed", background: null, error: "Reconnect your account before retrying." };
   await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "no-model", name: "No model", model: "" }] }));
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
@@ -4435,7 +4481,7 @@ test("project background preserves text on failure and explains missing selectio
 test("project background preserves text when starting or polling fails", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 422, json: { detail: "Authorize this repository first." } }));
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
@@ -4458,10 +4504,10 @@ for (const unlimited of [false, true]) {
   test(`project background uses unsaved ${unlimited ? "unlimited" : "custom"} review limits`, async ({ page }) => {
     const background: Schema["BackgroundJobOut"] = { id: "limits-job", status: "running", background: null, error: null };
     const requests = await mock(page, { background });
-    await page.goto("/repositories");
+    await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     if (unlimited) {
       await page.getByLabel("Unlimited analysis token budget", { exact: true }).check();
       await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
@@ -4487,7 +4533,7 @@ test("project background explains missing output and displays its generation ref
   const error = "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result. Your background was not changed.";
   const background: Schema["BackgroundJobOut"] = { id: "ab31f162-abb3-4ce5-bc85-e6af43be6ba6", status: "failed", background: null, error };
   const requests = await mock(page, { background });
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
@@ -4552,9 +4598,9 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
     current = { ...current, ...route.request().postDataJSON() };
     await route.fulfill({ json: current });
   });
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   const time = page.getByLabel("Timeout (seconds)", { exact: true });
   const tokens = page.getByLabel("Analysis token budget", { exact: true });
   const files = page.getByLabel("Maximum files", { exact: true });
@@ -4681,7 +4727,8 @@ test("current finding header waits for current evidence instead of showing the s
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByText("high", { exact: true })).toBeVisible();
   await sheet.getByRole("tab", { name: "Current finding", exact: true }).click();
-  await expect(sheet.getByRole("status")).toContainText("Loading workspace");
+  await expect(page.locator('header [role="progressbar"][aria-label="Loading workspace"]')).toBeVisible();
+  await expect(sheet.locator('[data-slot="skeleton"]')).toHaveCount(0);
   await expect(sheet.getByText("high", { exact: true })).toHaveCount(0);
   await expect(sheet.getByText("Bug", { exact: true })).toHaveCount(0);
   release();
@@ -4702,7 +4749,7 @@ for (const field of [
       ...connection, id: "personal", name: "My ChatGPT", kind: "chatgpt", owner_id: 7, protocol: "native",
     }] }));
     await page.goto("/repositories/22/settings?tab=connection");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     const input = page.getByLabel(field.label, { exact: true });
     for (const invalid of ["", "0", field.excessive, "1e309"]) {
       await input.fill(invalid);
@@ -4718,7 +4765,7 @@ for (const field of [
     await expect(input).toHaveValue(field.valid);
     await input.fill("0");
     await repositorySection(page, "AI connection");
-    await repositorySection(page, "Limits & rules");
+    await repositorySection(page, "Reviews");
     await expect(input).toHaveValue("0");
     await input.fill(field.valid);
     await repositorySection(page, "Review behavior");
@@ -4811,7 +4858,7 @@ for (const [name, coverage, settings] of [
 test("oversized review explains its outcome and links to editable limits throughout the app", async ({ page }, info) => {
   const requests = await mock(page, { run: limitedRun });
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   const row = page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]");
   await expect(row.getByText("skipped", { exact: true })).toBeVisible();
   await expect(row).not.toContainText(reason);
@@ -5756,7 +5803,7 @@ test("publication failure after a completed review offers a publication retry", 
 
 test("completed reviews without comments need no attention in lists or previews", async ({ page }) => {
   await mock(page, { run: { status: "completed", publication: "not_applicable", publication_error: null } });
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   const row = page.getByRole("link", { name: /Add retry handling/ });
   await expect(row).not.toContainText("The selected review scope completed.");
   await row.click();
@@ -5842,11 +5889,11 @@ for (const configured of [false, true]) {
     await page.goto(entry);
     await expect(
       page.getByRole("heading", {
-        name: configured ? repo.full_name : "Give your reviews a home.",
+        name: configured ? "Repositories" : "Give your reviews a home.",
         exact: true,
       }),
     ).toBeVisible();
-    const destination = configured ? `/repositories/${repo.id}?state=open` : entry;
+    const destination = entry;
     await expect(page).toHaveURL(`http://127.0.0.1:4178${destination}`);
     expect(sessionOrigins).toEqual(configured ? ["http://127.0.0.1:4178"] : []);
     expect(requests).toEqual([]);
@@ -5859,25 +5906,26 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   const current = breadcrumb.locator('[aria-current="page"]');
   await page.goto("/runs/run");
-  await expect(page.getByRole("heading", { name: /^Review run / })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(current).toHaveText("Review run");
-  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveAttribute("href", "/");
+  await expect(breadcrumb.getByRole("link", { name: "Inbox", exact: true })).toHaveCount(0);
   await noOverflow(page);
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
     await page.screenshot({ path: `../.impeccable/review/header-${info.project.name}-${theme}.png`, animations: "disabled" });
   }
-  const parent = await breadcrumbAncestor(page, "Pull request #148");
+  const parent = await breadcrumbAncestor(page, "#148");
   await expect(parent).toHaveAttribute("href", "/pulls/pr");
   await parent.press("Enter");
-  await expect(current).toHaveText("Pull request #148");
-  await (await breadcrumbAncestor(page, "acme/payments")).click();
-  await expect(page).toHaveURL(/\/repositories\/22\?state=open$/);
-  await expect(current).toHaveText("acme/payments");
-  await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
+  await expect(current).toHaveText("#148");
+  await (await breadcrumbAncestor(page, "payments")).click();
+  await expect(page).toHaveURL("/repositories/22/overview");
+  await expect(current).toHaveText("Overview");
+  await page.getByRole("link", { name: "Code Mortis home", exact: true }).click();
   await expect(page).toHaveURL(/\?state=open$/);
-  await expect(current).toHaveText("Inbox");
+  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(breadcrumb).toHaveCount(0);
   await page.goto("/settings");
   await expect(current).toHaveText("AI connections");
   for (const label of ["GitHub", "Team"]) {
@@ -5895,7 +5943,8 @@ test("breadcrumbs navigate every page hierarchy and settings tab", async ({ page
   await page.goto("/missing-page");
   await expect(current).toHaveText("Page not found");
   await breadcrumb.getByRole("link", { name: "Inbox", exact: true }).click();
-  await expect(current).toHaveText("Inbox");
+  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(breadcrumb).toHaveCount(0);
 });
 
 test("breadcrumbs keep long names accessible without pushing the theme button offscreen", async ({ page }, info) => {
@@ -5912,7 +5961,7 @@ test("breadcrumbs keep long names accessible without pushing the theme button of
     await expect(page.getByRole("navigation", { name: "Breadcrumb", exact: true }).locator('[aria-current="page"]')).toBeInViewport();
     await noOverflow(page);
   }
-  await expect(await breadcrumbAncestor(page, fullName)).toHaveAttribute("href", "/repositories/22");
+  await expect(await breadcrumbAncestor(page, fullName.split("/")[1])).toHaveAttribute("href", "/repositories/22/overview");
   await page.screenshot({ path: `../.impeccable/review/header-long-${info.project.name}.png`, animations: "disabled" });
 });
 
@@ -6277,7 +6326,7 @@ test("run omits verification summary and orders assessment before coverage", asy
 
 test("automatic resolution is opt-in and available for manual reviews", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   const automatic = page.getByRole("switch", { name: "Automatic reviews", exact: true });
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
@@ -6379,7 +6428,7 @@ test("GitHub installations manage repositories and confirm uninstall", async ({ 
     current = { ...current, operation_status: "queued", job_id: "uninstall", can_connect: false, can_uninstall: false };
     await route.fulfill({ status: 202, json: { job_id: "uninstall" } });
   });
-  await page.goto("/repositories");
+  await page.goto("/repositories/22");
   await page.getByRole("main").getByRole("link", { name: "Manage repositories", exact: true }).click();
   const account = page.getByRole("article", { name: "acme", exact: true });
   const connectedAccounts = page.getByRole("region", { name: "Connected installations" }).getByRole("heading", { level: 4 });
@@ -6969,10 +7018,13 @@ test("settings keep loading and failed requests distinct from empty connections"
     await route.fulfill({ status: 503, json: { detail: "Connections could not be loaded." } });
   });
   await page.goto("/settings");
-  await expect(page.getByText("Loading workspace…")).toBeVisible();
+  const progress = page.getByRole("banner").getByRole("progressbar", { name: "Loading workspace" });
+  await expect(progress).toBeVisible();
+  await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
   release();
   await expect(page.getByRole("alert")).toContainText("Connections could not be loaded");
+  await expect(progress).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Shared API connections" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your subscriptions" })).toHaveCount(0);
   await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [] }));
@@ -7121,6 +7173,40 @@ test("closing member menu cannot steal focus from the dialog role picker", async
   await expect(role).toBeFocused();
   await page.getByRole("option", { name: "Member", exact: true }).click();
   await expect(role).toHaveValue("Member");
+});
+
+test("Team avatars match the navbar and use initials for missing or broken images", async ({ page }, info) => {
+  await mock(page);
+  const ownAvatar = "/fixtures/own-avatar.svg";
+  const memberAvatar = "/fixtures/member-avatar.svg";
+  await page.route("**/fixtures/*-avatar.svg", (route) => route.fulfill({
+    contentType: "image/svg+xml",
+    body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#245c47"/></svg>',
+  }));
+  await page.route("**/fixtures/missing.png", (route) => route.fulfill({ status: 404 }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: {
+    id: 7, login: "carlos", role: "admin", avatar_url: ownAvatar, csrf: "csrf-from-session",
+  } }));
+  await page.route("**/api/v1/settings", (route) => route.fulfill({ json: {
+    github_app: {}, installations: [], failed_jobs: [], public_url: "https://reviews.example.com",
+    members: [
+      { id: 7, login: "carlos", role: "admin" },
+      { id: 8, login: "sam", role: "member", avatar_url: memberAvatar },
+      { id: 9, login: "invitee", role: "member" },
+      { id: 10, login: "observer", role: "member", avatar_url: "/fixtures/missing.png" },
+    ],
+  } }));
+  await page.goto("/settings?tab=team");
+  const team = page.getByRole("region", { name: "Team", exact: true });
+  const avatar = (login: string) => team.locator(".settings-member-row")
+    .filter({ has: page.getByText(`@${login}`, { exact: true }) }).locator('[data-slot="avatar"]');
+  await expect(page.getByRole("button", { name: "Account menu for @carlos" }).locator("img")).toHaveAttribute("src", ownAvatar);
+  await expect(avatar("carlos").locator("img")).toHaveAttribute("src", ownAvatar);
+  await expect(avatar("sam").locator("img")).toHaveAttribute("src", memberAvatar);
+  await expect(avatar("invitee")).toHaveText("IN");
+  await expect(avatar("observer")).toHaveText("OB");
+  await noOverflow(page);
+  await team.screenshot({ path: `../.impeccable/review/team-avatars-${info.project.name}.png` });
 });
 
 test("team rows preserve unknown roles and align labels with resized avatars in both directions", async ({ page }, info) => {
@@ -8231,7 +8317,7 @@ test("live refresh catches final assessment statuses after parent completion",as
   const state:Partial<Run>={status:"running",finished_at:null};
   const writes=await mock(page,{candidates:[candidate],assessment,run:state});
   let reads=0;await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
-  await page.goto("/runs/run");await expect(page.locator("main h1")).toContainText("running");
+  await page.goto("/runs/run");await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("running");
   await page.clock.fastForward(2000);
   await page.getByRole("tab",{name:/Assessment/}).click();
   const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
@@ -8240,7 +8326,7 @@ test("live refresh catches final assessment statuses after parent completion",as
   finish(candidate);assessment.pending=0;assessment.rejected_candidates=1;state.status="completed";
   const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run"));
   await page.clock.fastForward(3100);await (await response).finished();
-  await expect(page.locator("main h1")).toContainText("completed");
+  await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("completed");
   await ticks(page);
   expect(reads).toBe(before + 1);
   await expect(list.getByText("Not supported",{exact:true})).toHaveCount(1);
@@ -8315,11 +8401,11 @@ for(const tab of ["findings","coverage","details"]) {
     const state:Partial<Run>={status:"running",finished_at:null,report:structuredClone(run.report),publication:"pending",publication_error:null,check_error:null};
     const occurrences=[{finding_id:"finding",snapshot:finding,inline_line:46,is_new:false,current_status:"open"}];
     await mock(page,{run:state,occurrences});
-    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1")).toContainText("running");
+    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("running");
     state.status="completed";state.finished_at="2026-10-05T13:21:30Z";state.publication="published";state.check_status="completed";state.check_conclusion="success";
     occurrences[0].current_status="resolved";
     (state.report as any).manifest.coverage.completed.push({path:"src/late.ts"});
-    await ticks(page,1);await expect(page.locator("main h1")).toContainText("completed");
+    await ticks(page,1);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("completed");
     if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"}).getByText("Repeated finding",{exact:true})).toBeVisible();
     if(tab==="coverage") await expect(page.getByRole("region",{name:"Coverage",exact:true})).toContainText("src/late.ts");
     if(tab==="details") await expect(page.getByRole("region",{name:"Execution",exact:true})).not.toContainText("Not finished");
@@ -8759,7 +8845,7 @@ test("Mortis is saved without an engine selector while custom review rules remai
   await page.goto("/repositories/22/settings?tab=connection");
   await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
-  await repositorySection(page, "Limits & rules");
+  await repositorySection(page, "Reviews");
   await expect(page.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
   const rules = { rules: [{ path: "**/*.py", rule: "Preserve ownership checks" }] };
   await page.getByRole("textbox", { name: "Review rules JSON", exact: true }).fill(JSON.stringify(rules));

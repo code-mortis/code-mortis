@@ -3788,6 +3788,7 @@ export interface components {
             /** Connection Id */
             connection_id?: string | null;
             settings?: components["schemas"]["RepoSettings"];
+            scan_settings?: components["schemas"]["ScanSettings"] | null;
         };
         /** RepositoryOut */
         RepositoryOut: {
@@ -3817,6 +3818,7 @@ export interface components {
              */
             connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettings"];
+            scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs
              * @default 0
@@ -3827,7 +3829,26 @@ export interface components {
              * @default false
              */
             has_running_review: boolean;
+            /** Last Pr Sync Check At */
+            last_pr_sync_check_at?: string | null;
+            latest_completed_review?: components["schemas"]["RepositoryReviewSummary"] | null;
             security?: components["schemas"]["SecuritySummary"] | null;
+        };
+        /** RepositoryReviewSummary */
+        RepositoryReviewSummary: {
+            /** Run Id */
+            run_id: string;
+            /** Pull Request Id */
+            pull_request_id: string;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Finished At
+             * Format: date-time
+             */
+            finished_at: string;
         };
         /** ResolvedPage */
         ResolvedPage: {
@@ -4027,6 +4048,18 @@ export interface components {
              * @default 10
              */
             page_size: number;
+        };
+        /** ScanSettings */
+        ScanSettings: {
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Token Budget */
+            token_budget?: number | null;
+            /**
+             * Concurrency
+             * @default 4
+             */
+            concurrency: number;
         };
         /** SecurityActivityOut */
         SecurityActivityOut: {
@@ -4467,12 +4500,20 @@ export interface components {
             /** Activity */
             activity: components["schemas"]["SecurityActivityOut"][];
         };
-        /** SecurityScanInput */
+        /**
+         * SecurityScanInput
+         * @description Use saved limits by default. Explicit limits are supported for existing API clients.
+         */
         SecurityScanInput: {
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /** Token Budget */
             token_budget?: number | null;
+            /**
+             * Concurrency
+             * @description Legacy override. Omit to use saved limits.
+             */
+            concurrency?: number;
             /** Connection Id */
             connection_id: string;
             /**
@@ -4480,11 +4521,6 @@ export interface components {
              * @default
              */
             model: string;
-            /**
-             * Concurrency
-             * @default 4
-             */
-            concurrency: number;
             /** Request Key */
             request_key: string;
         };

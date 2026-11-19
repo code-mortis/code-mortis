@@ -17,7 +17,7 @@
   --chart-high: #dc2626;
   --chart-medium: #a16207;
   --chart-low: #64748b;
-  --sidebar: var(--muted);
+  --sidebar: var(--background);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
@@ -320,4 +320,16 @@
 @media (min-width: 768px) {
   .review-row-grid { grid-template-columns: minmax(0, 1fr) 6.5rem 10rem 1rem; }
   .review-row-grid > :first-child { grid-column: auto; }
+}
+
+.workspace-progress > div {
+  width: 35%;
+  animation: workspace-loading 1.2s ease-in-out infinite;
+}
+@keyframes workspace-loading {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(286%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-progress > div { width: 100%; animation: none; }
 }

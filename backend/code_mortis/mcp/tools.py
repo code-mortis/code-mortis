@@ -758,10 +758,11 @@ class StartScanInput(RepositoryScopedInput, MutationInput):
 
 def _scan_body(params: StartScanInput, user, operation: str) -> SecurityScanInput:
     key = digest(f"mcp:{user.mcp_grant_id}:{operation}:{params.request_key}")
+    options = params.model_dump(include={"concurrency"}, exclude_unset=True)
+    if params.limits is not None:
+        options.update(params.limits.model_dump(exclude_unset=True))
     return SecurityScanInput(connection_id=params.connection_id, model=params.model,
-                             concurrency=params.concurrency, request_key=key,
-                             timeout_seconds=params.limits.timeout_seconds if params.limits else None,
-                             token_budget=params.limits.token_budget if params.limits else None)
+                             request_key=key, **options)
 
 
 def security_start_scan(params: StartScanInput) -> dict[str, Any]:

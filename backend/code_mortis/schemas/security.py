@@ -9,7 +9,7 @@ from code_mortis.schemas.common import (
     ORMModel,
     RepositoryOut,
     ReviewComment,
-    RunLimits,
+    ScanSettings,
     SecuritySummary,
     StrictModel,
 )
@@ -17,10 +17,13 @@ from code_mortis.schemas.common import (
 ISSUE_BODY_LIMIT = 50000
 
 
-class SecurityScanInput(RunLimits):
+class SecurityScanInput(ScanSettings):
+    """Use saved limits by default. Explicit limits are supported for existing API clients."""
+
     connection_id: str = Field(min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
-    concurrency: int = Field(default=4, ge=1, le=8, strict=True)
+    concurrency: int = Field(default_factory=lambda: 4, ge=1, le=8, strict=True,
+                             description="Legacy override. Omit to use saved limits.")
     request_key: str = Field(min_length=16, max_length=100)
 
 

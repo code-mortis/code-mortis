@@ -36,7 +36,7 @@ export function AppearanceSettings({ mode, theme, dark, onModeChange, onThemeCha
           <Label htmlFor={`${id}-${item.id}`} className="block cursor-pointer overflow-hidden rounded-lg border p-1 transition-colors hover:border-primary/60 peer-checked:border-primary peer-checked:ring-1 peer-checked:ring-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-4 peer-focus-visible:outline-ring">
             <div aria-hidden="true" style={item[dark ? "dark" : "light"] as CSSProperties}
               className="flex h-28 overflow-hidden rounded-md border bg-background text-foreground">
-              <div className="flex w-1/4 flex-col gap-2 border-r bg-muted p-3">
+              <div className="flex w-1/4 flex-col gap-2 border-r bg-background p-3">
                 <div className="mb-1 h-2 w-2/3 rounded-sm bg-primary" />
                 <div className="h-2 rounded-sm bg-accent" />
                 <div className="h-1.5 w-3/4 rounded-sm bg-muted-foreground/40" />

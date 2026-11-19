@@ -850,14 +850,14 @@ test("Code on a closed PR refreshes the sidebar while a review is running", asyn
   await page.goto("/pulls/pr?tab=code");
   await expect(page.getByRole("region", { name: "File diff" })).toBeVisible();
   if (isMobile) await page.getByRole("button", { name: "Open navigation" }).click();
-  const nav = page.getByRole("navigation", { name: "Main navigation" });
-  const reviewing = nav.getByRole("link", { name: "acme/project, review running", exact: true });
+  const nav = page.getByRole("navigation", { name: "Repository sections" });
+  const reviewing = nav.getByRole("link", { name: "Pull requests", exact: true });
   await expect(reviewing.locator(".motion-safe\\:animate-spin")).toBeVisible();
 
   state.reviewRunning = false;
   await page.clock.fastForward(6000);
-  await expect(reviewing).toHaveCount(0);
-  await expect(nav.getByRole("link", { name: "acme/project", exact: true })).toBeVisible();
+  await expect(reviewing.locator(".motion-safe\\:animate-spin")).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Pull requests", exact: true })).toBeVisible();
 });
 
 for (const initialFilter of [true, false]) test(`empty findings filter refreshes metadata and discovers new findings (${initialFilter ? "initial" : "local"} filter)`, async ({ page }) => {

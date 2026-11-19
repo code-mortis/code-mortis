@@ -8,7 +8,7 @@ from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown, worker_shutdown
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 
 from code_mortis.core.analysis import fingerprint
 from code_mortis.core.config import settings
@@ -192,6 +192,9 @@ def scan_repository(repository_id: int):
         )
         for number in numbers:
             enqueue_reconciliation(db, "sync_pr", {"repository_id": repo.id, "number": number})
+        db.execute(update(Repository).where(Repository.id == repository_id).values(
+            last_pr_sync_check_at=func.greatest(Repository.last_pr_sync_check_at, now()),
+        ))
 
 
 def _stored_origin(payload: Any) -> tuple:

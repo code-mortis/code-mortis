@@ -132,6 +132,8 @@ class Repository(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     connection_id: Mapped[str | None] = mapped_column(ForeignKey("connections.id"))
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    scan_settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
+    last_pr_sync_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     code_graph_limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
 

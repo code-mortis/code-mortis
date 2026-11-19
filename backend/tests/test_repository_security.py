@@ -554,6 +554,46 @@ def security_github(github_stub, monkeypatch):
     return remote
 
 
+def test_repository_scan_settings_default_independently_and_retry_keeps_saved_limits(seed, client, security_github):
+    path = "/api/v1/repositories/22"
+    scan_path = "/api/v1/security/repositories/22/scans"
+    body = {"enabled": False, "connection_id": "connection", "settings": seed["repo"].settings}
+    original = client.put(path, json=body)
+    assert original.status_code == 200, original.text
+    assert original.json()["scan_settings"] == {"token_budget": None, "timeout_seconds": None, "concurrency": 4}
+
+    limits = {"token_budget": 45000, "timeout_seconds": 600, "concurrency": 8}
+    saved = client.put(path, json={**body, "scan_settings": limits})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["settings"]["token_budget"] == 200000
+    assert saved.json()["scan_settings"] == limits
+    review_update = client.put(path, json={**body, "settings": {**body["settings"], "token_budget": 90000}})
+    assert review_update.status_code == 200, review_update.text
+    assert review_update.json()["scan_settings"] == limits
+
+    scan_body = {"connection_id": "connection", "request_key": uid()}
+    started = client.post(scan_path, json=scan_body)
+    assert started.status_code == 202, started.text
+    scan = started.json()
+    assert scan["config"]["limits"] == limits
+
+    with transaction() as db:
+        db.get(SecurityScan, scan["id"]).status = "partial"
+    changed_limits = {"token_budget": 60000, "timeout_seconds": None, "concurrency": 3}
+    changed = client.put(path, json={**body, "scan_settings": changed_limits})
+    assert changed.status_code == 200, changed.text
+    retried = client.post(f"/api/v1/security/scans/{scan['id']}/retry", json={**scan_body, "request_key": uid()})
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["config"]["limits"] == limits
+    with transaction() as db:
+        assert db.get(SecurityScan, scan["id"]).config["limits"] == limits
+        db.get(SecurityScan, retried.json()["id"]).status = "completed"
+
+    legacy = client.post(scan_path, json={**scan_body, "request_key": uid(), "token_budget": None})
+    assert legacy.status_code == 202, legacy.text
+    assert legacy.json()["config"]["limits"] == {**changed_limits, "token_budget": None}
+
+
 def saved_scan(db, seed, status="running", sha=SHA, **values):
     scan = SecurityScan(id=uid(), repository_id=seed["repo"].id, actor_id=seed["user"].id,
         connection_id=seed["connection"].id, request_key=uid(), branch="main", head_sha=sha,
@@ -2068,7 +2108,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         config = {key: value for key, value in parent.config.items() if key not in {"task_contract", "execution_limits"}}
         config["connection"] = connection_snapshot(db.get(Connection, "connection"))
-        config["limits"] = {"token_budget": None, "timeout_seconds": None}
+        config["limits"] = {"token_budget": 100000, "timeout_seconds": 900}
         context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},
                    "language": "English", "task_contract": "security-task/v2"}
         parent.config, parent.status = config, "partial"
@@ -2083,7 +2123,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
             **({"concurrency": concurrency} if concurrency else {})), parent=parent)
         identity = retry.id
         assert "task_contract" not in retry.config
-        assert retry.config["limits"]["concurrency"] == (concurrency or 1)
+        assert retry.config["limits"] == {**config["limits"], "concurrency": concurrency or 1}
     perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)

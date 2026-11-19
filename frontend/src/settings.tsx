@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, SlidersHorizontal, Users } from "lucide-react";
+import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, Shield, SlidersHorizontal, Users } from "lucide-react";
 import {
   api,
   useAction,
@@ -19,9 +19,9 @@ import { GitHubInstallations } from "./components/github-installations";
 import { Button } from "./components/ui/button";
 import { AppearanceSettings } from "./components/appearance-settings";
 import { ApiTokensSection, CreateApiTokenPage } from "./components/api-tokens";
+import { UserAvatar } from "./components/user-avatar";
 import { McpSettingsSection } from "./mcp";
 import type { ColorMode, ThemeId } from "./lib/appearance";
-import { Avatar, AvatarFallback } from "./components/ui/avatar";
 import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -55,7 +55,7 @@ type Provider = {
 type Instance = {
   github_app: { id: string; slug: string; install_url: string };
   installations: { id: number; account: string; active: boolean }[];
-  members: { id: number; login: string; role: string }[];
+  members: { id: number; login: string; role: string; avatar_url?: string }[];
   failed_jobs: { id: string; kind: string; error: string; available_at?: string | null; attempts?: number }[];
   public_url: string;
   webhook_url?: string;
@@ -131,6 +131,55 @@ const reviewSensitivities = [
   { value: "broad", label: "Broad", description: "Also minor bugs and rare cases." },
 ] as const;
 
+function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onChange }: {
+  id: string;
+  label: string;
+  hint: string;
+  min: number;
+  max?: number;
+  value: number | null;
+  fallback?: number;
+  onChange: (value: number | null) => void;
+}) {
+  const limited = useRef(value ?? fallback ?? min);
+  return <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
+    <div className="space-y-2">
+      <label htmlFor={id} className="text-sm font-medium">{label}</label>
+      <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+    </div>
+    <div className="space-y-2">
+      <Input
+        key={value === null ? "unlimited" : "limited"}
+        id={id}
+        aria-describedby={`${id}-hint`}
+        type="number"
+        min={min}
+        max={max}
+        required
+        disabled={value === null}
+        className="disabled:bg-muted disabled:opacity-100 disabled:shadow-none dark:disabled:bg-muted"
+        defaultValue={value ?? ""}
+        onChange={(event) => {
+          const next = event.target.valueAsNumber;
+          if (!Number.isFinite(next) || !event.target.validity.valid) return;
+          limited.current = next;
+          onChange(next);
+        }}
+      />
+      {fallback !== undefined && <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          aria-label={`Unlimited ${label.toLowerCase()}`}
+          checked={value === null}
+          onChange={(event) => onChange(event.target.checked ? null : limited.current)}
+        />
+        Unlimited
+      </label>}
+    </div>
+  </div>;
+}
+
 export function RepositorySettings({ repository: repo }: { repository: Repository }) {
   const connections = useApi<Connection[]>(
     `/connections?repository_id=${repo.id}`,
@@ -144,7 +193,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
     { value: "connection", label: "AI connection", icon: Plug },
     { value: "context", label: "Project context", icon: FolderGit2 },
     { value: "code-graph", label: "Code graph", icon: Network },
-    { value: "limits", label: "Limits & rules", icon: SlidersHorizontal },
+    { value: "limits", label: "Reviews", icon: SlidersHorizontal },
+    { value: "scan-limits", label: "Security scan", icon: Shield },
   ];
   const section = sections.some(({ value }) => value === params.get("tab")) ? params.get("tab")! : "reviews";
   const invalidField = useRef<HTMLInputElement | null>(null);
@@ -189,15 +239,12 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   });
   const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
   const sensitivity = reviewSensitivities[sensitivityIndex];
-  const limitedValues = useRef({
-    timeout_seconds: repo.settings.timeout_seconds ?? 900,
-    token_budget: repo.settings.token_budget ?? 200000,
-    assessment_token_budget: repo.settings.assessment_token_budget ?? 200000,
-    verification_token_budget: repo.settings.verification_token_budget ?? 200000,
-    summary_timeout_seconds: repo.settings.summary_timeout_seconds ?? 180,
-    summary_token_budget: repo.settings.summary_token_budget ?? 60000,
-    max_files: repo.settings.max_files ?? 40,
+  const [scanSettings, setScanSettings] = useState({
+    token_budget: repo.scan_settings?.token_budget ?? null,
+    timeout_seconds: repo.scan_settings?.timeout_seconds ?? null,
+    concurrency: repo.scan_settings?.concurrency ?? 4,
   });
+  const savedScanSettings = useRef(scanSettings);
   const [rules, setRules] = useState(
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
@@ -231,6 +278,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
       onSubmit={async (e) => {
         e.preventDefault();
         setError(undefined);
+        const scanSettingsChanged = scanSettings.token_budget !== savedScanSettings.current.token_budget
+          || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
+          || scanSettings.concurrency !== savedScanSettings.current.concurrency;
         try {
           await action.mutateAsync({
             path: `/repositories/${repo.id}`,
@@ -240,6 +290,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               code_graph_enabled: codeGraphEnabled,
               code_graph_limits: graphLimits,
               connection_id: connection || null,
+              ...(scanSettingsChanged ? { scan_settings: scanSettings } : {}),
               settings: {
                 ...settings,
                 concurrency: settings.concurrency,
@@ -247,18 +298,14 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               },
             },
           });
+          if (scanSettingsChanged) savedScanSettings.current = scanSettings;
           toast.success("Repository configuration saved.");
         } catch (e) {
           setError(e);
         }
       }}
     >
-      <PageTitle title="Repository configuration">
-        <p className="flex items-center gap-2">
-          <FolderGit2 className="size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 break-words [overflow-wrap:anywhere]">{repo.full_name}</span>
-        </p>
-      </PageTitle>
+      <PageTitle title="Repository configuration" />
       <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
         <SettingsNavigation label="Repository settings sections" value={section}
           items={sections.map((item) => ({ ...item, to: `?${sectionSearch(item.value)}`, state: location.state }))} />
@@ -466,92 +513,40 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           </section>
           <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
             <div>
-              <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Limits & rules</h2>
+              <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Review limits &amp; rules</h2>
               <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize review rules.</p>
             </div>
             {([
               { key: "execution", title: "Review execution", fields: [
-                { key: "max_files", label: "Maximum files", min: 1, max: undefined,
+                { key: "max_files", label: "Maximum files", min: 1, max: undefined, fallback: 40,
                   hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
-                { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600,
+                { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600, fallback: 900,
                   hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
               ] },
               { key: "budgets", title: "Token budgets", fields: [
-                { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000,
+                { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000, fallback: 200000,
                   hint: "Budget for Mortis analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
-                { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000,
+                { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000, fallback: 200000,
                   hint: "Independent budget for validating proposed findings, including correction attempts." },
-                { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000,
+                { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000, fallback: 200000,
                   hint: "Independent budget for checking whether earlier findings were fixed." },
               ] },
               { key: "summary", title: "PR summary", fields: [
-                { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600,
+                { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600, fallback: 180,
                   hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
-                { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000,
+                { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000, fallback: 60000,
                   hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
               ] },
             ] as const).map((group) => (
               <section key={group.key} aria-labelledby={`${id}-${group.key}`} className="space-y-3">
                 <h3 id={`${id}-${group.key}`} className="text-base font-semibold">{group.title}</h3>
                 <div className="divide-y rounded-lg border bg-card">
-                  {group.fields.map(({ key, label, min, max, hint }) => (
-                    <div key={key} className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
-                      <div className="space-y-2">
-                        <label htmlFor={`${id}-${key}`} className="text-sm font-medium">{label}</label>
-                        <p id={`${id}-${key}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Input
-                          key={settings[key] === null ? "unlimited" : "limited"}
-                          id={`${id}-${key}`}
-                          aria-describedby={`${id}-${key}-hint`}
-                          type="number"
-                          min={min}
-                          max={max}
-                          required
-                          disabled={settings[key] === null}
-                          className="disabled:bg-muted disabled:opacity-100 disabled:shadow-none dark:disabled:bg-muted"
-                          defaultValue={settings[key] ?? ""}
-                          onChange={(e) => {
-                            const value = e.target.valueAsNumber;
-                            if (!Number.isFinite(value) || !e.target.validity.valid) return;
-                            limitedValues.current[key] = value;
-                            change(key, value);
-                          }}
-                        />
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                            aria-label={`Unlimited ${label.toLowerCase()}`}
-                            checked={settings[key] === null}
-                            onChange={(e) => change(key, e.target.checked ? null : limitedValues.current[key])}
-                          />
-                          Unlimited
-                        </label>
-                      </div>
-                    </div>
-                  ))}
-                  {group.key === "execution" && <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
-                    <div className="space-y-2">
-                      <label htmlFor={`${id}-concurrency`} className="text-sm font-medium">Concurrency</label>
-                      <p id={`${id}-concurrency-hint`} className="text-xs leading-relaxed text-muted-foreground">Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider.</p>
-                    </div>
-                    <Input
-                      id={`${id}-concurrency`}
-                      aria-describedby={`${id}-concurrency-hint`}
-                      type="number"
-                      min={1}
-                      max={8}
-                      required
-                      defaultValue={settings.concurrency}
-                      onChange={(event) => {
-                        const value = event.target.valueAsNumber;
-                        if (!Number.isFinite(value) || !event.target.validity.valid) return;
-                        change("concurrency", value);
-                      }}
-                    />
-                  </div>}
+                  {group.fields.map(({ key, ...field }) => <ExecutionLimitField key={key} id={`${id}-${key}`}
+                    {...field} value={settings[key]} onChange={(value) => change(key, value)} />)}
+                  {group.key === "execution" && <ExecutionLimitField id={`${id}-concurrency`} label="Concurrency"
+                    hint="Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
+                    min={1} max={8} value={settings.concurrency}
+                    onChange={(value) => { if (value !== null) change("concurrency", value); }} />}
                 </div>
               </section>
             ))}
@@ -570,6 +565,35 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   onChange={(e) => setRules(e.target.value)}
                 />
               </div>
+            </section>
+          </section>
+          <section hidden={section !== "scan-limits"} data-settings-section="scan-limits" aria-labelledby={`${id}-scan-limits`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-scan-limits`} className="text-xl font-semibold tracking-tight">Scan limits &amp; rules</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Set execution limits for new security scans of this repository.</p>
+            </div>
+            <section aria-labelledby={`${id}-scan-execution`} className="space-y-3">
+              <h3 id={`${id}-scan-execution`} className="text-base font-semibold">Scan execution</h3>
+              <div className="divide-y rounded-lg border bg-card">
+                <ExecutionLimitField id={`${id}-scan-token-budget`} label="Scan token budget"
+                  hint="Total budget shared by scan analysis, assessment, verification, and correction attempts."
+                  min={1000} max={5000000} fallback={200000} value={scanSettings.token_budget}
+                  onChange={(token_budget) => setScanSettings((current) => ({ ...current, token_budget }))} />
+                <ExecutionLimitField id={`${id}-scan-timeout`} label="Scan timeout (seconds)"
+                  hint="Time available for the complete scan. Unlimited removes the execution deadline."
+                  min={60} max={3600} fallback={900} value={scanSettings.timeout_seconds}
+                  onChange={(timeout_seconds) => setScanSettings((current) => ({ ...current, timeout_seconds }))} />
+                <ExecutionLimitField id={`${id}-scan-concurrency`} label="Scan concurrency"
+                  hint="Maximum number of scan tasks running in parallel. All tasks share the scan budget."
+                  min={1} max={8} value={scanSettings.concurrency}
+                  onChange={(concurrency) => { if (concurrency !== null) setScanSettings((current) => ({ ...current, concurrency })); }} />
+              </div>
+            </section>
+            <section aria-labelledby={`${id}-scan-policy`} className="space-y-3">
+              <h3 id={`${id}-scan-policy`} className="text-base font-semibold">Scan policy</h3>
+              <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
+                Mortis analyzes source code and assesses findings. Trivy uses built-in rules to check for exposed secrets, vulnerable dependencies, and infrastructure misconfigurations.
+              </p>
             </section>
           </section>
           <footer className="mt-8 space-y-3 py-5">
@@ -671,7 +695,7 @@ function ConnectionForm({
   </Field>;
   const ceilingField = <Field
     label="Evidence prompt ceiling (tokens)"
-    hint="Limits connection tests and applies to older saved jobs. Set new review and scan limits in their respective forms."
+    hint="Limits connection tests and applies to older saved jobs. Set limits for new reviews and scans in Repository settings."
   >
     {(id) => <Input id={id} required type="number" min={4096} max={2000000} step={1}
       value={promptCeiling} onChange={(event) => setPromptCeiling(event.target.value)} />}
@@ -1046,7 +1070,7 @@ export function SettingsPage({ user, mode, theme, dark, onModeChange, onThemeCha
             </div>
             {instance.members.map((item) => <div key={item.id} className="settings-member-row border-b px-4 py-4 last:border-b-0 sm:px-5">
               <div className="settings-member-identity flex min-w-0 items-center">
-                <Avatar className="settings-member-avatar size-(--settings-avatar-size) rounded-md" aria-hidden="true"><AvatarFallback className="rounded-md text-xs">{item.login.slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+                <UserAvatar user={item.id === user.id ? user : item} className="settings-member-avatar size-(--settings-avatar-size)" />
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium">@{item.login}</p>
                   {item.id === user.id && <p className="mt-0.5 text-xs text-muted-foreground">You</p>}
