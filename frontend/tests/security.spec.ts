@@ -1250,16 +1250,18 @@ test("running scan stages explain validated file progress without changing the s
 });
 
 test("focus strip updates validated progress and the current stage across polling", async ({ page }, info) => {
+  if (info.project.name === "mobile") await page.setViewportSize({ width: 320, height: 844 });
   await page.clock.install({ time: new Date("2026-10-18T15:08:42Z") });
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page, { running: true });
   const saved = { ...scan, status: "running", grade: null, finished_at: null,
     progress: { tokens: 4500, work: { analysis_completed: 117, analysis_total: 163, completed: 117, failed: 0 } },
     stages: { snapshot: { status: "completed" }, trivy: { status: "completed" },
-      analysis: { status: "running", total: 163, completed: 117 }, assessment: { status: "pending", total: 32, completed: 0 },
+      analysis: { status: "running", total: 163, completed: 117 }, assessment: { status: "pending", total: 32, completed: 0, failed: 0 },
       verification: { status: "pending" }, report: { status: "pending" } } };
+  let assessment: Schema["SecurityAssessmentSummary"] | undefined;
   await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
-    repository, scan: saved, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+    repository, scan: saved, assessment, can_write: false, finding_count: 0, activity_count: 0, activity: [],
   } }));
   await page.goto("/security/scans/scan");
   const track = page.getByRole("region", { name: "Scan stages" });
@@ -1282,6 +1284,18 @@ test("focus strip updates validated progress and the current stage across pollin
   await expect(details.getByText("Analysis", { exact: true }).locator("..")).toContainText("completed");
   await expect(details.getByText("Assessment", { exact: true }).locator("..")).toContainText("running");
   await expect(details.getByText("8 / 32 candidates", { exact: true })).toBeVisible();
+  saved.stages.assessment.failed = 1;
+  await page.clock.fastForward(5000);
+  await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
+  await expect(track.locator("p")).toHaveText("Validating findings against source evidence. 1 failed.");
+  await expect(details.getByText("1 failed", { exact: true })).toBeVisible();
+  assessment = { total: 32, status_counts: { completed: 8, failed: 2, running: 22 }, revision: "2" };
+  await page.clock.fastForward(5000);
+  await expect(track.getByLabel("Scan progress count")).toHaveText("8 / 32 candidates");
+  const caption = track.locator("p");
+  await expect(caption).toHaveText("Validating findings against source evidence. 2 failed.");
+  expect(await caption.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+  await expect(details.getByText("2 failed", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.screenshot({ path: info.outputPath("scan-focus-assessment.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

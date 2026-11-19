@@ -953,6 +953,7 @@ def perform(scan_id, claim):
                         candidate = pending[future]
                         try:
                             results[candidate.id] = future.result()
+                            assessment_completed += 1
                         except verification.VerificationOutputError as exc:
                             if exc.feedback and type(exc.usage.get("tokens")) is int:
                                 assessment_failed += 1
@@ -964,7 +965,7 @@ def perform(scan_id, claim):
                             if fatal is None or isinstance(exc, RunnerBlocked):
                                 fatal = exc
                             stop_workers.set()
-                        stage(scan_id, "assessment", "running", failed=assessment_failed)
+                        stage(scan_id, "assessment", "running", completed=assessment_completed, failed=assessment_failed)
                     if fatal:
                         raise fatal
                     if stopped():
@@ -981,7 +982,6 @@ def perform(scan_id, claim):
                             assessed = results.get(candidate.id)
                             if assessed is None:
                                 continue
-                            assessment_completed += 1
                             if assessed["verdict"] == "uncertain":
                                 assessment_problems.append("A proposed security finding requires additional verification.")
                                 proposal = candidate.proposal
@@ -999,7 +999,6 @@ def perform(scan_id, claim):
                                                                           proposal["evidence"][0]["quote"], proposal["title"]]))}
                             finding = observe(db, db.get(SecurityScan, scan_id), evidence, assessed["finding_id"])
                             observed.add(finding.id)
-                    stage(scan_id, "assessment", "running", completed=assessment_completed)
                     remaining = [row for row in remaining if row not in batch]
             stage(scan_id, "assessment",
                   "completed" if len(problems) == assessment_problem_count and not assessment_problems else "partial")

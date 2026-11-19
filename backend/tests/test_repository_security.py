@@ -1948,6 +1948,13 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
         excluded=[], problems=[], secret_values=[], secret_lines={}, source=lambda path, sha=None: path,
         redact=lambda text: text, sha=SHA, git=tmp_path, files=tmp_path / "files", env={}, renamed=lambda sha, path: path)
     barrier, calls = Barrier(2), []
+    first_assessed = Event()
+    original_stage = security.stage
+
+    def stage(scan_id, name, status, **values):
+        original_stage(scan_id, name, status, **values)
+        if name == "assessment" and values.get("completed") == 1:
+            first_assessed.set()
 
     def ask(*args, **kwargs):
         task, context = args[3:5]
@@ -1967,6 +1974,12 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
             if history_changed and proposal["path"] == "same.py":
                 with transaction() as db:
                     saved_finding(db, seed, db.get(SecurityScan, identity), path="external.py")
+            if not history_changed and proposal["path"] == "independent.py":
+                assert first_assessed.wait(timeout=10), "Assessment progress waited for the entire batch."
+                with transaction() as db:
+                    assessment_stage = db.get(SecurityScan, identity).stages["assessment"]
+                    assert assessment_stage["completed"] == 1 and assessment_stage["failed"] == 0
+                    assert not list(db.scalars(select(SecurityOccurrence)))
             finding_id = None
         else:
             matches = [row for row in context["history"] if row["path"] == "same.py"]
@@ -1978,6 +1991,7 @@ def test_parallel_security_assessment_keeps_related_findings_ordered_and_rejects
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
     monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {}, "problems": [], "metadata": {}})
     monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security, "stage", stage)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=4)).id
