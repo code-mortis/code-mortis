@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from code_mortis.core.analysis import (
     EXECUTION_LIMITS,
+    ROLLING_BUDGET,
     engine_snapshot,
     require_available_engine,
     require_execution_engine,
@@ -157,7 +158,8 @@ def create_run(
         options["max_files"] = None
     config = {"connection": connection_snapshot(connection, workflow=True), "settings": options,
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
-              "task_contract": "review-task/v2", "execution_limits": EXECUTION_LIMITS}
+              "task_contract": "review-task/v2", "execution_limits": EXECUTION_LIMITS,
+              "budget_schedule": ROLLING_BUDGET}
     config.update(engine_snapshot(options))
     config["planner_version"] = planning.VERSION
     if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
@@ -178,8 +180,9 @@ def create_run(
         ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
     ).with_for_update().execution_options(populate_existing=True)).all()
     for run in active:
-        # A planner upgrade alone must not start a duplicate active review.
-        config_matches = {**run.config, "planner_version": config["planner_version"]} == config
+        # A planner or budget scheduler upgrade alone must not start a duplicate active review.
+        config_matches = {**run.config, "planner_version": config["planner_version"],
+                          "budget_schedule": config["budget_schedule"]} == config
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and config_matches:
             if request_key:
                 run.progress = {**run.progress, "comment_requests": {

@@ -798,6 +798,7 @@ def test_verification_keeps_unknown_usage_separate_from_its_reservation(verifica
     enable_parallel(identity)
     with transaction() as db:
         run = db.get(ReviewRun, identity)
+        run.config = {key: value for key, value in run.config.items() if key != "budget_schedule"}
         run.status, run.started_at = "running", now()
         run.progress = {"file_limit_checked": True}
         verification.prepare(db, run, db.get(Repository, 22), "token")

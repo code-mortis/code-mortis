@@ -12,7 +12,7 @@ from pydantic import Field, ValidationError
 from sqlalchemy import case, func, select
 
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import require_execution_engine
+from code_mortis.core.analysis import require_execution_engine, rolling_budget_enabled
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.errors import ReviewStopped, RunnerBlocked
 from code_mortis.core.review_results import fingerprint, report_tokens
@@ -565,6 +565,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
         options = dict(run.config["settings"])
         if run.config.get("pipeline_version") == 2:
             options["token_budget"] = options["assessment_token_budget"]
+        finite_rolling = (options["token_budget"] is not None
+                          and run.config.get("pipeline_version") == 2 and rolling_budget_enabled(db, claim, run.config))
         instructions = INSTRUCTIONS
         if policy := review_policy.instructions(options):
             instructions += "\n\n" + policy + (
@@ -575,7 +577,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
         started_at = datetime.fromisoformat(retry["started_at"]) if retry else run.started_at
         deadline = started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     concurrency = options.get("concurrency", 1)
-    parallel = (connection["kind"] == "api" and options["token_budget"] is None
+    parallel = (connection["kind"] == "api" and (options["token_budget"] is None or finite_rolling)
                 and not retry and concurrency > 1 and len(ids) > 1)
     stop_workers = Event()
 
@@ -614,7 +616,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             budget, usage_known = remaining_budget(db, run)
             return run, rows, previous, history_key, budget, usage_known
 
-    def assess(row, run, previous, history_key, budget, usage_known, context=None):
+    def assess(row, run, previous, history_key, budget, usage_known, context=None, *, budget_demand=None):
         from code_mortis.reviews import graph_context
 
         identity, snapshot = row.id, dict(row.snapshot)
@@ -680,7 +682,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                         if (remaining is not None and remaining < 10) or (allowance is not None and allowance <= 0):
                             reason = verification.limit_error(options, allowance, remaining, usage_known)
                             raise ValueError(reason + " Assessment stopped.")
-                        usage = ({"tokens": None, "reserved_tokens": budget} if run.config.get("pipeline_version") == 2 else {"tokens": budget})
+                        usage = ({"tokens": None} if finite_rolling else {"tokens": None, "reserved_tokens": budget}
+                                 if run.config.get("pipeline_version") == 2 else {"tokens": budget})
                     row.status, row.context, row.usage = "running", request_context, usage
                     # Queued and running both count as pending; only usage and the UI revision change.
                     record_summary(db, current, advance_revision=True, totals_unchanged=True)
@@ -691,6 +694,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                             run_id=run_id, claim=claim, stage="assessment", task_key=attempt_id,
                             round=attempt, instructions=instructions, schema=output_schema(context),
                             validator=validate_response, effort=options["effort"], authorize=authorize_history,
+                            **({"budget_demand": budget_demand} if budget_demand is not None else {}),
                         )
                         amount = spent.get(unit)
                         if type(amount) is int and amount >= 0:
@@ -844,8 +848,9 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                                 if any(future.done() for future in futures):
                                     break
                                 ready.popleft()
+                                demand = len(ready) + len(futures) + 1 if finite_rolling else None
                                 future = pool.submit(assess, row, run, previous, history_key, budget, usage_known,
-                                                     contexts.pop(row.id))
+                                                     contexts.pop(row.id), budget_demand=demand)
                                 futures[future] = row
                                 admitted_at[row.id] = wave
                         if not futures:
@@ -907,7 +912,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                     batch = [row for row in rows if row.id in admitted_at]
                     outcomes = [results[row.id] for row in batch]
                 else:
-                    outcomes = [assess(batch[0], run, previous, history_key, budget, usage_known)]
+                    outcomes = [assess(batch[0], run, previous, history_key, budget, usage_known,
+                                       budget_demand=1 if finite_rolling else None)]
                 if any(outcome is None for outcome in outcomes) or not save(outcomes, history_key):
                     return
                 done = {row.id for row in batch}

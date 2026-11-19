@@ -275,7 +275,8 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
 
 def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, authorize,
            register_task, load_task, stopped=lambda: False, progress=lambda value: None, check_admission=None,
-           limit_source_tools=True, register_recovery=None, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY):
+           limit_source_tools=True, register_recovery=None, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY,
+           rolling_budget=False):
     """Execute or replay immutable task rows. Callbacks own plan/Job fencing and durable append.
 
     load_task(key) returns {id,status,result,input_hash,usage_tokens,pending_reason,error_code};
@@ -288,6 +289,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
     reported_outcomes, task_usage = {}, {}
     waiting_ids = set()
     visited = {batch.key: set() for batch in prepared}
+    outstanding = len(prepared)
 
     async def recover(batch, request, row, sources, client, root_key, batch_outcomes):
         if (register_recovery is None or ":unit:" in batch.key
@@ -377,7 +379,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 try:
                     response = await llm.execute_task(row["id"], job_id, job_attempt, request, credentials,
                         client=client, authorize=authorize, authorize_admission=check_admission,
-                        validate_result=validate, stopped=stopped)
+                        validate_result=validate, stopped=stopped,
+                        **({"budget_demand": outstanding} if rolling_budget else {}))
                 except InferenceError as exc:
                     failed = await asyncio.to_thread(load_task, key)
                     deadline = failed and failed.get("pending_reason") == "deadline" and not stopped()
@@ -496,6 +499,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             raise ValueError("Analysis concurrency must be between one and eight")
         async with llm.http_client() as client:
             async def worker():
+                nonlocal outstanding
                 while not queue.empty():
                     batch = queue.get_nowait()
                     batch_outcomes = {}
@@ -516,6 +520,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                                     batch_outcomes[unit.key] = {"status": "failed", "error": "deadline"}
                         await save_progress(batch_outcomes)
                     finally:
+                        outstanding -= 1
                         queue.task_done()
 
             workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(prepared)))]

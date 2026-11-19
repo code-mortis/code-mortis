@@ -1,7 +1,10 @@
 """Offline Mortis security routing; scanner evidence remains independent of PR exclusions."""
 
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from threading import Barrier, Event
 
 import pytest
 
@@ -211,6 +214,9 @@ def test_security_workflow_uses_durable_gateway_and_keeps_scanner_freshness(scan
     from code_mortis.security_scans import service
 
     scan_workflow["stale"] = stale
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_workflow["scan_id"])
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "concurrency": 8}}
     service.perform(scan_workflow["scan_id"], scan_workflow["claim"])
     with transaction() as db:
         scan = db.get(SecurityScan, scan_workflow["scan_id"])
@@ -227,9 +233,69 @@ def test_security_workflow_uses_durable_gateway_and_keeps_scanner_freshness(scan
         tasks = list(db.scalars(select(AnalysisTask)))
         assert len(tasks) == 2 and all(task.status == "completed" for task in tasks)
         assert "provider-secret" not in json.dumps([task.result for task in tasks])
-        assert all(attempt.usage_state == "known" for attempt in db.scalars(select(AnalysisAttempt)))
+        attempts = list(db.scalars(select(AnalysisAttempt).order_by(AnalysisAttempt.started_at)))
+        assert [attempt.reserved_tokens for attempt in attempts] == [200_000, 199_988]
+        assert all(attempt.usage_state == "known" for attempt in attempts)
     assert len(scan_workflow["calls"]) == 2
     assert all("provider-secret" not in message.content for request in scan_workflow["calls"] for message in request.messages)
+
+
+def test_finite_scan_analysis_refills_and_counts_validated_files(scan_workflow, monkeypatch):
+    from sqlalchemy import select
+
+    from code_mortis.core import analysis
+    from code_mortis.core.db import transaction
+    from code_mortis.integrations import llm
+    from code_mortis.models import AnalysisBudget, AnalysisPlan, AnalysisTask, SecurityScan
+    from code_mortis.schemas.inference import Response, Usage
+    from code_mortis.security_scans import service
+
+    item = scan_workflow["item"]
+    paths = ["fast.py", "slow1.py", "slow2.py", "slow3.py", "zz.py"]
+    item.inventory = {path: {"code": True, "hash": digest("value = 1"), "lines": 1} for path in paths}
+    item.read = lambda *args: "value = 1"
+    scan_id = scan_workflow["scan_id"]
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        limits = {**scan.config["limits"], "concurrency": 4}
+        scan.config = {**scan.config, "limits": limits}
+
+    barrier, refilled, release = Barrier(4), Event(), Event()
+
+    async def send(connection, credentials, request, **kwargs):
+        context = json.loads(request.messages[0].content.split("\n\n", 2)[1])
+        path = context["assigned_path"]
+        if path == "zz.py":
+            refilled.set()
+        else:
+            await asyncio.to_thread(barrier.wait, 10)
+        if path != "fast.py":
+            assert await asyncio.to_thread(release.wait, 10)
+        result = {"findings": [], "required_paths": []}
+        return Response(content=json.dumps(result), output=result, usage=Usage(total_tokens=12))
+
+    monkeypatch.setattr(llm, "send", send)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(service.perform, scan_id, scan_workflow["claim"])
+        try:
+            assert refilled.wait(10), "The fifth file must start while three peers are still running."
+            with transaction() as db:
+                scan = db.get(SecurityScan, scan_id)
+                public = service.public_scan(scan)
+                assert public.stages["analysis"]["completed"] == 1
+                assert scan.progress["tasks"]["analysis:fast.py"]["status"] == "completed"
+                plan = db.scalar(select(AnalysisPlan))
+                assert plan.snapshot["versions"]["budget_schedule"] == analysis.ROLLING_BUDGET
+                assert db.get(AnalysisBudget, (plan.id, "security")).charged_tokens <= limits["token_budget"]
+                assert sum(row.status == "running" for row in db.scalars(select(AnalysisTask))) == 4
+        finally:
+            release.set()
+        worker.result(timeout=10)
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.status == "completed", scan.error
+        assert scan.stages["analysis"]["completed"] == 5
+        assert scan.progress["tokens"] == 60
 
 
 def test_security_unknown_gateway_usage_stops_later_stages(scan_workflow):
@@ -277,24 +343,35 @@ def test_security_semantic_fix_uses_original_and_current_source_before_resolutio
 
     from code_mortis.core.db import transaction
     from code_mortis.integrations import llm
-    from code_mortis.models import SecurityFinding, SecurityOccurrence, SecurityScan
+    from code_mortis.models import AnalysisAttempt, SecurityFinding, SecurityOccurrence, SecurityScan
     from code_mortis.schemas.inference import Response, Usage
     from code_mortis.security_scans import service
 
     with transaction() as db:
         earlier = saved_scan(db, seed, status="completed", sha=OLD)
         finding_id = saved_finding(db, seed, earlier).id
+        dependency_id = saved_finding(db, seed, earlier, kind="dependency").id
+        scan = db.get(SecurityScan, scan_workflow["scan_id"])
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "concurrency": 8}}
 
     item = scan_workflow["item"]
     item.read = lambda path, sha=None: "unsafe" if sha == OLD else "safe"
     item.diff = lambda original, **kwargs: "-unsafe\n+safe"
     item.inventory["app.py"]["hash"] = digest("safe")
+    checking_dependency, model_admitted = Event(), Event()
+
+    def deterministic(*args, **kwargs):
+        checking_dependency.set()
+        assert model_admitted.wait(10)
+        return {"verdict": "fixed", "explanation": "The dependency check passed."}
 
     async def send(connection, credentials, request, **kwargs):
         scan_workflow["calls"].append(request)
         if "findings" in request.output_schema["properties"]:
             result = {"findings": [], "required_paths": []}
         else:
+            assert await asyncio.to_thread(checking_dependency.wait, 10)
+            model_admitted.set()
             result = {"verdict": "fixed", "original_issue_present": True, "explanation": "The original guard was missing.",
                 "change_explanation": "The current guard rejects a different owner.", "required_paths": [], "evidence": [
                     {"source_id": "source_1", "start_line": 1, "end_line": 1},
@@ -302,13 +379,19 @@ def test_security_semantic_fix_uses_original_and_current_source_before_resolutio
         return Response(content=json.dumps(result), output=result, usage=Usage(total_tokens=12))
 
     monkeypatch.setattr(llm, "send", send)
+    monkeypatch.setattr(service, "deterministic_fix", deterministic)
     service.perform(scan_workflow["scan_id"], scan_workflow["claim"])
     with transaction() as db:
         scan = db.get(SecurityScan, scan_workflow["scan_id"])
         assert scan.status == "completed", scan.error
         assert scan.grade == "A" and scan.progress["tokens"] == 24
         assert db.get(SecurityFinding, finding_id).state == "resolved"
-        occurrence = db.scalar(select(SecurityOccurrence).where(SecurityOccurrence.scan_id == scan.id))
+        assert db.get(SecurityFinding, dependency_id).state == "resolved"
+        assert scan.stages["verification"]["completed"] == 2
+        attempts = list(db.scalars(select(AnalysisAttempt).order_by(AnalysisAttempt.started_at)))
+        assert [attempt.reserved_tokens for attempt in attempts] == [200_000, 199_988]
+        occurrence = db.scalar(select(SecurityOccurrence).where(
+            SecurityOccurrence.scan_id == scan.id, SecurityOccurrence.finding_id == finding_id))
         assert occurrence.outcome == "fixed"
         assert {citation["revision"] for citation in occurrence.snapshot["verification"]["evidence"]} == {"original", "current"}
     assert len(scan_workflow["calls"]) == 2

@@ -14,7 +14,6 @@ from code_mortis.integrations import github, llm
 from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
     AnalysisAttempt,
-    AnalysisBudget,
     AnalysisPlan,
     AnalysisTask,
     Connection,
@@ -63,6 +62,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         secret = current.secret
         immutable_options = dict(run.config["settings"])
         configured_output_policy = analysis.configured_output_policy(run.config)
+        configured_budget_schedule = run.config.get("budget_schedule")
         deadline = (run.started_at + timedelta(seconds=immutable_options["timeout_seconds"])
                     if immutable_options.get("timeout_seconds") is not None else None)
         repository_id, actor_id = repo.id, run.actor_id
@@ -141,6 +141,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                     graph_sources[item.path] = supporting
         output_token_policy = (analysis.output_token_policy(frozen_plan) if frozen_plan
                                else configured_output_policy)
+        budget_schedule = (frozen_plan["versions"].get("budget_schedule") if frozen_plan else
+                           configured_budget_schedule if output_token_policy == analysis.WORKFLOW_OUTPUT_POLICY else None)
         source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
         prompt_version = frozen_plan["versions"]["prompt"] if frozen_plan else engine.PROMPT_VERSION
         source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
@@ -161,6 +163,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                       **({"source_tools": source_tool_policy} if source_tool_policy else {}),
                       **({"source_code": source_code_policy} if source_code_policy else {}),
                       **({"output_recovery": recovery_policy} if recovery_policy else {}),
+                      **({"budget_schedule": budget_schedule} if budget_schedule else {}),
                       **({"output_tokens": output_token_policy} if output_token_policy else {})},
             settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
                       "workflow_contract": "mortis-workflow/v1"},
@@ -208,22 +211,19 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
                                            .order_by(AnalysisAttempt.number)))
                 known = all(row.usage_state == "known" for row in attempts)
                 usage = sum(row.usage_tokens for row in attempts) if known else None
-                budget = db.get(AnalysisBudget, (plan_id, task.stage))
+                budget, unknown, running = analysis.budget_state(db, plan_id, task.stage)
                 latest_job = db.get(Job, job_id)
                 reason = "waiting_capacity"
                 if not analysis.job_live(latest_job, job_attempt, now()):
                     reason = "owner_lost"
                 elif budget.deadline_at and now() >= budget.deadline_at:
                     reason = "deadline"
-                elif db.scalar(select(AnalysisAttempt.id).join(AnalysisTask).where(AnalysisTask.plan_id == plan_id,
-                        AnalysisTask.stage == task.stage, AnalysisAttempt.usage_state == "unknown").limit(1)):
+                elif unknown:
                     reason = "usage_unknown"
                 elif budget.token_limit is not None:
                     request = requests.get(key)
                     if request and budget.charged_tokens + llm.reservation(connection, request) + (max(1, request.max_output_tokens)
                             if output_token_policy == analysis.WORKFLOW_OUTPUT_POLICY else request.max_output_tokens) > budget.token_limit:
-                        running = db.scalar(select(AnalysisTask.id).where(AnalysisTask.plan_id == plan_id,
-                            AnalysisTask.stage == task.stage, AnalysisTask.status == "running").limit(1))
                         reason = "waiting_capacity" if running else "budget"
                 result = {"id": task.id, "status": task.status, "result": task.result, "input_hash": task.input_hash,
                           "usage_tokens": usage, "pending_reason": reason,
@@ -295,7 +295,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             credentials=credentials, authorize=authorize, register_task=register_task, load_task=load_task,
             stopped=cancelled, progress=progress, check_admission=check_admission,
             limit_source_tools=source_tool_policy is not None,
-            register_recovery=register_recovery if recovery_policy else None, recovery_policy=recovery_policy)
+            register_recovery=register_recovery if recovery_policy else None, recovery_policy=recovery_policy,
+            rolling_budget=budget_schedule == analysis.ROLLING_BUDGET and immutable_options["token_budget"] is not None)
         authorize(check_deadline=False)
         if after_review:
             after_review(result, path, env, fetch_env)

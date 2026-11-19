@@ -20,6 +20,10 @@ class InferenceOutputError(ValueError):
         self.feedback = feedback
 
 
+class InferenceBudgetError(InferenceOutputError):
+    """A request cannot fit within its remaining budget even after active work settles."""
+
+
 class RunnerBlocked(ValueError):
     def __init__(self, reason: str, usage=None):
         self.reason = reason
