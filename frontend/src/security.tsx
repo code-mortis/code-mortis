@@ -66,7 +66,7 @@ function useReturnFocus(returnTo?: HTMLElement | null) {
   };
 }
 
-function ScanStages({ scan }: { scan: Scan }) {
+function ScanStages({ scan, assessment }: { scan: Scan; assessment?: Schema["SecurityAssessmentSummary"] }) {
   const names = [...Object.keys(stageDescriptions),
     ...Object.keys(scan.stages).filter((name) => !Object.hasOwn(stageDescriptions, name))];
   const stages = names.map((name) => {
@@ -80,8 +80,15 @@ function ScanStages({ scan }: { scan: Scan }) {
     const progress = validCounts && status !== "pending" ? `${count(completed)} / ${count(total)}${unit}` : null;
     return { name, label, description, status, progress, error: text(stage.error) };
   });
-  const current = stages.find((stage) => stage.status === "running")
-    ?? stages.find((stage) => ["failed", "partial", "blocked", "cancelled"].includes(stage.status));
+  const incompleteStages = stages.filter((stage) => ["failed", "partial", "blocked", "cancelled"].includes(stage.status));
+  const current = stages.find((stage) => stage.status === "running") ?? incompleteStages[0];
+  const uncertain = assessment?.outcome_counts?.uncertain ?? 0;
+  const onlyAssessmentIncomplete = incompleteStages.length === 1 && incompleteStages[0].name === "assessment"
+    && incompleteStages[0].status === "partial";
+  const partialExplanation = onlyAssessmentIncomplete && uncertain > 0
+    ? `Assessment: ${count(uncertain)} inconclusive ${uncertain === 1 ? "proposal" : "proposals"}.`
+    : incompleteStages.length ? `Incomplete: ${incompleteStages.map((stage) => stage.label).join(", ")}.`
+      : "Some scan work could not be completed.";
   const running = scan.status === "running";
   const finished = ["completed", "partial"].includes(scan.status);
   const progressStage = finished ? stages.find((stage) => stage.name === "analysis") : current;
@@ -98,7 +105,7 @@ function ScanStages({ scan }: { scan: Scan }) {
       analysis: "Reviewing source files for vulnerabilities.", assessment: "Validating findings against source evidence.",
       verification: "Checking whether earlier findings are fixed.", report: "Saving the report and security grade." }[current?.name ?? ""] ?? "Preparing to scan the repository.")
     : scan.status === "completed" ? "Review findings and coverage below."
-      : scan.status === "partial" ? "Some scan work could not be completed."
+      : scan.status === "partial" ? partialExplanation
         : scan.status === "blocked" ? "Waiting to continue. Completed results are saved."
           : scan.status === "failed" ? "Scan stopped after an error. Review Activity for details."
             : scan.status === "cancelled" ? "Scan cancelled. Completed results remain available." : "Stage details are not available yet.";
@@ -151,7 +158,7 @@ export function SecurityOverview({ user }: { user: User }) {
       <div className="mb-6"><FilterBar query={search} searchLabel="Search repositories" searchPlaceholder="Search repositories…"
         onSearch={(value) => change("search", value)} onChange={change} filters={[
           { key: "grade", label: "Grade", values: params.getAll("grade"), choices: ["A", "B", "C", "D", "F", "unrated"].map((value) => ({ value, name: value === "unrated" ? "Not rated" : value, count: data?.grade_counts?.[value] ?? 0 })) },
-          { key: "status", label: "Scan status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
+          { key: "status", label: "Repository security status", values: params.getAll("status"), choices: Object.entries(securityStates).map(([value, name]) => ({ value, name, count: data?.status_counts?.[value] ?? 0 })) },
         ]} ordering={{ value: ordering, defaultValue: "-updated_at", options: orderings, onChange: (value) => change("ordering", value) }} /></div>
       {query.isPending ? <Loading /> : !rows.length && !query.error ? <Empty title={data?.registered_total ? "No matching repositories" : "No repositories available"}>{data?.registered_total ? "Change the search or filters to see other repositories." : "Connect a repository through GitHub settings to start scanning."}</Empty> :
         <div className="overflow-hidden rounded-lg border bg-card">
@@ -486,6 +493,7 @@ export function SecurityScan({ user }: { user: User }) {
   if (query.error || !query.data) return <div className="space-y-3"><ErrorNotice error={query.error || "Security scan unavailable."} /><Button variant="outline" size="sm" disabled={query.isFetching} onClick={() => query.refetch()}>Reload scan</Button></div>;
   const { scan, repository: repo, can_write: canWrite } = query.data;
   const retiredEngine = scan.config.analysis_engine !== "mortis";
+  const scanError = scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error;
   const work = object(scan.progress.work);
   const report = object(scan.report);
   const reportProblems = (Array.isArray(report.problems) ? report.problems : [])
@@ -505,15 +513,16 @@ export function SecurityScan({ user }: { user: User }) {
       <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </PageTitle>
     {retiredEngine && <p role="status" className="mb-4 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
-    <ErrorNotice error={(scan.status === "cancelled" && scan.error === "Security scan cancelled." ? null : scan.error) || action.error} />
-    <ScanStages scan={scan} />
+    <ErrorNotice error={action.error} />
+    <ScanStages scan={scan} assessment={query.data.assessment} />
+    {scanError && <div className="mb-5"><ErrorNotice error={scanError} tone={scan.status === "partial" ? "warning" : "error"} /></div>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Security scan" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger ref={assessmentTab} value="assessment">Assessment <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.assessment?.total ?? "…"}</span></TabsTrigger><TabsTrigger value="coverage">Coverage</TabsTrigger><TabsTrigger value="activity">Activity <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.activity_count}</span></TabsTrigger></TabsList>
       <TabsContent value="findings"><div className="space-y-6">
         <Findings repositoryId={repo.id} scanId={scan.id} state="open" />
           {entries(report.unsettled_candidates).length > 0 && <section className="space-y-3"><h2 className="text-sm font-semibold">Requires verification</h2>{entries(report.unsettled_candidates).map((row, index) => <details className={disclosure} key={index}><summary className={disclosureSummary}><span className="min-w-0 break-words [overflow-wrap:anywhere]">{text(object(row.proposal).title) || "Security candidate"}</span><ChevronDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" /></summary><div className="mt-5 space-y-6"><section className="space-y-3"><h3 className="text-sm font-semibold">Assessment</h3><Markdown>{text(object(row.assessment).explanation)}</Markdown></section><SecurityEvidence title={text(object(row.proposal).title)} evidence={object(row.proposal)} commit={scan.head_sha} /></div></details>)}</section>}
-          {reportProblems.length > 0 && <section><h2 className="mb-3 text-base font-semibold">Incomplete analysis</h2><ul className="space-y-2">{reportProblems.map((problem, index) => <li key={index}><ErrorNotice error={problem} /></li>)}</ul></section>}
+          {reportProblems.length > 0 && <section><h2 className="mb-3 text-base font-semibold">Scan problems</h2><ul className="space-y-2">{reportProblems.map((problem, index) => <li key={index}><ErrorNotice error={problem} /></li>)}</ul></section>}
       </div></TabsContent>
       {findingViews.filter((view) => view.state !== "open").map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} scanId={scan.id} state={view.state} /></TabsContent>)}
       <TabsContent value="assessment"><SecurityAssessments scan={scan} summary={query.data.assessment} onOpen={(id, trigger) => { assessmentTrigger.current = trigger; const next = new URLSearchParams(params); next.set("assessment", id); next.delete("assessment_tab"); setParams(next); }} /></TabsContent>
@@ -535,7 +544,7 @@ const assessmentOutcomes = [
 ];
 
 function AssessmentBadge({ item, inCard = false }: { item: SecurityAssessment; inCard?: boolean }) {
-  return <AssessmentStatus inCard={inCard} candidate={{ status: item.status,
+  return <AssessmentStatus inCard={inCard} securityOutcome={item.outcome} candidate={{ status: item.status,
     finding_id: item.finding_id, is_new: item.finding_id ? !text(item.result?.finding_id) : false,
     result: item.result ? { verdict: text(item.result.verdict) } : null,
     progress_phase: item.progress_phase }} />;
@@ -607,6 +616,9 @@ function SecurityAssessmentContents({ item, scan, error, reload, onOpenFinding }
   const result = object(item.result);
   const evidence = entries(result.evidence);
   const validating = item.progress_phase === "validating";
+  const explanationTitle = item.finding_id ? "Why it was validated"
+    : item.outcome === "rejected" ? "Why it was not supported"
+      : item.outcome === "uncertain" ? "Why it was inconclusive" : "Assessment explanation";
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="shrink-0 space-y-3 px-6 pb-5"><p className="break-words font-mono text-xs [overflow-wrap:anywhere]">{text(proposal.path) || "Path not recorded"}</p><div className="flex flex-wrap items-center gap-2"><SecurityStatus value={text(proposal.severity) || "unknown"} /><FindingCategory value={text(proposal.category)} /></div></div>
     <div className="flex shrink-0 items-start gap-3 border-y bg-muted/50 px-6 py-4"><ClipboardCheck aria-hidden="true" className="mt-0.5 size-[18px] shrink-0 text-muted-foreground" /><div className="min-w-0 space-y-1"><div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">Assessment result</span><AssessmentBadge item={item} /></div><p className="text-xs leading-relaxed text-muted-foreground">Reviewed commit <span className="font-mono">{scan.head_sha.slice(0, 7)}</span>. Finding resolution is tracked separately.</p></div></div>
@@ -616,7 +628,7 @@ function SecurityAssessmentContents({ item, scan, error, reload, onOpenFinding }
         <TabsContent value="assessment" className="space-y-6">
           <ErrorNotice error={item.error} />
           {validating ? <p role="status" className="text-sm text-muted-foreground">Response received; validating against the current source and finding history.</p>
-            : item.result ? <section className="space-y-3"><h3 className="text-sm font-semibold">{item.finding_id ? "Why it was validated" : item.outcome === "rejected" ? "Why it was not supported" : "Why it was withheld"}</h3><Markdown>{text(result.explanation)}</Markdown></section>
+            : item.result ? <section className="space-y-3"><h3 className="text-sm font-semibold">{explanationTitle}</h3><Markdown>{text(result.explanation)}</Markdown></section>
             : !item.error && <p role={item.outcome === "pending" ? "status" : undefined} className="text-sm text-muted-foreground">{item.status === "running" ? "Assessment is being checked against source evidence and finding history." : item.status === "queued" ? "Assessment is waiting for the security worker." : "No assessment result was recorded."}</p>}
           <p className="text-xs text-muted-foreground">{item.tokens == null ? "Token usage not recorded." : `${item.tokens.toLocaleString()} tokens used.`}{item.reused && " Reused from a previous scan."}</p>
         </TabsContent>

@@ -1,6 +1,6 @@
 import { isValidElement, useId, useState, type ComponentProps, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
-import { AlertCircle, ArrowUpRight, ChevronDown, Copy, LoaderCircle } from "lucide-react";
+import { AlertCircle, ArrowUpRight, ChevronDown, Copy, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "./ui/badge";
 import { Label } from "./ui/label";
@@ -58,19 +58,22 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
     </Badge>
   );
 }
-export function ErrorNotice({ error, title }: { error: unknown; title?: string }) {
+export function ErrorNotice({ error, title, tone = "error" }: { error: unknown; title?: string; tone?: "error" | "warning" }) {
   if (!error) return null;
   // Titled notices already supply readable copy and their own diagnostics.
   const feedback = title ? {
     title, message: engineDiagnostic(error instanceof Error ? error.message : String(error)), details: "",
   } : errorFeedback(error);
   const heading = title || feedback.title;
+  const Icon = tone === "warning" ? TriangleAlert : AlertCircle;
   return (
     <div
       role="alert"
-      className="flex gap-3 rounded-md border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
+      className={cn("flex gap-3 rounded-md border p-4 text-sm", tone === "warning"
+        ? "border-amber-700/25 bg-amber-700/8 text-amber-800 dark:text-amber-300"
+        : "border-destructive/25 bg-destructive/5 text-destructive")}
     >
-      <AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
         {heading && <p className="mb-1 font-medium">{heading}</p>}
         <p className="leading-relaxed">{feedback.message}</p>

@@ -313,7 +313,9 @@ test("scan alerts omit ordinary cancellation but preserve specific reasons and a
     ["failed", "Repository snapshot failed."], ["partial", "Some source files could not be analyzed."]]) {
     Object.assign(saved, { status, error });
     await page.clock.fastForward(5000);
-    await expect(page.getByRole("alert")).toHaveText(error);
+    const notice = page.getByRole("alert");
+    await expect(notice).toHaveText(error);
+    await expect(notice).toHaveClass(status === "partial" ? /text-amber-800/ : /text-destructive/);
   }
   Object.assign(saved, { status: "running", error: null });
   await page.clock.fastForward(5000);
@@ -323,6 +325,7 @@ test("scan alerts omit ordinary cancellation but preserve specific reasons and a
   }));
   await page.getByRole("button", { name: "Cancel scan", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Cancellation request failed.");
+  await expect(page.getByRole("alert")).toHaveClass(/text-destructive/);
   Object.assign(saved, { status: "cancelled", error: "Security scan cancelled." });
   await page.clock.fastForward(5000);
   await expect(page.getByRole("alert")).toContainText("Cancellation request failed.");
@@ -348,7 +351,11 @@ test("security errors explain failed evidence and keep diagnostics collapsed and
   const displayed = error.replace("OCR", "The retired engine");
   await mock(page, { scanError: error });
   await page.goto("/security/scans/scan");
-  const alert = page.getByRole("alert").first();
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  await expect(stages).toContainText("Scan complete with warnings");
+  const alert = stages.locator("xpath=following-sibling::*[1]").getByRole("alert");
+  await expect(alert).toHaveClass(/text-amber-800/);
+  await expect(alert.locator(".lucide-triangle-alert")).toBeVisible();
   await expect(alert.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(alert).toContainText("The source was read; this is not a missing-file error.");
   const widths = await alert.locator("p.leading-relaxed").evaluate((node) => ({
@@ -416,12 +423,12 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
   await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveText(grade);
-  await expect(row).not.toContainText("Incomplete");
+  await expect(row.getByText("Partial", { exact: true })).toBeVisible();
   await page.goto("/security/scans/scan");
   await expect(page.getByText(grade, { exact: true })).toBeVisible();
   const shield = page.locator('[data-slot="security-grade-shield"]');
   const status = shield.locator("../..").locator('[data-slot="badge"]');
-  await expect(status).toHaveText("Completed");
+  await expect(status).toHaveText("Partial");
   await expect(status).toHaveClass(/text-amber-800/);
   await expect(status.locator(".lucide-shield-alert")).toBeVisible();
   await expect(shield).toHaveText(grade);
@@ -439,6 +446,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(alert).toContainText("docker-compose.yml");
   await expect(alert).toContainText("not a missing-file error");
   await expect(page.getByRole("region", { name: "Scan stages" })).toContainText("57 / 58 files");
+  await expect(page.getByRole("region", { name: "Scan stages" })).toContainText("Incomplete: Analysis.");
   await expect(page.getByRole("group", { name: "Scan progress details" })).toContainText("Partial · 57 / 58 files");
   await page.keyboard.press("Escape");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1293,15 +1301,16 @@ test("focus strip keeps its rows and report tabs fixed across every stage and ou
   const stages = page.getByRole("region", { name: "Scan stages" });
   const current = stages.getByRole("group", { name: "Scan progress details" });
   const count = stages.locator('[aria-label="Scan progress count"], [aria-label="Stage progress unavailable"]');
-  const geometry = async () => {
-    const region = (await stages.boundingBox())!;
-    const rows = await Promise.all([stages.getByRole("status"), count, stages.locator("p"),
-      page.getByRole("tablist").first()].map(async (row) => {
-        const box = (await row.boundingBox())!;
-        return { top: box.y - region.y, height: box.height };
-      }));
-    return { height: region.height, rows };
-  };
+  const geometry = () => stages.evaluate((region) => {
+    const bounds = region.getBoundingClientRect();
+    const rows = [region.querySelector('[role="status"]'),
+      region.querySelector('[aria-label="Scan progress count"], [aria-label="Stage progress unavailable"]'),
+      region.querySelector("p"), document.querySelector('[role="tablist"][aria-label="Security scan"]')];
+    return { height: bounds.height, rows: rows.map((row) => {
+      const box = row!.getBoundingClientRect();
+      return { top: box.top - bounds.top, height: box.height };
+    }) };
+  });
   const names = Object.keys(scan.stages);
   const explanations = ["Preparing repository files.", "Checking dependencies and configuration.",
     "Reviewing source files for vulnerabilities.", "Validating findings against source evidence.",
@@ -1655,7 +1664,7 @@ test("scan history fills missing grades without substituting a previous grade", 
     await expect(row.locator('[data-slot="badge"]').first()).toHaveText("Unrated");
     await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
     const badge = row.locator('[data-slot="badge"]').last();
-    await expect(badge).toHaveText(status === "partial" ? "Completed" : status);
+    await expect(badge).toHaveText(status === "partial" ? "Partial" : status);
     await expect(badge.locator("svg")).toHaveCount(1);
     await expect(badge.locator(`.lucide-${icon}`)).toBeVisible();
     await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
@@ -1682,10 +1691,9 @@ test("scan history fills missing grades without substituting a previous grade", 
   await expect(completed.locator(".lucide-shield-check")).toBeVisible();
   const warning = page.locator('[data-slot="security-scan-row"][href="/security/scans/warnings"]');
   await expect(warning.getByRole("img", { name: "Saved security grade D", exact: true }).locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
-  await expect(warning.locator('[data-slot="badge"]').last()).toHaveText("Completed");
+  await expect(warning.locator('[data-slot="badge"]').last()).toHaveText("Partial");
   await expect(warning.locator('[data-slot="badge"]').last()).toHaveClass(/text-amber-800/);
   await expect(warning.locator(".lucide-shield-alert")).toBeVisible();
-  await expect(warning).toContainText("with warnings");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-history-badges-${info.project.name}.png`, fullPage: true });
   await completed.focus();
@@ -2144,6 +2152,24 @@ test("security assessments and open drawer update live through validation withou
   expect(writes).toEqual([]);
 });
 
+test("partial scans identify unresolved assessments when all source files were analyzed", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: {
+    repository, scan: { ...scan, status: "partial", stages: { ...scan.stages,
+      analysis: { status: "completed", total: 1, completed: 1 },
+      assessment: { status: "partial", total: 2, completed: 2 },
+    } }, can_write: false, finding_count: 0, activity_count: 0, activity: [],
+    assessment: { total: 2, status_counts: { completed: 2 }, outcome_counts: { uncertain: 2 }, revision: "1" },
+  } }));
+  await page.goto("/security/scans/scan");
+  await expect(page.locator("main header").getByText("Partial", { exact: true })).toBeVisible();
+  const stages = page.getByRole("region", { name: "Scan stages" });
+  await expect(stages).toContainText("1 / 1 files");
+  const explanation = stages.getByText("Assessment: 2 inconclusive proposals.", { exact: true });
+  await expect(explanation).toBeVisible();
+  expect(await explanation.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+});
+
 test("security assessment pagination retains live updates and failures hide sensitive history after access loss", async ({ page }) => {
   await page.clock.install();
   const { state } = await mockSecurityAssessments(page);
@@ -2158,9 +2184,11 @@ test("security assessment pagination retains live updates and failures hide sens
   state.rows[24] = securityAssessment("24", { outcome: "uncertain", result: { verdict: "uncertain", explanation: "Caller contract is missing.", evidence: [] } });
   state.revision++;
   await page.clock.fastForward(5100);
-  await expect(list.getByRole("button", { name: /Security candidate 24/ })).toContainText("Withheld");
+  await expect(list.getByRole("button", { name: /Security candidate 24/ })).toContainText("Uncertain");
   await list.getByRole("button", { name: /Security candidate 24/ }).click();
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(drawer.getByText("Uncertain", { exact: true })).toBeVisible();
+  await expect(drawer.getByRole("heading", { name: "Why it was inconclusive", exact: true })).toBeVisible();
   await expect(drawer.getByText("Caller contract is missing.")).toBeVisible();
   state.detailFail = 500;
   state.revision++;
@@ -2190,8 +2218,11 @@ test("security assessment result filters and failed diagnostics preserve separat
   const list = page.getByRole("region", { name: "Security assessments" });
   await expect(list.locator('[data-slot="finding-card"]')).toHaveCount(1);
   await expect(page.getByRole("tab", { name: "Assessment 7", exact: true })).toBeVisible();
-  await list.getByRole("button", { name: /Security candidate 3/ }).click();
+  const failed = list.getByRole("button", { name: /Security candidate 3/ });
+  await expect(failed.getByText("Failed", { exact: true })).toBeVisible();
+  await failed.click();
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
+  await expect(drawer.getByText("Failed", { exact: true })).toBeVisible();
   await expect(drawer.getByText("AI citation mismatch", { exact: true })).toBeVisible();
   await expect(drawer.getByText("Token usage not recorded.")).toBeVisible();
   await drawer.getByRole("tab", { name: "Evidence 0", exact: true }).click();
@@ -2199,6 +2230,28 @@ test("security assessment result filters and failed diagnostics preserve separat
   await drawer.getByText("Original proposal", { exact: true }).click();
   await expect(drawer.getByText("return orders.find(id);", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("security assessment filters agree with uncertain, interrupted and withheld badges", async ({ page }) => {
+  const { state } = await mockSecurityAssessments(page);
+  state.rows.push(
+    securityAssessment("7", { status: "interrupted", outcome: "interrupted", result: null }),
+    securityAssessment("8", { outcome: "withheld", result: { verdict: "confirmed", explanation: "The assessment supported the proposal.", evidence: [] } }),
+  );
+  for (const [outcome, label] of [["uncertain", "Uncertain"], ["interrupted", "Interrupted"], ["withheld", "Withheld"]]) {
+    await page.goto(`/security/scans/scan?tab=assessment&assessment_outcome=${outcome}`);
+    const list = page.getByRole("region", { name: "Security assessments" });
+    const card = list.getByRole("button", { name: /Security candidate/ });
+    await expect(card).toHaveCount(1);
+    await expect(card.getByText(label, { exact: true })).toBeVisible();
+    await card.click();
+    const drawer = page.getByRole("dialog", { name: "Assessment details" });
+    await expect(drawer.getByText(label, { exact: true })).toBeVisible();
+    if (outcome === "withheld") {
+      await expect(drawer.getByRole("heading", { name: "Assessment explanation" })).toBeVisible();
+      await expect(drawer.getByRole("button", { name: "Open finding" })).toHaveCount(0);
+    }
+  }
 });
 
 for (const scope of ["repository", "scan"] as const) test(`${scope} security findings send every selected severity and type to backend pages`, async ({ page }, info) => {
@@ -2775,7 +2828,7 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} s
   } }));
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("button", { name: "Scan stage details", exact: true })).toHaveAttribute("data-status", status);
-  if (status === "partial") await expect(page.getByRole("heading", { name: "Incomplete analysis", exact: true })).toBeVisible();
+  if (status === "partial") await expect(page.getByRole("heading", { name: "Scan problems", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Download report", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "Download Markdown", exact: true })).toHaveAttribute("href", /\/scans\/scan\/report\?format=markdown$/);
   await expect(page.getByRole("menuitem", { name: "Download JSON", exact: true })).toHaveAttribute("href", /\/scans\/scan\/report\?format=json$/);

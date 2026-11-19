@@ -27,16 +27,15 @@ export function SecurityStatus({ value, label, description }: {
 
 export function SecurityScanStatus({ status }: { status: string }) {
   const Icon = securityIcons[status] ?? ShieldQuestion;
-  return <span className="inline-flex w-fit"><Status value={status} label={status === "partial" ? "Completed" : undefined}
+  return <span className="inline-flex w-fit"><Status value={status} label={status === "partial" ? "Partial" : undefined}
     icon={["queued", "running"].includes(status) ? undefined : <Icon aria-hidden="true" className="size-3" />} />
-    {status === "partial" && <span className="sr-only"> with warnings</span>}
   </span>;
 }
 
 export function SecurityScanBadge({ status, scanId }: {
   status: string; scanId: string;
 }) {
-  return <Link data-security-badge to={`/security/scans/${scanId}`} aria-label={`View latest scan: ${status === "partial" ? "completed with warnings" : status.replaceAll("_", " ")}`}
+  return <Link data-security-badge to={`/security/scans/${scanId}`} aria-label={`View latest scan: ${status.replaceAll("_", " ")}`}
     className="inline-flex w-fit max-w-full rounded-full no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring">
     <SecurityScanStatus status={status} />
   </Link>;
