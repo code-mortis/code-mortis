@@ -12,7 +12,8 @@ from mortis_engine.review import planning as native
 from code_mortis.core import file_policy, source
 from code_mortis.core.errors import ReviewStopped
 
-VERSION = "mortis-pr-plan/v1"
+LEGACY_VERSION = "mortis-pr-plan/v1"
+VERSION = "mortis-pr-plan/v2"
 RULES_VERSION = "mortis-rules/v1"
 # Language admission is independent of the optional structural graph's parsers.
 CODE_SUFFIXES = set((
@@ -330,7 +331,10 @@ def split_units(path, old_path, status, sha, text, patch, rule, maximum):
 
 
 def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
-                max_unit_bytes=49152, max_batch_bytes=98304, max_source_bytes=20_000_000):
+                max_unit_bytes=49152, max_batch_bytes=98304, max_source_bytes=20_000_000,
+                planner_version=VERSION):
+    if planner_version not in (LEGACY_VERSION, VERSION):
+        raise ValueError("The saved PR planner version is unsupported.")
     for sha in (base_sha, head_sha, merge_base):
         if not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{40}", sha):
             raise ValueError("PR planning requires exact Git revisions.")
@@ -391,7 +395,8 @@ def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
     batch, size = [], 0
     for unit in plan.units:
         unit_size = len((unit.source + unit.patch + unit.rule).encode()) + 512
-        if batch and size + unit_size > max_batch_bytes:
+        if batch and (size + unit_size > max_batch_bytes or
+                      planner_version == VERSION and batch[0].path != unit.path):
             plan.batches.append(batch)
             batch, size = [], 0
         batch.append(unit)

@@ -40,7 +40,7 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import assessment, graph_context, mortis, pipeline, verification
+from code_mortis.reviews import assessment, graph_context, mortis, pipeline, planning, verification
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings
 
@@ -159,6 +159,7 @@ def create_run(
               "assessment_policy": assessment.POLICY_VERSION, "pipeline_version": 2,
               "task_contract": "review-task/v2", "execution_limits": EXECUTION_LIMITS}
     config.update(engine_snapshot(options))
+    config["planner_version"] = planning.VERSION
     if graph := graph_context.configuration(db, repo, connection, actor, engine=config):
         config["code_graph"] = graph
     if options["model"]:
@@ -177,7 +178,9 @@ def create_run(
         ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
     ).with_for_update().execution_options(populate_existing=True)).all()
     for run in active:
-        if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and run.config == config:
+        # A planner upgrade alone must not start a duplicate active review.
+        config_matches = {**run.config, "planner_version": config["planner_version"]} == config
+        if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and config_matches:
             if request_key:
                 run.progress = {**run.progress, "comment_requests": {
                     **run.progress.get("comment_requests", {}), request_key: True,

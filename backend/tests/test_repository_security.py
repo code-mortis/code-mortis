@@ -256,6 +256,63 @@ def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
     assert result["verdict"] == "uncertain"
 
 
+@pytest.mark.parametrize("budget", [None, 1200])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_live_scan_counts_each_checkpoint_before_its_batch_settles(seed, security_github, monkeypatch, tmp_path, budget, cancel):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {"code": True, "hash": digest("safe"), "lines": 1} for path in ("fast.py", "slow.py")}
+    item.read = lambda *args: "safe"
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True},
+    })
+    slow_started, fast_saved, release = Event(), Event(), Event()
+
+    def ask(*args, **kwargs):
+        if args[4]["assigned_path"] == "slow.py":
+            slow_started.set()
+            assert release.wait(10)
+        return {"findings": [], "required_paths": []}, {"tokens": 12}
+
+    original_checkpoint = security.checkpoint
+
+    def checkpoint(scan_id, key, state, **values):
+        task = original_checkpoint(scan_id, key, state, **values)
+        if (key, state) == ("analysis:fast.py", "completed"):
+            fast_saved.set()
+            assert release.wait(10)
+        return task
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security, "checkpoint", checkpoint)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=2, token_budget=budget,
+        )).id
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(perform_security, identity, "test:1")
+        try:
+            assert slow_started.wait(10) and fast_saved.wait(10)
+            with transaction() as db:
+                scan = db.get(SecurityScan, identity)
+                assert scan.stages["analysis"]["completed"] == 0
+                public = security.public_scan(scan)
+                assert public.stages["analysis"]["completed"] == public.progress["work"]["analysis_completed"] == 1
+                assert scan.stages["analysis"]["completed"] == 0
+                if cancel:
+                    security.cancel(db, scan)
+                    public = security.public_scan(scan)
+                    assert public.stages["analysis"] == {**scan.stages["analysis"], "status": "cancelled", "completed": 1}
+        finally:
+            release.set()
+        worker.result(timeout=10)
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == ("cancelled" if cancel else "completed"), scan.error
+        assert security.public_scan(scan).stages["analysis"]["completed"] == (1 if cancel else 2)
+        assert scan.progress["tasks"]["analysis:fast.py"]["status"] == "completed"
+
+
 @pytest.mark.parametrize("concurrency", [1, 3])
 @pytest.mark.parametrize("obsolete", [False, True])
 @pytest.mark.parametrize("denied_context", [None, "context_paths", "source_navigation", "unproven_packing", "proven_packing"])

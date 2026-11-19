@@ -1026,7 +1026,8 @@ def perform(scan_id, claim):
             candidates = []
             code_paths = [path for path, value in item.inventory.items() if value["code"]]
             completed, failed = 0, 0
-            stage(scan_id, "analysis", "running", total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
+            stage(scan_id, "analysis", "running", claim=claim,
+                  total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
 
             parallel = concurrency > 1 and len(code_paths) > 1
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -1074,12 +1075,13 @@ def perform(scan_id, claim):
                             if fatal is None or isinstance(exc, RunnerBlocked):
                                 fatal = exc
                             stop_workers.set()
-                        stage(scan_id, "analysis", "running", completed=completed, failed=failed)
+                        stage(scan_id, "analysis", "running", claim=claim, completed=completed, failed=failed)
                     for path in batch:
                         candidates.extend(results.get(path, {}).get("findings", []))
                     if fatal:
                         raise fatal
-            stage(scan_id, "analysis", "partial" if failed else "completed", files=len(code_paths), candidates=len(candidates))
+            stage(scan_id, "analysis", "partial" if failed else "completed", claim=claim,
+                  files=len(code_paths), candidates=len(candidates))
             assessment_completed, assessment_failed = 0, 0
             assessment_problem_count = len(problems)
             stage(scan_id, "assessment", "running", claim=claim,
@@ -1551,5 +1553,12 @@ def public_scan(scan):
                                 for state in ("running", "completed", "failed", "interrupted")}
     result.progress["work"]["reused"] = sum(bool(task.get("reused")) for task in tasks.values())
     result.progress["work"]["analysis_total"] = sum(bool(value.get("code")) for value in result.coverage.get("inventory", {}).values())
-    result.progress["work"]["analysis_completed"] = sum(key.startswith("analysis:") and value["status"] == "completed" for key, value in tasks.items())
+    completed = sum(key.startswith("analysis:") and value["status"] == "completed" for key, value in tasks.items())
+    result.progress["work"]["analysis_completed"] = completed
+    analysis_stage = result.stages.get("analysis")
+    if isinstance(analysis_stage, dict) and analysis_stage.get("status") in ("running", "cancelled", "failed"):
+        saved, total = analysis_stage.get("completed"), analysis_stage.get("total")
+        if type(saved) is int and type(total) is int and 0 <= saved < completed <= total:
+            # An interrupted dispatcher may never consume the future after checkpointing.
+            result.stages = {**result.stages, "analysis": {**analysis_stage, "completed": completed}}
     return result

@@ -72,6 +72,8 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         prior = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
         frozen_plan = prior.snapshot if prior else None
         frozen_graph = prior.snapshot.get("graph", {}) if prior else None
+        planner_version = (frozen_plan["versions"]["planner"] if frozen_plan
+                           else run.config.get("planner_version", planning.LEGACY_VERSION))
 
     def cancelled():
         return stopped() or review_stopped(run_id, claim)
@@ -116,7 +118,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         # Leave room for framing/escaping; the gateway checks the actual encoded request.
         unit_bytes = max(1024, min(49152, (ceiling - 8192) // 2)) if ceiling is not None else 49152
         selection = planning.plan_review(path, env, base_sha, head_sha, merge_base, immutable_options, cancelled,
-                                         max_unit_bytes=unit_bytes)
+                                         max_unit_bytes=unit_bytes, planner_version=planner_version)
         limited = engine._report(selection, [], {}, tokens=0)[1] if selection.limit_reason else None
         if before_analysis:
             before_analysis(limited)
@@ -154,7 +156,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         specification = PlanSpec(repository_id=repository_id, run_id=run_id, initiator_id=actor_id,
             authorization=authority, trigger=trigger, connection=connection,
             revisions={"base": base_sha, "head": head_sha, "merge_base": merge_base},
-            versions={"engine": engine.VERSION, "planner": planning.VERSION, "prompt": prompt_version,
+            versions={"engine": engine.VERSION, "planner": planner_version, "prompt": prompt_version,
                       "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
                       **({"source_tools": source_tool_policy} if source_tool_policy else {}),
                       **({"source_code": source_code_policy} if source_code_policy else {}),
