@@ -136,7 +136,7 @@ async def _claim(task_id, job_id, job_attempt, **kwargs):
 
 async def execute_task(task_id, job_id, job_attempt, request: Request, credentials, *, client,
                        authorize, validate_result, stopped=lambda: False, authorize_admission=None, timeout=None,
-                       token_allowance=None) -> Response | None:
+                       token_allowance=None, budget_demand=None) -> Response | None:
     """Execute an immutable task after fresh external authorization.
 
     None means admission/dependencies/budget require scheduler attention. The caller
@@ -177,7 +177,8 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
             raise
         lease = await _claim(task_id, job_id, job_attempt, input_tokens=estimate,
                              output_tokens=request.max_output_tokens,
-                             **({"token_allowance": token_allowance} if token_allowance is not None else {}))
+                             **({"token_allowance": token_allowance} if token_allowance is not None else {}),
+                             **({"budget_demand": budget_demand} if budget_demand is not None else {}))
         if lease is None:
             return None
         lost, response, dispatched = asyncio.Event(), None, False

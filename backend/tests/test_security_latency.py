@@ -292,11 +292,11 @@ def test_partial_peer_checkpoint_replays_packed_result_after_remaining_budget_sh
         pass
 
     state = delayed_security_provider
-    # Admit both enlarged response reservations, then leave the same 12,000-token replay remainder.
+    # Admit both analysis calls up front, then leave only the tokens already used by the saved reply.
     state["usage"]["analysis", "alpha.py"] = 48_000
     with transaction() as db:
         scan = db.get(SecurityScan, state["scan_id"])
-        scan.config = {**scan.config, "limits": {**scan.config["limits"], "token_budget": 60_000}}
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "token_budget": 48_012}}
     execute, requests, lost = workflow_inference.execute, [], []
 
     def interrupted(*args, **kwargs):

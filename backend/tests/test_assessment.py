@@ -1742,7 +1742,8 @@ def test_independent_batches_merge_transitive_conflicts():
 
 
 @pytest.mark.parametrize("link", ["direct", "historical", "in_flight"])
-def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_history(pipeline, monkeypatch, link):
+@pytest.mark.parametrize("budget", [None, 200_000])
+def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_history(pipeline, monkeypatch, link, budget):
     first, *slow, citation_related, fifth = independent_comments(6)
     related = {**first, "content": "Reworded finding"}
     quote = "logger.error(api_key)"
@@ -1750,7 +1751,7 @@ def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_histo
         citation_related = {**citation_related, "existing_code": quote}
     pipeline["comments"] = [first, related, *slow, citation_related, fifth]
     with transaction() as db:
-        db.get(Repository, 22).settings = {"concurrency": 4, "assessment_token_budget": None}
+        db.get(Repository, 22).settings = {"concurrency": 4, "assessment_token_budget": budget}
     historical_id = new_run(assessed=True) if link == "historical" else None
     identity = new_run(assessed=True, parallel=True)
     with transaction() as db:
@@ -1827,6 +1828,7 @@ def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_histo
                 assert active == 4
             with transaction() as db:
                 assert db.scalar(select(func.count()).select_from(Finding)) == int(bool(historical_id))
+                assert assessment.summary(db, db.get(ReviewRun, identity)).progress.completed == 1
         finally:
             release.set()
         future.result(timeout=10)

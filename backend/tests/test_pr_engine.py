@@ -613,6 +613,38 @@ def test_budget_exhaustion_is_failed_coverage_without_capacity_retry(monkeypatch
     assert result[1]["summary"]["budget_exceeded"] is True
 
 
+def test_rolling_budget_demand_excludes_retired_pending_batches(monkeypatch):
+    first, second = unit("a.py"), unit("b.py", key="u2")
+    value = plan([first, second])
+    value.batches = [[first], [second]]
+    batches = prepared(value, options={**OPTIONS, "concurrency": 2})
+    ledger = Ledger(batches, [response(final(batches[1]))])
+    ledger.rows[batches[0].key]["pending_reason"] = "budget"
+    ledger.rows[batches[1].key]["pending_reason"] = "waiting_capacity"
+    peer_started = asyncio.Event()
+    demands = []
+
+    async def execute(identity, *args, budget_demand, **kwargs):
+        if identity == batches[0].key:
+            await peer_started.wait()
+            return None
+        demands.append(budget_demand)
+        peer_started.set()
+        if budget_demand > 1:
+            return None
+        return await ledger.execute(identity, *args, **kwargs)
+
+    monkeypatch.setattr(llm, "execute_task", execute)
+    monkeypatch.setattr(engine.inference_admission, "cancel_task_waiter", lambda *_args: None)
+    status, report, _ = engine.review(None, {}, value, batches, job_id="job", job_attempt=1,
+        credentials=dict(CREDENTIALS), authorize=lambda: None, register_task=ledger.register,
+        load_task=ledger.rows.get, rolling_budget=True)
+    assert status == "partial" and report["summary"]["budget_exceeded"]
+    assert demands[0] == 2 and demands[-1] == 1
+    assert ledger.rows[batches[0].key]["status"] == "pending"
+    assert ledger.rows[batches[1].key]["status"] == "completed"
+
+
 def test_capacity_wait_retries_same_immutable_task_then_completes(monkeypatch):
     value, batches = plan(), prepared()
     ledger = Ledger(batches, [None, response(final(batches[0]))])

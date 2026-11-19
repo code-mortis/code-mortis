@@ -1,7 +1,4 @@
 # Project defaults; an explicit chat or CLI model selection can override these.
-model = "gpt-6-astra"
-model_reasoning_effort = "xhigh"
-
 developer_instructions = """
 Follow AGENTS.md and use docs/README.md to locate current source-of-truth documents.
 Before engine work, read docs/plans/engine/plan.md and verify the owning source:
@@ -40,5 +37,5 @@ The coordinator owns the final integration and reports checks, limitations and o
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 3
-default_subagent_model = "gpt-6.1-sol"
+default_subagent_model = "gpt-6.2-sol"
 default_subagent_reasoning_effort = "high"

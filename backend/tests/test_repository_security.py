@@ -256,6 +256,63 @@ def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
     assert result["verdict"] == "uncertain"
 
 
+@pytest.mark.parametrize("budget", [None, 1200])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_live_scan_counts_each_checkpoint_before_its_batch_settles(seed, security_github, monkeypatch, tmp_path, budget, cancel):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {"code": True, "hash": digest("safe"), "lines": 1} for path in ("fast.py", "slow.py")}
+    item.read = lambda *args: "safe"
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [], "targets": {}, "problems": [], "metadata": {"database_fresh": True},
+    })
+    slow_started, fast_saved, release = Event(), Event(), Event()
+
+    def ask(*args, **kwargs):
+        if args[4]["assigned_path"] == "slow.py":
+            slow_started.set()
+            assert release.wait(10)
+        return {"findings": [], "required_paths": []}, {"tokens": 12}
+
+    original_checkpoint = security.checkpoint
+
+    def checkpoint(scan_id, key, state, **values):
+        task = original_checkpoint(scan_id, key, state, **values)
+        if (key, state) == ("analysis:fast.py", "completed"):
+            fast_saved.set()
+            assert release.wait(10)
+        return task
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    monkeypatch.setattr(security, "checkpoint", checkpoint)
+    with transaction() as db:
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=2, token_budget=budget,
+        )).id
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(perform_security, identity, "test:1")
+        try:
+            assert slow_started.wait(10) and fast_saved.wait(10)
+            with transaction() as db:
+                scan = db.get(SecurityScan, identity)
+                assert scan.stages["analysis"]["completed"] == 0
+                public = security.public_scan(scan)
+                assert public.stages["analysis"]["completed"] == public.progress["work"]["analysis_completed"] == 1
+                assert scan.stages["analysis"]["completed"] == 0
+                if cancel:
+                    security.cancel(db, scan)
+                    public = security.public_scan(scan)
+                    assert public.stages["analysis"] == {**scan.stages["analysis"], "status": "cancelled", "completed": 1}
+        finally:
+            release.set()
+        worker.result(timeout=10)
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == ("cancelled" if cancel else "completed"), scan.error
+        assert security.public_scan(scan).stages["analysis"]["completed"] == (1 if cancel else 2)
+        assert scan.progress["tasks"]["analysis:fast.py"]["status"] == "completed"
+
+
 @pytest.mark.parametrize("concurrency", [1, 3])
 @pytest.mark.parametrize("obsolete", [False, True])
 @pytest.mark.parametrize("denied_context", [None, "context_paths", "source_navigation", "unproven_packing", "proven_packing"])
@@ -1119,6 +1176,7 @@ def test_independent_resolution_preserves_global_guards_and_finding_versions(see
 
 @pytest.mark.parametrize("condition", [
     "version", "cancel", "unknown_usage", "replacement", "job_replaced", "transient", "finite_budget",
+    "finite_refill", "finite_skip",
 ])
 def test_security_fix_verification_refills_and_keeps_resolution_guards(
     seed, security_github, monkeypatch, tmp_path, condition,
@@ -1132,13 +1190,17 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
     monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
         "findings": [], "targets": {}, "problems": [], "metadata": {},
     })
-    budget = 1000 if condition == "finite_budget" else None
+    budget = 1000 if condition.startswith("finite_") else None
+    legacy_budget = condition == "finite_budget"
     with transaction() as db:
         prior = saved_scan(db, seed, status="completed")
         finding_ids = {saved_finding(db, seed, prior).id for _ in range(5)}
-        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+        scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=4, token_budget=budget,
-        )).id
+        ))
+        if legacy_budget:
+            scan.config = {key: value for key, value in scan.config.items() if key != "budget_schedule"}
+        identity = scan.id
 
     barrier, lock = Barrier(4), Lock()
     refilled, skipped, release = Event(), Event(), Event()
@@ -1159,7 +1221,7 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
             active += 1
             peak = max(peak, active)
         try:
-            if budget is None:
+            if not legacy_budget:
                 if index < 4:
                     barrier.wait(timeout=10)
                 if index == 4:
@@ -1170,6 +1232,8 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
                     raise security.ReviewStopped("Interrupted before inference")
             if condition == "unknown_usage" and index == 0:
                 raise security.verification.VerificationOutputError("Usage unavailable", {"tokens": None})
+            if condition == "finite_skip" and index == 0:
+                raise security.InferenceBudgetError("Request does not fit the remaining budget.", {"tokens": 0})
             return {"verdict": "fixed", "explanation": "Pinned fix verified", "evidence": []}, {"tokens": 2}
         finally:
             with lock:
@@ -1203,7 +1267,7 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
         monkeypatch.setattr(security, "checkpoint", checkpoint)
         monkeypatch.setattr(security, "rolling_analysis", rolling)
 
-    if budget is not None:
+    if legacy_budget:
         perform_security(identity, "test:1")
     else:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1221,7 +1285,9 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
                     fast = calls[0]
                 with transaction() as db:
                     scan = db.get(SecurityScan, identity)
-                    assert scan.stages["verification"]["completed"] == {"transient": 0, "unknown_usage": 2}.get(condition, 1)
+                    assert scan.stages["verification"]["completed"] == {
+                        "transient": 0, "unknown_usage": 2, "finite_skip": 0,
+                    }.get(condition, 1)
                     assert db.get(SecurityFinding, fast).state == "open"
                     if condition == "version":
                         db.get(SecurityFinding, fast).version += 1
@@ -1244,7 +1310,7 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
             else:
                 worker.result(timeout=10)
 
-    assert peak == (1 if budget is not None else 4)
+    assert peak == (1 if legacy_budget else 4)
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
         findings = {key: db.get(SecurityFinding, key).state for key in finding_ids}
@@ -1258,12 +1324,14 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
             if condition != "cancel":
                 assert scan.progress["tokens"] == 3
             return
-        assert scan.stages["verification"]["completed"] == scan.stages["verification"]["total"] == 5
-        if condition == "finite_budget":
+        assert scan.stages["verification"]["total"] == 5
+        assert scan.stages["verification"]["completed"] == (4 if condition == "finite_skip" else 5)
+        assert scan.stages["verification"]["failed"] == int(condition == "finite_skip")
+        if legacy_budget:
             assert allowances == [999, 997, 995, 993, 991]
             assert scan.status == "completed", scan.error
             assert set(findings.values()) == {"resolved"}
-        elif condition == "transient":
+        elif condition in {"transient", "finite_refill"}:
             assert scan.status == "completed", scan.error
             assert set(findings.values()) == {"resolved"}
             assert scan.progress["tokens"] == 11 and len(calls) == 5
@@ -1276,6 +1344,8 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
                 assert all(findings[key] == "resolved" for key in calls[1:])
             else:
                 assert all(findings[key] == "resolved" for key in finding_ids - {fast})
+                if condition == "finite_skip":
+                    assert scan.progress["tokens"] == 9
 
 
 def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
@@ -1784,6 +1854,8 @@ def test_security_parallel_analysis_accounts_for_every_file_and_stops_on_fatal_e
     with transaction() as db:
         scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget))
+        if budget is not None:
+            scan.config = {key: value for key, value in scan.config.items() if key != "budget_schedule"}
         identity = scan.id
     perform_security(identity, "test:1")
     with transaction() as db:
@@ -2069,9 +2141,12 @@ def test_security_assessment_uses_configured_concurrency_and_preserves_limits(
     monkeypatch.setattr(workflow_inference, "execute", lambda *args, **kwargs: (
         {"verdict": "uncertain", "finding_id": None, "explanation": "Need the guard", "evidence": [], "required_paths": ["missing_guard.py"]}, {"tokens": 12}))
     with transaction() as db:
-        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+        scan = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
             connection_id="connection", request_key=uid(), concurrency=concurrency, token_budget=budget,
-            timeout_seconds=60 if failure == "timeout" else None)).id
+            timeout_seconds=60 if failure == "timeout" else None))
+        if budget is not None:
+            scan.config = {key: value for key, value in scan.config.items() if key != "budget_schedule"}
+        identity = scan.id
     perform_security(identity, "test:1")
     with transaction() as db:
         scan = db.get(SecurityScan, identity)
@@ -2121,8 +2196,9 @@ def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
 
 
 @pytest.mark.parametrize("discovery", ["queued", "in_flight", "external_history", "late_quota", "late_unknown"])
+@pytest.mark.parametrize("budget", [None, 200_000])
 def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
-    seed, security_github, monkeypatch, tmp_path, discovery,
+    seed, security_github, monkeypatch, tmp_path, discovery, budget,
 ):
     paths = ("first.py", "slow1.py", "slow2.py", "slow3.py", "linked.py", "fifth.py")
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -2212,7 +2288,7 @@ def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
     monkeypatch.setattr(security, "stage", stage)
     with transaction() as db:
         identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
-            connection_id="connection", request_key=uid(), concurrency=4)).id
+            connection_id="connection", request_key=uid(), concurrency=4, token_budget=budget)).id
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         worker = executor.submit(perform_security, identity, "test:1")
@@ -2587,8 +2663,10 @@ def test_security_retry_changes_request_timeout_without_losing_completed_work(
         connection.options = {**connection.options, **({"timeout_sec": original_timeout} if original_timeout else {})}
         parent = security.create_scan(db, seed["repo"], seed["user"],
             SecurityScanInput(connection_id="connection", request_key=uid()))
-        parent.config = {**{key: value for key, value in parent.config.items() if key != "execution_limits"},
-                         "connection": connection_snapshot(connection)}
+        parent.config = {
+            **{key: value for key, value in parent.config.items() if key not in {"execution_limits", "budget_schedule"}},
+            "connection": connection_snapshot(connection),
+        }
         parent_id = parent.id
     perform_security(parent_id, "test:1")
     with transaction() as db:
@@ -2657,7 +2735,8 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Completed legacy analysis must be reused"))
     with transaction() as db:
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
-        config = {key: value for key, value in parent.config.items() if key not in {"task_contract", "execution_limits"}}
+        config = {key: value for key, value in parent.config.items()
+                  if key not in {"task_contract", "execution_limits", "budget_schedule"}}
         config["connection"] = connection_snapshot(db.get(Connection, "connection"))
         config["limits"] = {"token_budget": 100000, "timeout_seconds": 900}
         context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},

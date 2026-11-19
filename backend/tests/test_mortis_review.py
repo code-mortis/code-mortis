@@ -3,8 +3,10 @@
 import asyncio
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import timedelta
+from threading import Event
 
 import httpx
 import pytest
@@ -191,6 +193,7 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
     with transaction() as db:
         plan = db.scalar(select(AnalysisPlan))
         assert plan.run_id == "mortis-run" and plan.job_id == "mortis-job"
+        assert plan.snapshot["versions"]["planner"] == planning.LEGACY_VERSION
         assert plan.snapshot["versions"]["source_code"] == engine.SOURCE_CODE_POLICY
         assert plan.snapshot["versions"]["output_tokens"] == (
             engine.analysis.WORKFLOW_OUTPUT_POLICY if workflow else engine.analysis.OUTPUT_TOKEN_POLICY)
@@ -209,6 +212,120 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
     with transaction() as db:
         assert db.scalar(select(AnalysisPlan)).snapshot == frozen
         assert len(list(db.scalars(select(AnalysisAttempt)))) == 1
+
+
+def test_file_scoped_review_counts_validated_file_while_peer_is_running(scenario, monkeypatch):
+    scenario["options"].pop("token_budget")
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    with transaction() as db:
+        run = db.get(ReviewRun, "mortis-run")
+        scenario["connection"] = connection_snapshot(db.get(Connection, "connection"), workflow=True)
+        run.config = {**run.config, "connection": scenario["connection"], "settings": scenario["options"],
+                      "execution_limits": analysis.EXECUTION_LIMITS, "planner_version": planning.VERSION,
+                      "budget_schedule": analysis.ROLLING_BUDGET}
+
+    slow_started, release, counted = Event(), Event(), Event()
+
+    async def handler(request):
+        body = json.loads(request.content)
+        supplied = next(json.loads(message["content"]) for message in body["messages"]
+                        if message["role"] == "user" and "assigned_units" in message["content"])
+        paths = {unit["path"] for unit in supplied["assigned_units"]}
+        assert len(paths) == 1
+        if paths == {"guide.md"}:
+            slow_started.set()
+            assert await asyncio.to_thread(release.wait, 10)
+        return scenario["handler"](request)
+
+    def progress(value):
+        scenario["progress"].append(value)
+        if value.get("completed") == 1:
+            assert value["items"] == {"app.py": {"status": "completed"}, "guide.md": {"status": "running"}}
+            counted.set()
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        run = executor.submit(review, scenario, progress=progress)
+        try:
+            assert slow_started.wait(10)
+            assert counted.wait(10), "The first file must count while its peer is still running."
+            with transaction() as db:
+                frozen = copy.deepcopy(db.scalar(select(AnalysisPlan)).snapshot)
+                assert frozen["versions"]["planner"] == planning.VERSION
+                assert frozen["budgets"]["analysis"] is None
+                assert sorted(task.status for task in db.scalars(select(AnalysisTask))) == ["completed", "running"]
+        finally:
+            release.set()
+        first = run.result(timeout=10)
+    assert first[0] == "completed"
+    assert [value["completed"] for value in scenario["progress"] if "items" in value] == [0, 1, 2]
+    assert review(scenario) == first and len(scenario["wire"]) == 2
+    with transaction() as db:
+        assert db.scalar(select(AnalysisPlan)).snapshot == frozen
+
+
+def test_finite_review_analysis_refills_and_counts_validated_files(scenario, monkeypatch):
+    budget = 200_000
+    settings(scenario, token_budget=budget, concurrency=4)
+    root, base = scenario["root"], scenario["base"]
+    fixture_git(root, "checkout", "--detach", "-q", scenario["head"])
+    for path in ("slow1.py", "slow2.py", "zz.py"):
+        (root / path).write_text("value = 1\n")
+    fixture_git(root, "add", ".")
+    fixture_git(root, "commit", "-qm", "three more review files")
+    head = fixture_git(root, "rev-parse", "HEAD")
+    scenario.update(head=head, remote_head=head)
+    with transaction() as db:
+        db.get(PullRequest, "pr").head_sha = head
+        run = db.get(ReviewRun, "mortis-run")
+        run.head_sha = head
+        scenario["connection"] = connection_snapshot(db.get(Connection, "connection"), workflow=True)
+        run.config = {**run.config, "connection": scenario["connection"], "planner_version": planning.VERSION,
+                      "execution_limits": analysis.EXECUTION_LIMITS, "budget_schedule": analysis.ROLLING_BUDGET}
+
+    @contextmanager
+    def snapshot_repo(_name, _number, base_sha, head_sha, _token, stopped, **kwargs):
+        assert (base_sha, head_sha) == (base, head) and not stopped()
+        yield root, {}, {}, base
+
+    four_started, refilled, release = Event(), Event(), Event()
+    started = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        supplied = next(json.loads(message["content"]) for message in body["messages"]
+                        if message["role"] == "user" and "assigned_units" in message["content"])
+        path, = {unit["path"] for unit in supplied["assigned_units"]}
+        started.append(path)
+        if len(started) == 4:
+            four_started.set()
+        assert await asyncio.to_thread(four_started.wait, 10)
+        if path == "zz.py":
+            refilled.set()
+        if path != "app.py":
+            assert await asyncio.to_thread(release.wait, 10)
+        return scenario["handler"](request)
+
+    monkeypatch.setattr(source, "review_snapshot", snapshot_repo)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(review, scenario)
+        try:
+            assert refilled.wait(10), "The fifth file must start while three peers are still running."
+            assert set(started[:4]) == {"app.py", "guide.md", "slow1.py", "slow2.py"}
+            assert [value["completed"] for value in scenario["progress"] if "items" in value] == [0, 1]
+            with transaction() as db:
+                plan = db.scalar(select(AnalysisPlan))
+                assert plan.snapshot["versions"]["budget_schedule"] == analysis.ROLLING_BUDGET
+                assert db.get(AnalysisBudget, (plan.id, "analysis")).charged_tokens <= budget
+                assert sum(row.status == "running" for row in db.scalars(select(AnalysisTask))) == 4
+        finally:
+            release.set()
+        status, _, _ = future.result(timeout=10)
+    assert status == "completed"
+    assert [value["completed"] for value in scenario["progress"] if "items" in value] == list(range(6))
 
 
 def test_legacy_source_code_plan_replays_without_rewriting_contract(scenario, monkeypatch):

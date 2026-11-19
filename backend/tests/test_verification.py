@@ -22,7 +22,7 @@ from test_review_flow import COMMENT, new_run, perform_review, remote
 from code_mortis import jobs
 from code_mortis.core import source as git_source
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import ReviewStopped, RunnerBlocked
+from code_mortis.core.errors import InferenceBudgetError, ReviewStopped, RunnerBlocked
 from code_mortis.core.process import child_environment
 from code_mortis.integrations import github
 from code_mortis.integrations.github import threads as github_threads
@@ -914,13 +914,25 @@ def test_unlimited_unknown_consumption_is_not_zero_or_retried(scenario, monkeypa
     assert len(calls) == 1 and saved()[0].usage == {"tokens": None}
 
 
+def test_verification_reports_gateway_budget_refusal(scenario, monkeypatch):
+    def fail(*args, **kwargs):
+        raise InferenceBudgetError("The stage token budget cannot admit this request", {"tokens": 0})
+
+    monkeypatch.setattr(verification, "mortis_verify", fail)
+    row, _, run = perform(scenario)
+    assert row.status == "failed" and row.usage == {"tokens": 0}
+    assert "The stage token budget cannot admit this request" in row.error
+    assert run.progress["verification"]["completed"] == 0
+
+
 @pytest.mark.parametrize("fault", [None, "version", "cancel", "unknown"])
-def test_parallel_fix_verification_refills_and_fences_results(scenario, monkeypatch, fault):
+@pytest.mark.parametrize("budget", [None, 200_000])
+def test_parallel_fix_verification_refills_and_fences_results(scenario, monkeypatch, fault, budget):
     run_id, finding_id = scenario["run"], scenario["finding"]
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         run.config = {**run.config, "pipeline_version": 2, "settings": {
-            **run.config["settings"], "concurrency": 4, "verification_token_budget": None, "max_files": None,
+            **run.config["settings"], "concurrency": 4, "verification_token_budget": budget, "max_files": None,
         }}
         run.stages = {stage: {"status": "pending", "tokens": 0} for stage in pipeline.STAGES}
         pipeline.update(run, "summary", "skipped")
@@ -947,15 +959,16 @@ def test_parallel_fix_verification_refills_and_fences_results(scenario, monkeypa
     initial, fast, replacement = set(ordered[:4]), ordered[1], ordered[4]
     barrier, lock, release, refilled, unknown_saved = Barrier(4), Lock(), Event(), Event(), Event()
     started = set()
+    allowances = {}
     active = peak = 0
 
     def verify(_connection, _credentials, _context, allowance, _remaining, _stopped, *, task_key, **kwargs):
         nonlocal active, peak
         identity = task_key.removeprefix("verify:")
-        assert allowance is None
         with lock:
             assert identity not in started
             started.add(identity)
+            allowances[identity] = allowance
             active += 1
             peak = max(peak, active)
         try:
@@ -1009,6 +1022,9 @@ def test_parallel_fix_verification_refills_and_fences_results(scenario, monkeypa
         run = db.get(ReviewRun, run_id)
         finding = db.get(Finding, finding_id)
         assert peak == 4
+        assert all(allowances[identity] == budget for identity in initial)
+        if replacement in started:
+            assert allowances[replacement] == (None if budget is None else budget - 50)
         if fault == "unknown":
             assert started == initial
             assert [db.get(FindingVerification, identity).status for identity in ordered[4:]] == ["skipped"] * 2

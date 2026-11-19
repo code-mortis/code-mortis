@@ -12,9 +12,9 @@ from sqlalchemy import or_, select
 
 from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
-from code_mortis.core.analysis import require_execution_engine
+from code_mortis.core.analysis import require_execution_engine, rolling_budget_enabled
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import InferenceOutputError, ReviewStopped, RunnerBlocked
+from code_mortis.core.errors import InferenceBudgetError, InferenceOutputError, ReviewStopped, RunnerBlocked
 from code_mortis.core.review_results import evidence_bundle as evidence_bundle
 from code_mortis.core.review_results import report_tokens
 from code_mortis.core.security import clean_text
@@ -378,7 +378,8 @@ VerificationOutputError = InferenceOutputError
 
 def mortis_verify(connection, credentials, context, token_budget, timeout, stopped, *,
                   run_id, claim, stage, task_key, round=0, instructions=INSTRUCTIONS,
-                  schema=None, validator=validate_response, selection=False, authorize=None, effort="medium"):
+                  schema=None, validator=validate_response, selection=False, authorize=None, effort="medium",
+                  budget_demand=None):
     from code_mortis.core import workflow_inference
 
     context = review_context.sanitize(context, credentials, stopped)
@@ -395,6 +396,7 @@ def mortis_verify(connection, credentials, context, token_budget, timeout, stopp
         connection, credentials, context, instructions=instructions, schema=schema or output_schema(),
         validator=validator, claim=claim, stage=stage, task_key=f"{task_key}:{round}", run_id=run_id,
         stopped=stopped, authorize=authorize, effort=effort, token_budget=token_budget, timeout=timeout,
+        **({"budget_demand": budget_demand} if budget_demand is not None else {}),
     )
 
 
@@ -505,6 +507,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         options = dict(run.config["settings"])
         if separate:
             options["token_budget"] = options["verification_token_budget"]
+        finite_rolling = (options["token_budget"] is not None and separate
+                          and rolling_budget_enabled(db, claim, run.config))
         deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
     stop_workers, unknown_tokens = Event(), Event()
     context_lock = Lock()
@@ -532,7 +536,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             current_repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
             return not enabled(current, current_repo)
 
-    def verify_one(identity):
+    def verify_one(identity, budget_demand=None):
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             if not owns(run):
@@ -560,8 +564,15 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 return
             usage_known = True
             budget = options["token_budget"]
+            if (budget is None or finite_rolling) and unknown_tokens.is_set():
+                finish(db, row, status="skipped", error=unknown_error)
+                return
             if budget is not None:
-                prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
+                query = select(FindingVerification.usage).where(FindingVerification.run_id == run_id)
+                if finite_rolling:
+                    # Active requests reserve against the stage ledger rather than the result placeholder.
+                    query = query.where(FindingVerification.status != "running")
+                prior_usage = list(db.scalars(query))
                 if not separate:
                     prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
                 tokens = [u.get("tokens", 0 if not u else None) for u in prior_usage]
@@ -569,9 +580,6 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     tokens.insert(0, report_tokens(run.report))
                 usage_known = all(type(value) is int and value >= 0 for value in tokens)
                 budget = budget - sum(tokens) if usage_known else 0
-            elif unknown_tokens.is_set():
-                finish(db, row, status="skipped", error=unknown_error)
-                return
             if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
                 or (not separate and run.progress.get("analysis_status") not in {"completed", "partial"})):
                 reason = limit_error(options, budget, remaining, usage_known)
@@ -634,7 +642,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     saved = db.scalar(select(FindingVerification).where(FindingVerification.id == identity).with_for_update())
                     if not owns(current) or current.cancel_requested or saved.status != "running":
                         return
-                    if budget is None and unknown_tokens.is_set():
+                    if (budget is None or finite_rolling) and unknown_tokens.is_set():
                         raise ReviewStopped(unknown_error)
                     if attempt:
                         finding = db.get(Finding, saved.finding_id)
@@ -653,7 +661,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         if selected.kind != "api" and selected.auth_status != "connected":
                             raise ValueError("The selected personal connection is no longer authenticated.")
                     saved.context = {key: value for key, value in request_context.items() if key != "task_contract"}
-                    saved.usage = usage = {"tokens": None, "reserved_tokens": budget} if separate else {"tokens": budget}
+                    saved.usage = usage = ({"tokens": None} if finite_rolling else {"tokens": None, "reserved_tokens": budget}
+                                           if separate else {"tokens": budget})
                     record_summary(db, current)
                 known = False
                 try:
@@ -662,6 +671,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         run_id=run_id, claim=claim, stage="verification", task_key="verify:" + identity,
                         round=attempt, instructions=INSTRUCTIONS + "\nLanguage: " + options["language"],
                         effort=options["effort"], authorize=authorize_finding,
+                        **({"budget_demand": budget_demand} if budget_demand is not None else {}),
                     )
                     amount = spent.get("tokens")
                     known = type(amount) is int and amount >= 0
@@ -716,7 +726,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             elif isinstance(exc, RunnerBlocked):
                 usage = exc.usage
             error = str(exc) if isinstance(exc, (RunnerBlocked, ReviewStopped)) else "The fix could not be verified automatically. " + (
-                str(exc) if type(exc) in {ValueError, TimeoutError, VerificationOutputError, ResultValidationError} else "The AI returned an unsupported response. Start a new review or check the selected model."
+                str(exc) if type(exc) in {ValueError, TimeoutError, InferenceBudgetError, VerificationOutputError, ResultValidationError}
+                else "The AI returned an unsupported response. Start a new review or check the selected model."
             )
             error = clean_text(error, (credentials.get("api_key", ""), *credentials.get("extra_headers", {}).values()))[:10000]
         with transaction() as db:
@@ -734,10 +745,11 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
             verify_one(identity)
     identities = (identity for identity, status, _ in rows if status == "queued")
     concurrency = options.get("concurrency", 1)
-    if connection["kind"] == "api" and options["token_budget"] is None and concurrency > 1:
+    if connection["kind"] == "api" and (options["token_budget"] is None or finite_rolling) and concurrency > 1:
         # Each run has one verification per finding and reads the same immutable PR snapshot.
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             pending = set()
+            outstanding = sum(status == "queued" for _, status, _ in rows)
             try:
                 while True:
                     if not unknown_tokens.is_set() and stopped():
@@ -746,17 +758,18 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                         identity = next(identities, None)
                         if identity is None:
                             break
-                        pending.add(pool.submit(verify_one, identity))
+                        pending.add(pool.submit(verify_one, identity, outstanding if finite_rolling else None))
                     if not pending:
                         break
                     done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    outstanding -= len(done)
                     for future in done:
                         future.result()
             except BaseException:
                 stop_workers.set()
                 raise
     for identity in identities:
-        verify_one(identity)
+        verify_one(identity, 1 if finite_rolling else None)
 
 
 def invalidate(db, finding, reason):

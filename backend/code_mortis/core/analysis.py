@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from code_mortis.core.db import now, transaction, uid
 from code_mortis.core.inference_admission import (
@@ -35,6 +35,7 @@ from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 OUTPUT_TOKEN_POLICY = "mortis-completion/v1"
 WORKFLOW_OUTPUT_POLICY = "workflow-budget/v1"
 EXECUTION_LIMITS = "workflow/v1"
+ROLLING_BUDGET = "rolling-budget/v1"
 OUTPUT_RECOVERY_POLICY = "split-units/v2"
 RETIRED_ENGINE_MESSAGE = "This saved review engine is retired. Its plan and results were preserved; explicitly start new work with Mortis."
 
@@ -58,6 +59,23 @@ def output_token_policy(snapshot=None):
 
 def configured_output_policy(config):
     return WORKFLOW_OUTPUT_POLICY if config.get("execution_limits") == EXECUTION_LIMITS else OUTPUT_TOKEN_POLICY
+
+
+def rolling_budget_enabled(db, claim, config):
+    if config.get("execution_limits") != EXECUTION_LIMITS or config.get("budget_schedule") != ROLLING_BUDGET:
+        return False
+    versions = db.scalar(select(AnalysisPlan.snapshot["versions"]).where(
+        AnalysisPlan.job_id == claim.rpartition(":")[0]))
+    return versions is None or versions.get("budget_schedule") == ROLLING_BUDGET
+
+
+def budget_state(db, plan_id, stage):
+    tasks = select(AnalysisTask.id).where(AnalysisTask.plan_id == plan_id, AnalysisTask.stage == stage)
+    unknown = tasks.join(AnalysisAttempt).where(AnalysisAttempt.usage_state == "unknown").exists()
+    running = tasks.where(AnalysisTask.status == "running").exists()
+    # Read reservations and possible releases from the same PostgreSQL snapshot.
+    return db.execute(select(AnalysisBudget, unknown, running).where(
+        AnalysisBudget.plan_id == plan_id, AnalysisBudget.stage == stage)).one()
 
 
 def budget_deadline(plan, budget):
@@ -335,12 +353,14 @@ def mark_uncertain(task, attempt, timestamp):
 
 def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int,
                output_tokens: int, lease_seconds: int = 60, concurrency_limit: int | None = None,
-               token_allowance: int | None = None) -> TaskLease | None:
+               token_allowance: int | None = None, budget_demand: int | None = None) -> TaskLease | None:
     """Reserve a whole request atomically. Revalidate external authorization before calling."""
     if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
         raise ValueError("Input and output reservations must be nonnegative whole tokens")
     if token_allowance is not None and (type(token_allowance) is not int or token_allowance < 0):
         raise ValueError("The token allowance must be nonnegative")
+    if budget_demand is not None and (type(budget_demand) is not int or budget_demand < 1):
+        raise ValueError("Budget demand must be a positive task count")
     if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
         raise ValueError("Task leases must last between 1 and 3600 seconds")
     if concurrency_limit is not None:
@@ -378,9 +398,30 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
             AnalysisTask.plan_id == plan.id, AnalysisTask.stage == task.stage,
             AnalysisAttempt.usage_state == "unknown").limit(1))
         timestamp = now()
+        deadline = budget_deadline(plan, budget)
+        if not job_live(job, job_attempt, timestamp) or unknown or deadline and deadline <= timestamp:
+            return None
+        run_limit = plan.snapshot["settings"].get("concurrency", 4 if plan.scan_id else 2)
+        validate_limits(1, run_limit, lease_seconds)
+        if concurrency_limit is not None:
+            run_limit = min(run_limit, concurrency_limit)
         wire_output = None
         if output_token_policy(plan.snapshot) == WORKFLOW_OUTPUT_POLICY:
-            allowances = [token_allowance, None if budget.token_limit is None else budget.token_limit - budget.charged_tokens]
+            available = None if budget.token_limit is None else budget.token_limit - budget.charged_tokens
+            if (available is not None and run_limit > 1
+                    and plan.snapshot["versions"].get("budget_schedule") == ROLLING_BUDGET):
+                waiting, occupied = db.execute(select(
+                    func.count().filter(AnalysisTask.status == "pending"),
+                    func.count().filter(AnalysisTask.status == "running"),
+                ).where(AnalysisTask.plan_id == plan.id, AnalysisTask.stage == task.stage)).one()
+                demand = waiting + occupied if budget_demand is None else budget_demand
+                free = max(1, min(run_limit, demand) - occupied)
+                share = available // free
+                if input_tokens < available and share <= input_tokens:
+                    # Admit a larger prompt with a share of the remaining completion allowance.
+                    share = input_tokens + max(1, (available - input_tokens) // free)
+                available = share
+            allowances = [token_allowance, available]
             finite = [value - input_tokens for value in allowances if value is not None]
             if finite:
                 remaining = min(finite)
@@ -389,16 +430,10 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
                 output_tokens = min(output_tokens, remaining) if output_tokens else remaining
             wire_output = output_tokens
         reservation = input_tokens + output_tokens
-        deadline = budget_deadline(plan, budget)
-        if (not job_live(job, job_attempt, timestamp) or unknown or deadline and deadline <= timestamp
-                or budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit):
+        if budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit:
             return None
         expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
                       deadline or job.lease_until)
-        run_limit = plan.snapshot["settings"].get("concurrency", 4 if plan.scan_id else 2)
-        validate_limits(1, run_limit, lease_seconds)
-        if concurrency_limit is not None:
-            run_limit = min(run_limit, concurrency_limit)
         run_key = f"review:{plan.run_id}" if plan.run_id else f"scan:{plan.scan_id}" if plan.scan_id else f"job:{job_id}"
         admission_id = fingerprint(["inference", task.id, job_attempt, task.attempts + 1])
         capacity = admit(db, identity=admission_id, connection_id=plan.snapshot["connection"]["id"],

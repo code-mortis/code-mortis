@@ -275,7 +275,8 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
 
 def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, authorize,
            register_task, load_task, stopped=lambda: False, progress=lambda value: None, check_admission=None,
-           limit_source_tools=True, register_recovery=None, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY):
+           limit_source_tools=True, register_recovery=None, recovery_policy=analysis.OUTPUT_RECOVERY_POLICY,
+           rolling_budget=False):
     """Execute or replay immutable task rows. Callbacks own plan/Job fencing and durable append.
 
     load_task(key) returns {id,status,result,input_hash,usage_tokens,pending_reason,error_code};
@@ -285,11 +286,12 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
     replay_usage summing its immutable chain after validating the original plan/scope.
     Unknown consumption never causes this executor to retry or replace the saved task.
     """
-    outcomes, task_usage = {}, {}
+    reported_outcomes, task_usage = {}, {}
     waiting_ids = set()
     visited = {batch.key: set() for batch in prepared}
+    outstanding = len(prepared)
 
-    async def recover(batch, request, row, sources, client, root_key):
+    async def recover(batch, request, row, sources, client, root_key, batch_outcomes):
         if (register_recovery is None or ":unit:" in batch.key
                 or recovery_policy == "split-units/v1" and len(batch.units) <= 1
                 or not row or row["status"] != "failed"
@@ -303,12 +305,12 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             return
         await asyncio.to_thread(register_recovery, recovered, parent_key=row["key"])
         for unit in batch.units:
-            outcomes[unit.key] = {"status": "running"}
+            batch_outcomes[unit.key] = {"status": "running"}
         for child in recovered:
-            await execute_batch(child, client, root_key=root_key, final_only=True)
-            await save_progress()
+            await execute_batch(child, client, batch_outcomes, root_key=root_key, final_only=True)
+            await save_progress(batch_outcomes)
 
-    async def execute_batch(batch, client, *, root_key=None, final_only=False):
+    async def execute_batch(batch, client, outcomes, *, root_key=None, final_only=False):
         root_key = root_key or batch.key
         if stopped():
             raise ReviewStopped("Review cancelled or superseded")
@@ -352,7 +354,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 task_usage[key] = row.get("usage_tokens")
                 for unit in batch.units:
                     outcomes[unit.key] = {"status": "failed", "error": row.get("error_code") or row["status"]}
-                await recover(batch, request, {**row, "key": key}, sources, client, root_key)
+                await recover(batch, request, {**row, "key": key}, sources, client, root_key, outcomes)
                 break
             expansion_sources = []
             usage = row.get("usage_tokens")
@@ -377,7 +379,8 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 try:
                     response = await llm.execute_task(row["id"], job_id, job_attempt, request, credentials,
                         client=client, authorize=authorize, authorize_admission=check_admission,
-                        validate_result=validate, stopped=stopped)
+                        validate_result=validate, stopped=stopped,
+                        **({"budget_demand": outstanding} if rolling_budget else {}))
                 except InferenceError as exc:
                     failed = await asyncio.to_thread(load_task, key)
                     deadline = failed and failed.get("pending_reason") == "deadline" and not stopped()
@@ -388,7 +391,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                     task_usage[key] = (failed.get("usage_tokens") if failed and failed["status"] != "pending"
                                        else exc.usage.total_tokens)
                     if failed:
-                        await recover(batch, request, {**failed, "key": key}, sources, client, root_key)
+                        await recover(batch, request, {**failed, "key": key}, sources, client, root_key, outcomes)
                     break
                 if response is None:
                     waiting_ids.add(row["id"])
@@ -470,11 +473,12 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                            time.monotonic() + min(60, batch.connection.get("options", {}).get("timeout_sec", 120)))
     progress_lock = asyncio.Lock()
 
-    async def save_progress():
+    async def save_progress(batch_outcomes):
         async with progress_lock:
+            reported_outcomes.update(batch_outcomes)
             items = {}
             for item in plan.selected:
-                values = [outcomes.get(unit.key) for unit in item.units]
+                values = [reported_outcomes.get(unit.key) for unit in item.units]
                 state = ("failed" if item.error or any(value and value["status"] == "failed" for value in values)
                          else "completed" if values and all(value and value["status"] == "completed" for value in values)
                          else "running")
@@ -482,11 +486,11 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             await asyncio.to_thread(progress, {"phase": "analysis", "selected": len(plan.selected),
                 "completed": sum(value["status"] == "completed" for value in items.values()),
                 "failed": sum(value["status"] == "failed" for value in items.values()), "items": items,
-                "completed_units": sum(value["status"] == "completed" for value in outcomes.values()),
+                "completed_units": sum(value["status"] == "completed" for value in reported_outcomes.values()),
                 "selected_units": sum(len(batch.units) for batch in prepared)})
 
     async def execute():
-        await save_progress()
+        await save_progress({})
         queue = asyncio.Queue()
         for batch in prepared:
             queue.put_nowait(batch)
@@ -495,11 +499,13 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             raise ValueError("Analysis concurrency must be between one and eight")
         async with llm.http_client() as client:
             async def worker():
+                nonlocal outstanding
                 while not queue.empty():
                     batch = queue.get_nowait()
+                    batch_outcomes = {}
                     try:
                         try:
-                            await execute_batch(batch, client)
+                            await execute_batch(batch, client, batch_outcomes)
                         except TimeoutError:
                             for key in visited[batch.key]:
                                 try:
@@ -510,10 +516,11 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                                 if row:
                                     task_usage[key] = row.get("usage_tokens")
                             for unit in batch.units:
-                                if outcomes.get(unit.key, {}).get("status") != "completed":
-                                    outcomes[unit.key] = {"status": "failed", "error": "deadline"}
-                        await save_progress()
+                                if batch_outcomes.get(unit.key, {}).get("status") != "completed":
+                                    batch_outcomes[unit.key] = {"status": "failed", "error": "deadline"}
+                        await save_progress(batch_outcomes)
                     finally:
+                        outstanding -= 1
                         queue.task_done()
 
             workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, len(prepared)))]
@@ -528,7 +535,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
 
     asyncio.run(execute())
     tokens = None if any(value is None for value in task_usage.values()) else sum(task_usage.values())
-    return _report(plan, prepared, outcomes, tokens=tokens)
+    return _report(plan, prepared, reported_outcomes, tokens=tokens)
 
 
 class AnalysisPending(Exception):

@@ -58,6 +58,43 @@ def claim(identity, **updates):
                                output_tokens=updates.pop("output_tokens", 30), **updates)
 
 
+@pytest.mark.parametrize("first_input", [100, 250])
+def test_finite_rolling_reservations_split_refill_and_keep_unknown_usage(seed, first_input):
+    budget = 1000
+    plan, tasks = planned(seed, settings={"concurrency": 4}, budgets={"analysis": budget},
+        versions={**specification().versions, "output_tokens": analysis.WORKFLOW_OUTPUT_POLICY,
+                  "budget_schedule": analysis.ROLLING_BUDGET},
+        tasks=[{"key": key, "stage": "analysis", "input_hash": "d" * 64, "scope": []}
+               for key in ("a", "b", "c", "d", "e", "f")])
+    assert claim(tasks["f"], input_tokens=budget, output_tokens=0) is None
+    leases = [claim(tasks[key], input_tokens=first_input if key == "a" else 100, output_tokens=0)
+              for key in ("a", "b", "c", "d")]
+    assert all(lease is not None and lease.output_tokens > 0 for lease in leases)
+    assert claim(tasks["e"], input_tokens=100, output_tokens=0) is None
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan, "analysis")).charged_tokens == budget
+    assert analysis.finish_task(leases[0], usage_tokens=first_input + 1, result={"ok": True})
+    replacement = claim(tasks["e"], input_tokens=100, output_tokens=0)
+    assert replacement is not None
+    assert analysis.finish_task(replacement, usage_tokens=None, error_code="unknown_usage")
+    assert analysis.finish_task(leases[1], usage_tokens=100, result={"ok": True})
+    assert claim(tasks["f"], input_tokens=20, output_tokens=0) is None
+    with transaction() as db:
+        attempt = db.get(AnalysisAttempt, replacement.attempt_id)
+        assert attempt.usage_state == "unknown"
+        assert db.get(AnalysisBudget, (plan, "analysis")).charged_tokens <= budget
+
+
+@pytest.mark.parametrize("demand,keys", [(None, ("a",)), (1, ("a", "b"))])
+def test_single_eligible_task_can_use_full_rolling_budget(seed, demand, keys):
+    _, tasks = planned(seed, settings={"concurrency": 8}, budgets={"analysis": 1000},
+        versions={**specification().versions, "output_tokens": analysis.WORKFLOW_OUTPUT_POLICY,
+                  "budget_schedule": analysis.ROLLING_BUDGET},
+        tasks=[{"key": key, "stage": "analysis", "input_hash": "d" * 64, "scope": []} for key in keys])
+    lease = claim(tasks["a"], input_tokens=200, output_tokens=0, budget_demand=demand)
+    assert lease is not None and lease.output_tokens == 800
+
+
 def test_plan_inputs_and_task_identity_survive_restart_and_reordering(seed):
     identity, tasks = planned(seed)
     with transaction() as db:

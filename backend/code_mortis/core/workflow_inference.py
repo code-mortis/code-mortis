@@ -11,14 +11,13 @@ from sqlalchemy import select
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.core import analysis, file_policy, inference_admission
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import InferenceOutputError, ReviewStopped
+from code_mortis.core.errors import InferenceBudgetError, InferenceOutputError, ReviewStopped
 from code_mortis.core.review_results import evidence_bundle
 from code_mortis.core.security import unseal
 from code_mortis.integrations import github, llm
 from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
     AnalysisAttempt,
-    AnalysisBudget,
     AnalysisPlan,
     AnalysisTask,
     Connection,
@@ -64,7 +63,7 @@ def output_token_policy(job_id, config=None):
 
 def execute(connection, credentials, context, *, instructions, schema, validator, claim, stage, task_key,
             run_id=None, scan_id=None, repository_id=None, revisions=None, stopped=lambda: False,
-            authorize=None, effort="medium", token_budget=None, timeout=None):
+            authorize=None, effort="medium", token_budget=None, timeout=None, budget_demand=None):
     from code_mortis.reviews import context as review_context
     from code_mortis.reviews.service import authorize_connection, execution_identity, target_matches
 
@@ -183,6 +182,8 @@ def execute(connection, credentials, context, *, instructions, schema, validator
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == job_id))
         token_policy = analysis.output_token_policy(plan.snapshot) if plan else analysis.configured_output_policy(config)
         workflow_budget = token_policy == analysis.WORKFLOW_OUTPUT_POLICY
+        budget_schedule = (plan.snapshot["versions"].get("budget_schedule") if plan
+                           else config.get("budget_schedule") if workflow_budget and stage != "summary" else None)
         if plan is None:
             options = dict(config.get("settings", config.get("limits", {})))
             if scan:
@@ -207,7 +208,8 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                 initiator_id=actor_id, authorization={"actor_id": actor_id, "trigger": trigger}, trigger=trigger,
                 connection=connection, revisions=target,
                 versions={**{key: CONTRACT for key in ("engine", "planner", "prompt", "rules", "schema", "file_policy")},
-                          **({"output_tokens": token_policy} if token_policy else {})},
+                          **({"output_tokens": token_policy} if token_policy else {}),
+                          **({"budget_schedule": budget_schedule} if budget_schedule else {})},
                 settings={**options, "workflow_contract": CONTRACT}, file_policy=policy,
                 selected=[], exclusions=[], graph={}, budgets=budgets,
                 deadlines={stage: deadline} if deadline else {}, tasks=[])
@@ -228,12 +230,8 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             task = db.get(AnalysisTask, task_id)
             attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id == task_id)))
             amount = sum(row.usage_tokens for row in attempts) if all(row.usage_state == "known" for row in attempts) else None
-            budget = db.get(AnalysisBudget, (plan_id, stage))
-            unknown = db.scalar(select(AnalysisAttempt.id).join(AnalysisTask).where(AnalysisTask.plan_id == plan_id,
-                AnalysisTask.stage == stage, AnalysisAttempt.usage_state == "unknown").limit(1))
-            running = db.scalar(select(AnalysisTask.id).where(AnalysisTask.plan_id == plan_id,
-                AnalysisTask.stage == stage, AnalysisTask.status == "running").limit(1))
-            return task.status, task.result, amount, budget, bool(unknown), bool(running)
+            budget, unknown, running = analysis.budget_state(db, plan_id, stage)
+            return task.status, task.result, amount, budget, unknown, running
 
     def validate(response):
         try:
@@ -247,6 +245,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                     "message": "The provider result did not satisfy the workflow evidence contract"}
 
     async def dispatch():
+        budget_error = InferenceBudgetError if budget_schedule == analysis.ROLLING_BUDGET else InferenceOutputError
         until = dispatch_deadline if dispatch_deadline is not None else float("inf")
         if not workflow_budget:
             until = min(time.monotonic() + 60, until)
@@ -263,16 +262,18 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                     required = llm.reservation(connection, request) + (
                         max(1, request.max_output_tokens) if workflow_budget else request.max_output_tokens)
                     if status == "pending" and token_budget is not None and required > token_budget:
-                        raise InferenceOutputError("The request exceeds the remaining workflow allowance", {"tokens": 0})
+                        raise budget_error("The request exceeds the remaining workflow allowance", {"tokens": 0})
                     deadline = budget.deadline_at
                     if unknown or deadline and now() >= deadline:
                         raise InferenceOutputError("The stage deadline or unknown consumption prevents inference", {"tokens": amount})
                     if (budget.token_limit is not None and budget.charged_tokens + required > budget.token_limit and not running):
-                        raise InferenceOutputError("The stage token budget cannot admit this request", {"tokens": amount})
+                        raise budget_error("The stage token budget cannot admit this request", {"tokens": amount})
                     response = await llm.execute_task(task_id, job_id, job_attempt, request, credentials, client=client,
                         authorize=fresh_authority, authorize_admission=check_local, validate_result=validate, stopped=stopped,
                         timeout=max(0, dispatch_deadline - time.monotonic()) if dispatch_deadline is not None else None,
-                        **({"token_allowance": token_budget} if workflow_budget else {}))
+                        **({"token_allowance": token_budget} if workflow_budget else {}),
+                        **({"budget_demand": budget_demand} if budget_demand is not None
+                           and budget_schedule == analysis.ROLLING_BUDGET else {}))
                     if response is not None:
                         continue
                     if time.monotonic() >= until:

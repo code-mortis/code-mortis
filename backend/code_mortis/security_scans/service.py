@@ -20,14 +20,16 @@ from code_mortis.api_tokens.provenance import TransientAuthorizationError
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import (
     EXECUTION_LIMITS,
+    ROLLING_BUDGET,
     engine_snapshot,
     job_live,
     new_engine_snapshot,
     require_execution_engine,
+    rolling_budget_enabled,
 )
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import ReviewStopped, RunnerBlocked
+from code_mortis.core.errors import InferenceBudgetError, ReviewStopped, RunnerBlocked
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
 from code_mortis.core.shared_execution import RETIRED_MESSAGE, is_shared
 from code_mortis.integrations import github
@@ -172,6 +174,8 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
     config.update(engine_snapshot(parent.config) if parent else new_engine_snapshot(repo.settings))
     if workflow:
         config["execution_limits"] = EXECUTION_LIMITS
+        if parent is None or "budget_schedule" in parent.config:
+            config["budget_schedule"] = parent.config["budget_schedule"] if parent else ROLLING_BUDGET
     if parent is None or "task_contract" in parent.config:
         config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
@@ -730,6 +734,8 @@ def perform(scan_id, claim):
                 scan.status = "blocked"
                 raise RunnerBlocked("busy")
         workflow = scan.config.get("execution_limits") == EXECUTION_LIMITS
+        finite_rolling = (scan.config["limits"]["token_budget"] is not None
+                          and rolling_budget_enabled(db, claim, scan.config))
         current_connection = connection_snapshot(connection, workflow=workflow)
         if any(current_connection[key] != scan.config["connection"][key]
                for key in ("kind", "owner_id", "protocol", "base_url", "provider", "options")):
@@ -861,7 +867,7 @@ def perform(scan_id, claim):
                     return context, digest(json.dumps([cache_config, candidate], sort_keys=True)), (source_id, cached)
         return context, identity, None
 
-    def ai(item, task, context, key, allowance=None, *, parallel=False, record_required_paths=None, saved_histories=None):
+    def ai(item, task, context, key, allowance=None, *, budget_demand=None, record_required_paths=None, saved_histories=None):
         context, identity, checkpoint_match = task_input(task, context, key, saved_histories)
         if checkpoint_match is not None:
             source_id, cached = checkpoint_match
@@ -934,7 +940,8 @@ def perform(scan_id, claim):
 
                 return execute(config["connection"], credentials, context, instructions=instructions, schema=schema,
                     validator=validator, claim=claim, stage="security", task_key=f"{key}:round:{round}", scan_id=scan_id,
-                    stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout)
+                    stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout,
+                    **({"budget_demand": budget_demand} if budget_demand is not None else {}))
 
             from code_mortis.core.workflow_inference import output_token_policy
 
@@ -1026,26 +1033,29 @@ def perform(scan_id, claim):
             candidates = []
             code_paths = [path for path, value in item.inventory.items() if value["code"]]
             completed, failed = 0, 0
-            stage(scan_id, "analysis", "running", total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
+            stage(scan_id, "analysis", "running", claim=claim,
+                  total=len(code_paths), completed=0, failed=0, concurrency=concurrency)
 
             parallel = concurrency > 1 and len(code_paths) > 1
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
-                rolling = parallel and limits["token_budget"] is None
+                rolling = parallel and (limits["token_budget"] is None or finite_rolling)
                 batches = [code_paths] if rolling else [code_paths[offset:offset + concurrency]
                                                       for offset in range(0, len(code_paths), concurrency)]
+
+                def submit_analysis(path):
+                    with transaction() as db:
+                        if db.get(SecurityScan, scan_id).progress.get("tokens") is None:
+                            raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
+                    context = {"assigned_path": path, "head_sha": item.sha, "diff": "",
+                               "sources": {"current": {path: item.source(path)}}}
+                    demand = len(code_paths) - completed - failed if finite_rolling else None
+                    return pool.submit(ai, item, "analysis", context, "analysis:" + path, budget_demand=demand)
+
                 for batch in batches:
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
                     if rolling:
-                        def submit(path):
-                            with transaction() as db:
-                                if db.get(SecurityScan, scan_id).progress.get("tokens") is None:
-                                    raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
-                            context = {"assigned_path": path, "head_sha": item.sha, "diff": "",
-                                       "sources": {"current": {path: item.source(path)}}}
-                            return pool.submit(ai, item, "analysis", context, "analysis:" + path, parallel=True)
-
-                        pending = rolling_analysis(batch, concurrency, submit, stopped, stop_workers)
+                        pending = rolling_analysis(batch, concurrency, submit_analysis, stopped, stop_workers)
                     else:
                         contexts = {path: {"assigned_path": path, "head_sha": item.sha, "diff": "",
                                     "sources": {"current": {path: item.source(path)}}} for path in batch}
@@ -1056,13 +1066,16 @@ def perform(scan_id, claim):
                             raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
                         allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
                         futures = {pool.submit(ai, item, "analysis", contexts[path], "analysis:" + path, allowance,
-                                               parallel=parallel): path for path in batch}
+                                               budget_demand=len(batch) if finite_rolling else None): path for path in batch}
                         pending = ((futures[future], future) for future in as_completed(futures))
                     results, fatal = {}, None
                     for path, future in pending:
                         try:
                             results[path] = future.result()
                             completed += 1
+                        except InferenceBudgetError:
+                            failed += 1
+                            problems.append(f"Token budget could not admit source analysis: {path}.")
                         except verification.VerificationOutputError as exc:
                             if exc.feedback and type(exc.usage.get("tokens")) is int:
                                 failed += 1
@@ -1074,19 +1087,20 @@ def perform(scan_id, claim):
                             if fatal is None or isinstance(exc, RunnerBlocked):
                                 fatal = exc
                             stop_workers.set()
-                        stage(scan_id, "analysis", "running", completed=completed, failed=failed)
+                        stage(scan_id, "analysis", "running", claim=claim, completed=completed, failed=failed)
                     for path in batch:
                         candidates.extend(results.get(path, {}).get("findings", []))
                     if fatal:
                         raise fatal
-            stage(scan_id, "analysis", "partial" if failed else "completed", files=len(code_paths), candidates=len(candidates))
+            stage(scan_id, "analysis", "partial" if failed else "completed", claim=claim,
+                  files=len(code_paths), candidates=len(candidates))
             assessment_completed, assessment_failed = 0, 0
             assessment_problem_count = len(problems)
             stage(scan_id, "assessment", "running", claim=claim,
                   total=len(candidates), completed=0, failed=0, concurrency=concurrency)
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
-            rolling = parallel and limits["token_budget"] is None
+            rolling = parallel and (limits["token_budget"] is None or finite_rolling)
 
             def assessment_history_snapshot(db, *, lock=False):
                 query = select(SecurityFinding).where(SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id)
@@ -1118,10 +1132,10 @@ def perform(scan_id, claim):
                     saved_histories[source_id] = assessment_history(candidate.proposal, recovered, item)
                 return context, saved_histories
 
-            def submit_assessment(pool, candidate, context, required_paths, allowance=None):
+            def submit_assessment(pool, candidate, context, required_paths, allowance=None, *, budget_demand=None):
                 paths = required_paths[candidate.id] = []
                 return pool.submit(ai, item, "assessment", context[0], f"assessment:{candidate.id}", allowance,
-                                   parallel=parallel, record_required_paths=paths.extend, saved_histories=context[1])
+                                   budget_demand=budget_demand, record_required_paths=paths.extend, saved_histories=context[1])
 
             def assessment_responses(pool, ready, admitted, history, current_progress, required_paths, stop_admitting):
                 futures, prepared = {}, {}
@@ -1144,7 +1158,9 @@ def perform(scan_id, claim):
                                 break
                             ready.popleft()
                             admitted[candidate.id] = settled
-                            futures[submit_assessment(pool, candidate, prepared.pop(candidate.id), required_paths)] = candidate
+                            demand = len(ready) + len(futures) + 1 if finite_rolling else None
+                            futures[submit_assessment(pool, candidate, prepared.pop(candidate.id), required_paths,
+                                                      budget_demand=demand)] = candidate
                         if not futures:
                             return
                         done, _ = wait(futures, return_when=FIRST_COMPLETED)
@@ -1185,7 +1201,8 @@ def perform(scan_id, claim):
                         needed = sum(task_input("assessment", contexts[row.id][0], f"assessment:{row.id}",
                                                 contexts[row.id][1])[2] is None for row in batch)
                         allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
-                        futures = {submit_assessment(pool, row, contexts[row.id], required_paths, allowance): row for row in batch}
+                        futures = {submit_assessment(pool, row, contexts[row.id], required_paths, allowance,
+                                                     budget_demand=len(batch) if finite_rolling else None): row for row in batch}
                         pending = ((futures[future], future) for future in as_completed(futures))
 
                     results, fatal = {}, None
@@ -1202,6 +1219,9 @@ def perform(scan_id, claim):
                                     keys[candidate.id] = initial_keys[candidate.id] | added
                                     ready.clear()
                                     ready.extend(assessment.independent_batch(remaining, keys, admitted=admitted))
+                        except InferenceBudgetError:
+                            assessment_failed += 1
+                            problems.append(f"Token budget could not admit assessment: {candidate.proposal['path']}.")
                         except Exception as exc:
                             if (isinstance(exc, verification.VerificationOutputError) and exc.feedback
                                     and type(exc.usage.get("tokens")) is int):
@@ -1297,7 +1317,7 @@ def perform(scan_id, claim):
                   claim=claim)
             to_verify = [old for old in previous if old["id"] not in observed and
                          (old["state"] in {"open", "accepted_risk"} or old["pending_close"])]
-            stage(scan_id, "verification", "running", claim=claim, total=len(to_verify), completed=0)
+            stage(scan_id, "verification", "running", claim=claim, total=len(to_verify), completed=0, failed=0)
             advisories = {}
             advisory_locks = {old["evidence"].get("rule_id", ""): Lock() for old in to_verify
                               if old["evidence"].get("kind") == "dependency"}
@@ -1306,7 +1326,7 @@ def perform(scan_id, claim):
                 with advisory_locks[evidence.get("rule_id", "")]:
                     return dependency_advisory(evidence, packages, fresh_installation_token, stopped, advisories)
 
-            def verify_one(old):
+            def verify_one(old, budget_demand=None):
                 try:
                     if old["kind"] == "code":
                         original = old["evidence"]["source_sha"]
@@ -1315,23 +1335,31 @@ def perform(scan_id, claim):
                                    "diff": item.diff(original, model_context=True), "sources": {
                                        "original": {old["path"]: item.source(old["path"], original)},
                                        "current": {current_path: item.source(current_path)} if current_path in item.inventory else {}}}
-                        verdict = ai(item, "verification", context, "verification:" + old["id"])
+                        verdict = ai(item, "verification", context, "verification:" + old["id"], budget_demand=budget_demand)
                     else:
                         verdict = deterministic_fix(item, old, result, advisory_lookup=advisory_lookup)
+                except InferenceBudgetError:
+                    raise
                 except (ValueError, KeyError) as exc:
                     verdict = {"verdict": "uncertain", "explanation": item.redact(str(exc))[:1000]}
                 return {**verdict, "finding_version": old["version"]}
 
             # Versions and Assessment blockers are applied after verification over the pinned snapshot.
-            verdicts, fatal = {}, None
-            rolling = concurrency > 1 and len(to_verify) > 1 and limits["token_budget"] is None
+            verdicts, fatal, verification_failed = {}, None, 0
+            outstanding_model_checks = sum(old["kind"] == "code" for old in to_verify)
+            rolling = concurrency > 1 and len(to_verify) > 1 and (limits["token_budget"] is None or finite_rolling)
             with ThreadPoolExecutor(max_workers=concurrency) if rolling else nullcontext() as pool:
                 stop_admitting = Event()
-                pending = (rolling_analysis(to_verify, concurrency, lambda old: pool.submit(verify_one, old),
+
+                def submit_verification(old):
+                    demand = outstanding_model_checks if finite_rolling and old["kind"] == "code" else None
+                    return pool.submit(verify_one, old, demand)
+
+                pending = (rolling_analysis(to_verify, concurrency, submit_verification,
                                             stopped, stop_admitting) if pool else ((old, None) for old in to_verify))
                 for old, future in pending:
                     try:
-                        verdict = future.result() if future is not None else verify_one(old)
+                        verdict = future.result() if future is not None else verify_one(old, 1 if finite_rolling else None)
                         if verdict["verdict"] == "fixed" and uncertain_keys:
                             fix_keys = assessment_keys(old, item) | assessment_keys({
                                 "path": old["path"], "evidence": verdict.get("evidence", []),
@@ -1339,7 +1367,13 @@ def perform(scan_id, claim):
                             if uncertain_keys & fix_keys:
                                 assessment_blockers.add(old["id"])
                         verdicts[old["id"]] = verdict
-                        stage(scan_id, "verification", "running", claim=claim, completed=len(verdicts))
+                        stage(scan_id, "verification", "running", claim=claim,
+                              completed=len(verdicts) - verification_failed)
+                    except InferenceBudgetError:
+                        verification_failed += 1
+                        verdicts[old["id"]] = {"verdict": "uncertain", "finding_version": old["version"],
+                                               "explanation": "Token budget could not admit fix verification."}
+                        stage(scan_id, "verification", "running", claim=claim, failed=verification_failed)
                     except BaseException as exc:
                         if pool is None:
                             raise
@@ -1349,6 +1383,8 @@ def perform(scan_id, claim):
                         # Let admitted peers settle their real usage across a temporary authorization outage.
                         if not isinstance(exc, TransientAuthorizationError):
                             stop_workers.set()
+                    finally:
+                        outstanding_model_checks -= int(old["kind"] == "code")
                 if fatal:
                     raise fatal
             verdicts = {old["id"]: verdicts[old["id"]] for old in to_verify}
@@ -1551,5 +1587,12 @@ def public_scan(scan):
                                 for state in ("running", "completed", "failed", "interrupted")}
     result.progress["work"]["reused"] = sum(bool(task.get("reused")) for task in tasks.values())
     result.progress["work"]["analysis_total"] = sum(bool(value.get("code")) for value in result.coverage.get("inventory", {}).values())
-    result.progress["work"]["analysis_completed"] = sum(key.startswith("analysis:") and value["status"] == "completed" for key, value in tasks.items())
+    completed = sum(key.startswith("analysis:") and value["status"] == "completed" for key, value in tasks.items())
+    result.progress["work"]["analysis_completed"] = completed
+    analysis_stage = result.stages.get("analysis")
+    if isinstance(analysis_stage, dict) and analysis_stage.get("status") in ("running", "cancelled", "failed"):
+        saved, total = analysis_stage.get("completed"), analysis_stage.get("total")
+        if type(saved) is int and type(total) is int and 0 <= saved < completed <= total:
+            # An interrupted dispatcher may never consume the future after checkpointing.
+            result.stages = {**result.stages, "analysis": {**analysis_stage, "completed": completed}}
     return result
