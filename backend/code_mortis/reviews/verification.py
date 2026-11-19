@@ -2,7 +2,9 @@
 
 import json
 import re
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from threading import Event, Lock
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -496,34 +498,54 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
     with transaction() as db:
         run = db.get(ReviewRun, run_id)
         require_execution_engine(run.config)
-        ids = list(db.scalars(select(FindingVerification.id).where(
-            FindingVerification.run_id == run_id, FindingVerification.status.in_(["queued", "running"])
+        rows = list(db.execute(select(FindingVerification.id, FindingVerification.status, FindingVerification.usage).where(
+            FindingVerification.run_id == run_id,
         ).order_by(FindingVerification.created_at, FindingVerification.id)))
         separate = pipeline.enabled(run)
         options = dict(run.config["settings"])
         if separate:
             options["token_budget"] = options["verification_token_budget"]
         deadline = run.started_at.timestamp() + options["timeout_seconds"] if options["timeout_seconds"] is not None else None
-    for identity in ids:
-        def stopped():
-            if review_stopped(run_id, claim, stage="verification" if separate else None) or (deadline is not None and now().timestamp() >= deadline):
-                return True
-            with transaction() as db:
-                current = db.get(ReviewRun, run_id)
-                current_repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
-                return not enabled(current, current_repo)
+    stop_workers, unknown_tokens = Event(), Event()
+    context_lock = Lock()
+    unknown_error = "AI token usage from another fix verification is unknown. Fix verification skipped."
 
+    def usage_unknown(usage):
+        amount = usage.get("tokens", 0 if not usage else None)
+        return type(amount) is not int or amount < 0
+
+    if any(status not in {"queued", "running"} and usage_unknown(usage) for _, status, usage in rows):
+        unknown_tokens.set()
+
+    def owns(run):
+        if separate:
+            return (pipeline.owns(run, "verification", claim)
+                    and run.stages["verification"]["status"] == "running")
+        return run.progress.get("execution") == claim
+
+    def stopped():
+        if (stop_workers.is_set() or review_stopped(run_id, claim, stage="verification" if separate else None)
+            or (deadline is not None and now().timestamp() >= deadline)):
+            return True
+        with transaction() as db:
+            current = db.get(ReviewRun, run_id)
+            current_repo = db.get(Repository, db.get(PullRequest, current.pr_id).repository_id)
+            return not enabled(current, current_repo)
+
+    def verify_one(identity):
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-            if (not pipeline.owns(run, "verification", claim) if separate else run.progress.get("execution") != claim):
+            if not owns(run):
                 return
             row = db.get(FindingVerification, identity)
             if row.status not in {"queued", "running"}:
-                continue
+                return
             # A vanished worker may have spent its entire reservation. Never repeat unknown paid work.
             if row.status == "running":
+                if usage_unknown(row.usage):
+                    unknown_tokens.set()
                 finish(db, row, status="failed", error="The review worker stopped during fix verification. AI usage was not saved, so the reserved budget cannot be reused. Start a new review to check the fix.")
-                continue
+                return
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             finding = db.get(Finding, row.finding_id)
@@ -532,24 +554,29 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 or pr.base_sha != run.base_sha or pr.state != "open" or finding.status != "open"
                 or finding.desired_status or finding.sync_version != row.finding_version):
                 finish(db, row, status="skipped", error="Fix verification was skipped because the pull request or finding changed, or automatic resolution was disabled. Check the latest finding status and repository settings.")
-                continue
-            used_tokens = report_tokens(run.report)
-            prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
-            if not separate:
-                prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
+                return
+            if stop_workers.is_set():
+                finish(db, row, status="skipped", error="Fix verification stopped because the run, permissions, or time limit changed.")
+                return
             usage_known = True
             budget = options["token_budget"]
             if budget is not None:
+                prior_usage = list(db.scalars(select(FindingVerification.usage).where(FindingVerification.run_id == run_id)))
+                if not separate:
+                    prior_usage += list(db.scalars(select(ReviewCandidate.usage).where(ReviewCandidate.run_id == run_id)))
                 tokens = [u.get("tokens", 0 if not u else None) for u in prior_usage]
                 if not separate:
-                    tokens.insert(0, used_tokens)
+                    tokens.insert(0, report_tokens(run.report))
                 usage_known = all(type(value) is int and value >= 0 for value in tokens)
                 budget = budget - sum(tokens) if usage_known else 0
+            elif unknown_tokens.is_set():
+                finish(db, row, status="skipped", error=unknown_error)
+                return
             if ((remaining is not None and remaining < 10) or (budget is not None and budget <= 0)
                 or (not separate and run.progress.get("analysis_status") not in {"completed", "partial"})):
                 reason = limit_error(options, budget, remaining, usage_known)
                 finish(db, row, status="skipped", error=(reason or "The initial review did not complete.") + " Fix verification skipped.")
-                continue
+                return
             current_connection = db.get(Connection, run.connection_id)
             try:
                 if not current_connection or any(connection[key] != getattr(current_connection, key) for key in ("kind", "owner_id", "provider", "protocol", "base_url")):
@@ -564,7 +591,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise RunnerBlocked("authentication")
             except (ValueError, github.GitHubError) as exc:
                 finish(db, row, status="skipped", error=str(exc))
-                continue
+                return
             occurrence = db.get(Occurrence, row.occurrence_id)
             original_head = db.get(ReviewRun, occurrence.run_id).head_sha
             original = {**occurrence.snapshot, "reviewed_sha": original_head}
@@ -583,8 +610,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                     raise ReviewStopped("The finding changed during fix verification.")
 
         try:
-            context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped,
-                                    base_sha=run.base_sha)
+            # Historical context may fetch a missing revision into the shared Git snapshot.
+            with context_lock:
+                context = build_context(repo_path, env, fetch_env, original, original_sha, run.head_sha, options, stopped,
+                                        base_sha=run.base_sha)
             consumed, feedback, corrected = 0, None, False
             for attempt in range(3):
                 allowance = None if budget is None else budget - consumed
@@ -603,8 +632,10 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
                 with transaction() as db:
                     current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                     saved = db.scalar(select(FindingVerification).where(FindingVerification.id == identity).with_for_update())
-                    if (not pipeline.owns(current, "verification", claim) if separate else current.progress.get("execution") != claim) or current.cancel_requested or saved.status != "running":
+                    if not owns(current) or current.cancel_requested or saved.status != "running":
                         return
+                    if budget is None and unknown_tokens.is_set():
+                        raise ReviewStopped(unknown_error)
                     if attempt:
                         finding = db.get(Finding, saved.finding_id)
                         if finding.status != "open" or finding.desired_status or finding.sync_version != saved.finding_version:
@@ -691,9 +722,41 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim):
         with transaction() as db:
             run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
             row = db.get(FindingVerification, identity)
-            if (not pipeline.owns(run, "verification", claim) if separate else run.progress.get("execution") != claim) or row.status != "running":
+            if not owns(run) or row.status != "running":
                 return
+            if usage_unknown(usage):
+                unknown_tokens.set()
             finish(db, row, result=result, status=outcome, error=error, usage=usage)
+
+    # Recover interrupted reservations before admitting any queued findings.
+    for identity, status, _ in rows:
+        if status == "running":
+            verify_one(identity)
+    identities = (identity for identity, status, _ in rows if status == "queued")
+    concurrency = options.get("concurrency", 1)
+    if connection["kind"] == "api" and options["token_budget"] is None and concurrency > 1:
+        # Each run has one verification per finding and reads the same immutable PR snapshot.
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            pending = set()
+            try:
+                while True:
+                    if not unknown_tokens.is_set() and stopped():
+                        stop_workers.set()
+                    while len(pending) < concurrency and not (stop_workers.is_set() or unknown_tokens.is_set()):
+                        identity = next(identities, None)
+                        if identity is None:
+                            break
+                        pending.add(pool.submit(verify_one, identity))
+                    if not pending:
+                        break
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        future.result()
+            except BaseException:
+                stop_workers.set()
+                raise
+    for identity in identities:
+        verify_one(identity)
 
 
 def invalidate(db, finding, reason):

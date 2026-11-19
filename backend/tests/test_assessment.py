@@ -812,6 +812,7 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
         "candidates": 10, "new_findings": 3, "repeated_observations": 0,
         "rejected_candidates": 5, "withheld_candidates": 2, "pending": 0,
         "incomplete": 2, "failed": 1, "skipped": 0, "published_comments": 0,
+        "progress": {"completed": 9, "failed": 1, "skipped": 0},
     }
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -1740,6 +1741,109 @@ def test_independent_batches_merge_transitive_conflicts():
     assert [row.id for row in assessment.independent_batch(rows[1:], keys, 4)] == ["1", "3"]
 
 
+@pytest.mark.parametrize("link", ["direct", "historical", "in_flight"])
+def test_parallel_assessments_refill_free_slots_and_wait_for_saved_related_history(pipeline, monkeypatch, link):
+    first, *slow, citation_related, fifth = independent_comments(6)
+    related = {**first, "content": "Reworded finding"}
+    quote = "logger.error(api_key)"
+    if link != "historical":
+        citation_related = {**citation_related, "existing_code": quote}
+    pipeline["comments"] = [first, related, *slow, citation_related, fifth]
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"concurrency": 4, "assessment_token_budget": None}
+    historical_id = new_run(assessed=True) if link == "historical" else None
+    identity = new_run(assessed=True, parallel=True)
+    with transaction() as db:
+        review_pipeline.update(db.get(ReviewRun, identity), "verification", "skipped", tokens=0)
+        if historical_id:
+            previous = db.get(ReviewRun, historical_id)
+            snapshot = {**citation_related, "source_sha": previous.head_sha}
+            finding = Finding(id="history-bridge", pr_id=previous.pr_id, fingerprint="history-bridge",
+                              path=snapshot["path"], content=snapshot["content"], severity="high", category="bug",
+                              start_line=7, end_line=7, last_seen_run_id=historical_id)
+            db.add(finding)
+            db.flush()
+            db.add(Occurrence(run_id=historical_id, finding_id=finding.id, snapshot=snapshot))
+            db.add(ReviewCandidate(run_id=historical_id, position=0, snapshot=snapshot, finding_id=finding.id,
+                                   status="completed", result={"verdict": "confirmed", "evidence": [
+                                       {"revision": "current", "path": "bridge.py", "quote": quote},
+                                   ]}))
+            previous.status = "completed"
+    barrier, lock, refilled, release = Barrier(4), Lock(), Event(), Event()
+    slow_contents = {item["content"] for item in slow}
+    replacement = citation_related if link == "in_flight" else fifth
+    waiting_contents = {related["content"]} if link == "in_flight" else {related["content"], citation_related["content"]}
+    quoting = {slow[0]["content"]} if link == "in_flight" else {first["content"], related["content"]}
+    started = []
+    active = peak = 0
+    original_context = assessment.build_context
+
+    def context_for(repo, env, fetch_env, run, snapshot, previous, stopped):
+        context = original_context(repo, env, fetch_env, run, snapshot, previous, stopped)
+        context["history"], context["prior_candidates"] = assessment.related_history(
+            repo, env, fetch_env, run.head_sha, snapshot, previous, stopped,
+        )
+        return context
+
+    def respond(context):
+        nonlocal active, peak
+        content = context["finding"]["content"]
+        with lock:
+            started.append(content)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if content == first["content"] or content in slow_contents:
+                barrier.wait(timeout=10)
+            if content in slow_contents:
+                assert release.wait(10)
+            if content == replacement["content"]:
+                refilled.set()
+                assert release.wait(10)
+            response = verdict(context)
+            if content in waiting_contents:
+                with transaction() as db:
+                    predecessor = db.scalar(select(ReviewCandidate).where(
+                        ReviewCandidate.run_id == identity, ReviewCandidate.position == 0,
+                    ))
+                    assert predecessor.status == "completed"
+                    assert predecessor.finding_id in {item["id"] for item in context["history"]}
+                    response["finding_id"] = predecessor.finding_id
+            if content in quoting:
+                response["evidence"][0].update(start_line=9, end_line=9, quote=quote)
+            return response
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(assessment, "build_context", context_for)
+    pipeline["respond"] = respond
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(perform_review, identity)
+        try:
+            assert refilled.wait(10)
+            with lock:
+                assert set(started) == slow_contents | {first["content"], replacement["content"]}
+                assert active == 4
+            with transaction() as db:
+                assert db.scalar(select(func.count()).select_from(Finding)) == int(bool(historical_id))
+        finally:
+            release.set()
+        future.result(timeout=10)
+    assert peak == 4 and len(started) == len(pipeline["comments"])
+    with transaction() as db:
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)
+                              .order_by(ReviewCandidate.position)))
+        assert all(row.usage == {"tokens": 25} for row in rows)
+        assert rows[0].finding_id == rows[1].finding_id
+        if link == "in_flight":
+            assert [row.status for row in rows] == ["completed"] * 5 + ["skipped", "completed"]
+            assert rows[5].failure_reason == "history_changed" and rows[5].finding_id is None
+        else:
+            assert all(row.status == "completed" for row in rows)
+            assert rows[0].finding_id == rows[5].finding_id
+
+
 @pytest.mark.parametrize("distinct", [False, True])
 def test_parallel_assessments_keep_related_candidates_ordered(pipeline, distinct):
     first, other = independent_comments(2)
@@ -2007,7 +2111,8 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
     assert counts == {"file_0.py": 1 if failure in {"scope_check", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
 
 
-def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch):
+@pytest.mark.parametrize("outcome", ["completed", "failed", "skipped"])
+def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch, outcome):
     from time import monotonic, sleep
 
     pipeline["comments"] = independent_comments(2)
@@ -2015,14 +2120,23 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
         db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
     identity = new_run(assessed=True)
     started, release = Event(), Event()
+    build_context = assessment.build_context
+
+    def context_for(repo_path, env, fetch_env, run, comment, previous, stopped):
+        if outcome == "failed" and comment["path"] == "file_0.py":
+            raise ValueError("Candidate context was unavailable.")
+        return build_context(repo_path, env, fetch_env, run, comment, previous, stopped)
 
     def api(*args, **kwargs):
         context = args[2]
         if context["finding"]["path"] == "file_1.py":
             started.set()
             assert release.wait(10)
+        elif outcome == "skipped":
+            raise ReviewStopped("Candidate could not continue.")
         return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
 
+    monkeypatch.setattr(assessment, "build_context", context_for)
     monkeypatch.setattr(verification, "mortis_verify", api)
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(perform_review, identity)
@@ -2031,12 +2145,27 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
             deadline = monotonic() + 5
             while monotonic() < deadline:
                 with transaction() as db:
+                    run = db.get(ReviewRun, identity)
+                    counts = assessment.summary(db, run)
                     rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
-                    if rows[0].progress_phase == "validating":
-                        assert all(row.status == "running" and row.result is None and row.finding_id is None for row in rows)
-                        assert rows[0].usage["tokens"] is None
-                        assert db.get(ReviewRun, identity).progress["assessment_revision"] >= 3
+                    if getattr(counts.progress, outcome) == 1:
+                        assert counts.progress.model_dump() == {status: int(status == outcome) for status in assessment.ASSESSMENT_OUTCOMES}
+                        assert counts.pending == 2 and counts.failed == counts.skipped == 0
+                        assert all(row.status in {"queued", "running"} and row.result is None and row.finding_id is None for row in rows)
+                        assert rows[0].progress_phase == ("validating" if outcome == "completed" else None)
+                        assert rows[0].usage["tokens"] == (0 if outcome == "failed" else None)
+                        assert run.progress["assessment_revision"] >= 2
+                        assert "progress" not in run.progress["assessment"]
                         assert db.scalar(select(func.count()).select_from(Finding)) == 0
+                        staged = SimpleNamespace(id=run.id, config={**run.config, "pipeline_version": 2},
+                            status=run.status, cancel_requested=False, progress=run.progress,
+                            stages={"assessment": {"status": "running", "execution": "different-attempt"}},
+                            publication_plan=run.publication_plan)
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 0
+                        staged.stages["assessment"]["execution"] = run.progress["execution"]
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 1
+                        staged.cancel_requested = True
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 0
                         break
                 sleep(0.01)
             else:
@@ -2046,8 +2175,13 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
             release.set()
         future.result(timeout=10)
     with transaction() as db:
-        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)))
-        assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)
+        counts = assessment.summary(db, db.get(ReviewRun, identity))
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
+        assert [row.status for row in rows] == [outcome, "completed"]
+        assert all(row.progress_phase is None and "assessment_progress" not in row.usage for row in rows)
+        assert rows[1].usage == {"tokens": 25}
+        assert counts.progress.model_dump() == {"completed": 1 + int(outcome == "completed"),
+            "failed": int(outcome == "failed"), "skipped": int(outcome == "skipped")}
 
 
 @pytest.mark.parametrize("kind", ["api"])

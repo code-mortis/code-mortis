@@ -1843,11 +1843,12 @@ test("review stage card keeps a fixed layout through every stage and terminal st
 });
 
 test("assessment progress counts candidates while polling instead of completed review files", async ({ page }, info) => {
+  if (info.project.name === "mobile") await page.setViewportSize({ width: 320, height: 844 });
   await page.clock.install();
   const state: Partial<Run> = { status: "running", report: null, progress: { selected: 45, completed: 45 },
     stages: { ocr: { status: "completed", tokens: 100 }, assessment: { status: "running", tokens: 0 },
       verification: { status: "completed", tokens: 20 }, summary: { status: "completed", tokens: 10 } } };
-  const assessment = { candidates: 7, pending: 7, incomplete: 0, new_findings: 0, repeated_observations: 0,
+  const assessment: Schema["AssessmentSummary"] = { candidates: 7, pending: 7, incomplete: 0, new_findings: 0, repeated_observations: 0,
     rejected_candidates: 0, withheld_candidates: 0, failed: 0, skipped: 0, published_comments: 0 };
   const options = { run: state, assessment: assessment as Schema["AssessmentSummary"] | null };
   await mock(page, options);
@@ -1855,13 +1856,32 @@ test("assessment progress counts candidates while polling instead of completed r
   const card = page.getByRole("region", { name: "Review stages", exact: true });
   const count = card.getByLabel(/^(Review progress count|Stage progress unavailable)$/);
   await expect(count).toHaveText("0 / 7 candidates");
-  const geometry = async () => ({ height: (await card.boundingBox())!.height, tabs: (await page.getByRole("tablist").boundingBox())!.y });
+  const geometry = () => card.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const tabs = document.querySelector('[role="tablist"][aria-label="Review run views"]')!.getBoundingClientRect();
+    return { height: bounds.height, tabs: tabs.top - bounds.top };
+  });
   const original = await geometry();
+  assessment.progress = { completed: 1, failed: 0, skipped: 0 };
+  await page.clock.fastForward(5000);
+  await expect(count).toHaveText("1 / 7 candidates");
+  assessment.progress = { completed: 1, failed: 1, skipped: 1 };
+  await page.clock.fastForward(5000);
+  await expect(count).toHaveText("1 / 7 candidates");
+  await expect(card.getByRole("status")).toContainText("1 failed · 1 skipped");
+  const caption = card.locator("p");
+  await expect(caption).toHaveText("Assessment: 1 failed · 1 skipped.");
+  expect(await caption.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+  await card.getByRole("button", { name: "Review stage details" }).click();
+  await expect(page.getByRole("dialog", { name: "Review stage details" }).getByText("1 failed · 1 skipped", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  assessment.progress = null;
+  assessment.failed = assessment.skipped = 1;
   for (const pending of [4, 0]) {
     assessment.pending = pending;
-    assessment.rejected_candidates = 7 - pending;
+    assessment.rejected_candidates = 7 - pending - assessment.failed - assessment.skipped;
     await page.clock.fastForward(5000);
-    await expect(count).toHaveText(`${7 - pending} / 7 candidates`);
+    await expect(count).toHaveText(`${7 - pending - assessment.failed - assessment.skipped} / 7 candidates`);
     await expect(page.getByRole("tab", { name: "Assessment 7", exact: true })).toBeVisible();
     expect(await geometry()).toEqual(original);
     if (pending === 4) await page.screenshot({ path: info.outputPath("assessment-candidate-progress.png") });

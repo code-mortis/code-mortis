@@ -1,13 +1,15 @@
 """Assess proposed comments before they acquire a finding identity or publication claim."""
 
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from datetime import datetime
+from itertools import groupby
 from threading import Event
 
 from pydantic import Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import require_execution_engine
@@ -34,9 +36,10 @@ from code_mortis.models import (
 from code_mortis.reviews import context as review_context
 from code_mortis.reviews import policy as review_policy
 from code_mortis.reviews import verification
-from code_mortis.schemas.common import AssessmentResult, AssessmentSummary
+from code_mortis.schemas.common import AssessmentProgress, AssessmentResult, AssessmentSummary
 
 POLICY_VERSION = 1
+ASSESSMENT_OUTCOMES = {"completed", "failed", "skipped"}
 INSTRUCTIONS = (
     "Adjudicate only the supplied proposed finding; do not search for additional findings. "
     "The proposal is an allegation to test, not an established requirement. "
@@ -153,15 +156,30 @@ def enabled(run):
 def summary(db, run):
     if not enabled(run):
         return None
-    result = AssessmentSummary()
+    progress = AssessmentProgress()
+    result = AssessmentSummary(progress=progress)
     linked = ReviewCandidate.finding_id.is_not(None)
     verdict = ReviewCandidate.result["verdict"].as_string()
-    for status, has_finding, is_new, decision, count in db.execute(select(
-        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict, func.count(),
+    status_column = ReviewCandidate.status
+    progress_status = status_column
+    if run.status == "running" and not run.cancel_requested:
+        stage = run.stages.get("assessment", {}) if run.config.get("pipeline_version") == 2 else run.progress
+        claim = stage.get("execution")
+        if claim and (run.config.get("pipeline_version") != 2 or stage.get("status") == "running"):
+            pending = ReviewCandidate.usage["assessment_progress"]
+            progress_status = case(
+                (status_column.in_(["queued", "running"]) & (pending["claim"].as_string() == claim),
+                 pending["status"].as_string()),
+                else_=status_column,
+            )
+    for status, has_finding, is_new, decision, work_status, count in db.execute(select(
+        status_column, linked, ReviewCandidate.is_new, verdict, progress_status, func.count(),
     ).where(ReviewCandidate.run_id == run.id).group_by(
-        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict,
+        status_column, linked, ReviewCandidate.is_new, verdict, progress_status,
     )):
         result.candidates += count
+        if work_status in ASSESSMENT_OUTCOMES:
+            setattr(progress, work_status, getattr(progress, work_status) + count)
         if has_finding:
             if is_new:
                 result.new_findings += count
@@ -195,7 +213,7 @@ def record_summary(db, run, *, advance_revision=False, totals_unchanged=False):
     if advance_revision:
         run.progress = {**run.progress, "assessment_revision": run.progress.get("assessment_revision", 0) + 1}
     if value is not None:
-        run.progress = {**run.progress, "assessment": value.model_dump()}
+        run.progress = {**run.progress, "assessment": value.model_dump(exclude={"progress"})}
     if pipeline.enabled(run) and run.stages.get("assessment"):
         rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
         amounts = [row.usage.get("tokens", 0 if not row.usage else None) for row in rows]
@@ -210,6 +228,8 @@ def withhold_pending(db, run, reason):
     )):
         row.status, row.error, row.finished_at = "skipped", reason, now()
         row.failure_reason = None
+        if "assessment_progress" in row.usage:
+            row.usage = {key: value for key, value in row.usage.items() if key != "assessment_progress"}
         changed = True
     db.flush()
     record_summary(db, run, advance_revision=changed)
@@ -253,7 +273,7 @@ def history(db, run, *, lock=False):
     return value, digest(json.dumps(value, sort_keys=True))
 
 
-def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, renamed=None):
+def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, renamed=None, *, connected_keys=None):
     if renamed is None:
         renamed = {}
 
@@ -302,6 +322,8 @@ def related_history(repo, env, fetch_env, head, snapshot, previous, stopped, ren
         if expanded == connected:
             break
         connected = expanded
+    if connected_keys is not None:
+        connected_keys.update(connected)
     related = [item for kind, item, group in entries if kind == "finding" and connected & group]
     related.sort(key=lambda item: item["fingerprint"] != fingerprint(snapshot))
     prior_candidates = [item for kind, item, group in entries if kind == "candidate" and connected & group]
@@ -496,7 +518,12 @@ def remaining_budget(db, run):
     return (None if budget is None else budget - sum(values) if known else 0), known
 
 
-def independent_batch(rows, keys, concurrency):
+def evidence_keys(citations):
+    return ({("path", citation["path"]) for citation in citations}
+            | {("anchor", quote) for citation in citations if (quote := citation.get("quote", "").strip())})
+
+
+def independent_batch(rows, keys, concurrency=None, *, admitted=()):
     groups = []
     for row in rows:
         members, connected, remaining = [row], set(keys[row.id]), []
@@ -507,7 +534,8 @@ def independent_batch(rows, keys, concurrency):
             else:
                 remaining.append((group, group_keys))
         groups = [*remaining, (members, connected)]
-    first = [min(group, key=lambda row: row.position) for group, _ in groups]
+    first = [min(group, key=lambda row: row.position) for group, _ in groups
+             if all(row.id not in admitted for row in group)]
     return sorted(first, key=lambda row: row.position)[:concurrency]
 
 
@@ -554,6 +582,11 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
     def stopped():
         return stop_workers.is_set() or review_stopped(run_id, claim, stage=stage) or (deadline is not None and now().timestamp() >= deadline)
 
+    def history_matches(history_key):
+        with transaction() as db:
+            current = db.get(ReviewRun, run_id)
+            return owns(current) and history(db, current)[1] == history_key
+
     def prepare():
         with transaction() as db:
             run = db.get(ReviewRun, run_id)
@@ -566,6 +599,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             for row in rows:
                 if row.status == "running":
                     row.status, row.usage = "queued", {"tokens": 0}
+                elif row.status == "queued" and "assessment_progress" in row.usage:
+                    row.usage = {key: value for key, value in row.usage.items() if key != "assessment_progress"}
             rows = [row for row in rows if row.status == "queued"]
             if not rows:
                 return None
@@ -589,10 +624,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
         failure_reason = None
 
         def authorize_history():
-            with transaction() as db:
-                current = db.get(ReviewRun, run_id)
-                if not owns(current) or history(db, current)[1] != history_key:
-                    raise HistoryChanged()
+            if not history_matches(history_key):
+                raise HistoryChanged()
 
         try:
             if stopped():
@@ -728,7 +761,7 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             pr = db.get(PullRequest, run.pr_id)
             repo = db.get(Repository, pr.repository_id)
             current_connection = db.get(Connection, run.connection_id)
-            # Compare once before this batch's own atomic history updates.
+            # Compare once before saving any outcome that used this history snapshot.
             stale = (run.cancel_requested or run.status in {"cancelled", "superseded"}
                      or (deadline is not None and now().timestamp() >= deadline)
                      or not target_matches(run, pr.head_sha, pr.base_sha, pr.state) or not repo.enabled or not repo.active
@@ -777,47 +810,101 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                     keys, renamed = {}, {}
                     for row in rows:
                         snapshot = row.snapshot
-                        keys[row.id] = {("path", snapshot["path"])}
+                        keys[row.id] = {("path", snapshot["path"])} | evidence_keys(snapshot.get("evidence", []))
                         anchor = snapshot.get("existing_code", "").strip()
                         if anchor:
                             keys[row.id].add(("anchor", anchor))
                         try:
                             if snapshot.get("source_sha", run.head_sha) != run.head_sha:
                                 contexts[row.id] = build_context(repo_path, env, fetch_env, run, snapshot, previous, stopped)
-                                related = contexts[row.id]["history"]
-                                related_prior = contexts[row.id]["prior_candidates"]
                                 current_path = contexts[row.id].get("current_path")
                                 if current_path:
                                     keys[row.id].add(("path", current_path))
-                            else:
-                                related, related_prior = related_history(repo_path, env, fetch_env, run.head_sha, snapshot,
-                                                             previous, stopped, renamed)
+                            related, related_prior = related_history(repo_path, env, fetch_env, run.head_sha, snapshot,
+                                previous, stopped, renamed, connected_keys=keys[row.id])
                             keys[row.id].update(("finding", item["id"]) for item in related)
                             keys[row.id].update(("prior_candidate", item["id"]) for item in related_prior)
                         except Exception as exc:
                             contexts[row.id] = exc
-                    batch = independent_batch(rows, keys, concurrency)
-                    for row in batch:
-                        if row.id not in contexts:
-                            try:
-                                contexts[row.id] = build_context(repo_path, env, fetch_env, run, row.snapshot, previous, stopped)
-                            except Exception as exc:
-                                contexts[row.id] = exc
-                    futures = {pool.submit(assess, row, run, previous, history_key, budget, usage_known, contexts[row.id]): row.id
-                               for row in batch}
-                    results = {}
-                    for future in as_completed(futures):
-                        results[futures[future]] = future.result()
-                        if results[futures[future]] is None:
-                            stop_workers.set()
-                        elif len(results) < len(futures) and results[futures[future]][1] is not None:
-                            with transaction() as db:
-                                current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
-                                if owns(current) and not current.cancel_requested and current.status == "running":
-                                    row = db.get(ReviewCandidate, futures[future])
-                                    if row.status == "running":
-                                        row.usage = {**row.usage, "response_received": True}
-                                        current.progress = {**current.progress, "assessment_revision": current.progress.get("assessment_revision", 0) + 1}
+                    initial_keys = keys.copy()
+                    candidate_keys = set().union(*keys.values())
+                    ready = deque(independent_batch(rows, keys))
+                    futures, results, admitted_at = {}, {}, {}
+                    refill = True
+                    wave, expanded = 0, False
+                    while True:
+                        if refill:
+                            for _ in range(min(len(ready), concurrency - len(futures))):
+                                row = ready[0]
+                                if row.id not in contexts:
+                                    try:
+                                        contexts[row.id] = build_context(repo_path, env, fetch_env, run, row.snapshot, previous, stopped)
+                                    except Exception as exc:
+                                        contexts[row.id] = exc
+                                if any(future.done() for future in futures):
+                                    break
+                                ready.popleft()
+                                future = pool.submit(assess, row, run, previous, history_key, budget, usage_known,
+                                                     contexts.pop(row.id))
+                                futures[future] = row
+                                admitted_at[row.id] = wave
+                        if not futures:
+                            break
+                        finished, _ = wait(futures, return_when=FIRST_COMPLETED)
+                        wave += 1
+                        changed_keys = False
+                        for future in finished:
+                            candidate = futures.pop(future)
+                            identity = candidate.id
+                            outcome = results[identity] = future.result()
+                            if outcome is None:
+                                stop_workers.set()
+                                refill = False
+                                continue
+                            _, result, status, _, usage, failure_reason = outcome
+                            if usage["tokens"] is None or failure_reason == "history_changed":
+                                refill = False
+                            if result:
+                                citations = result["evidence"]
+                                cited = evidence_keys(citations)
+                                mapping = renamed.get(candidate.snapshot.get("source_sha"), {})
+                                cited.update(("path", mapping[item["path"]]) for item in citations
+                                             if item["revision"] == "original" and item["path"] in mapping)
+                                added = (cited & candidate_keys) - keys[identity]
+                                if added:
+                                    keys[identity] = keys[identity] | added
+                                    changed_keys = expanded = True
+                            if status in ASSESSMENT_OUTCOMES:
+                                with transaction() as db:
+                                    current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
+                                    if owns(current) and not current.cancel_requested and current.status == "running":
+                                        row = db.get(ReviewCandidate, identity)
+                                        if row.status in {"queued", "running"}:
+                                            row.usage = {**(row.usage or {"tokens": 0}),
+                                                "assessment_progress": {"claim": claim, "status": status},
+                                                **({"response_received": True} if result is not None else {})}
+                                            current.progress = {**current.progress, "assessment_revision": current.progress.get("assessment_revision", 0) + 1}
+                        if refill and ready:
+                            if changed_keys:
+                                # Keep related candidates waiting even after a response, until its outcome is saved.
+                                ready = deque(independent_batch(rows, keys, admitted=admitted_at))
+                            refill = bool(ready) and not stopped() and history_matches(history_key)
+                    if expanded:
+                        # A late citation can link a refilled slot to work that had yet to finish.
+                        earlier_citations = set()
+                        for _, admissions in groupby(admitted_at, key=admitted_at.__getitem__):
+                            wave_citations = set()
+                            for identity in admissions:
+                                outcome = results[identity]
+                                if not outcome or not outcome[1]:
+                                    continue
+                                if initial_keys[identity] & earlier_citations:
+                                    results[identity] = (identity, None, "skipped", str(HistoryChanged()),
+                                                         outcome[4], "history_changed")
+                                else:
+                                    wave_citations.update(keys[identity] - initial_keys[identity])
+                            earlier_citations.update(wave_citations)
+                    batch = [row for row in rows if row.id in admitted_at]
                     outcomes = [results[row.id] for row in batch]
                 else:
                     outcomes = [assess(batch[0], run, previous, history_key, budget, usage_known)]
