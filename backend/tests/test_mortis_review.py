@@ -215,14 +215,15 @@ def test_production_adapter_plans_persists_validates_and_replays_without_inferen
 
 
 def test_file_scoped_review_counts_validated_file_while_peer_is_running(scenario, monkeypatch):
-    settings(scenario, token_budget=None)
+    scenario["options"].pop("token_budget")
     monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
     monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
     with transaction() as db:
         run = db.get(ReviewRun, "mortis-run")
         scenario["connection"] = connection_snapshot(db.get(Connection, "connection"), workflow=True)
-        run.config = {**run.config, "connection": scenario["connection"],
-                      "execution_limits": analysis.EXECUTION_LIMITS, "planner_version": planning.VERSION}
+        run.config = {**run.config, "connection": scenario["connection"], "settings": scenario["options"],
+                      "execution_limits": analysis.EXECUTION_LIMITS, "planner_version": planning.VERSION,
+                      "budget_schedule": analysis.ROLLING_BUDGET}
 
     slow_started, release, counted = Event(), Event(), Event()
 
@@ -252,6 +253,7 @@ def test_file_scoped_review_counts_validated_file_while_peer_is_running(scenario
             with transaction() as db:
                 frozen = copy.deepcopy(db.scalar(select(AnalysisPlan)).snapshot)
                 assert frozen["versions"]["planner"] == planning.VERSION
+                assert frozen["budgets"]["analysis"] is None
                 assert sorted(task.status for task in db.scalars(select(AnalysisTask))) == ["completed", "running"]
         finally:
             release.set()

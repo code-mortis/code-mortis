@@ -296,7 +296,7 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
             stopped=cancelled, progress=progress, check_admission=check_admission,
             limit_source_tools=source_tool_policy is not None,
             register_recovery=register_recovery if recovery_policy else None, recovery_policy=recovery_policy,
-            rolling_budget=budget_schedule == analysis.ROLLING_BUDGET and immutable_options["token_budget"] is not None)
+            rolling_budget=budget_schedule == analysis.ROLLING_BUDGET and immutable_options.get("token_budget") is not None)
         authorize(check_deadline=False)
         if after_review:
             after_review(result, path, env, fetch_env)
