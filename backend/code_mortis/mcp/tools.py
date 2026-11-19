@@ -82,6 +82,8 @@ from code_mortis.schemas.security import (
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 REPORT_MAX_CHARS = 32000
+RUN_HISTORY_EXCLUDE = {"report", "progress", "config", "summary", "stages"}
+LATEST_RUN_EXCLUDE = {"latest_run": RUN_HISTORY_EXCLUDE}
 
 # The endpoint a management tool is mounted on (reviews or security).
 # invoke_tool rejects a domain that does not match the grant, so management
@@ -208,19 +210,22 @@ def reviews_list_pull_requests(params: InboxFilters) -> dict[str, Any]:
 def reviews_list_repository_pulls(params: RepositoryPullsInput) -> dict[str, Any]:
     """List pull requests for one repository with inbox filters."""
     return _run("reviews", "reviews:read", "reviews_list_repository_pulls", params.model_dump(),
-                lambda db, user: repositories_routes.pull_requests(params.repository_id, db, user, params))
+                lambda db, user: repositories_routes.pull_requests(params.repository_id, db, user, params)
+                .model_dump(mode="json", exclude={"groups": {"__all__": {"items": {"__all__": LATEST_RUN_EXCLUDE}}}}))
 
 
 def reviews_get_pull_request(params: PullScopedInput) -> dict[str, Any]:
     """Inspect a pull request, its latest review, counts, and write capability."""
     return _run("reviews", "reviews:read", "reviews_get_pull_request", params.model_dump(),
-                lambda db, user: pulls_routes.pull_detail(params.pr_id, db, user))
+                lambda db, user: pulls_routes.pull_detail(params.pr_id, db, user)
+                .model_dump(mode="json", exclude={"pull_request": LATEST_RUN_EXCLUDE}))
 
 
 def reviews_list_runs(params: PullScopedInput, page: int = 1) -> dict[str, Any]:
     """List review runs for a pull request, newest first."""
     return _run("reviews", "reviews:read", "reviews_list_runs", {"pr_id": params.pr_id, "page": page},
-                lambda db, user: pulls_routes.pull_runs(params.pr_id, db, user, max(1, page)))
+                lambda db, user: pulls_routes.pull_runs(params.pr_id, db, user, max(1, page))
+                .model_dump(mode="json", exclude={"items": {"__all__": RUN_HISTORY_EXCLUDE}}))
 
 
 def reviews_get_run(params: RunScopedInput, ordering: RunFindingOrdering = "-severity") -> dict[str, Any]:
@@ -229,10 +234,12 @@ def reviews_get_run(params: RunScopedInput, ordering: RunFindingOrdering = "-sev
 
     def callback(db, user):
         detail = runs_routes.run_detail(params.run_id, db, user, ordering)
-        result = detail.model_dump(mode="json", exclude={"occurrences"})
+        result = detail.model_dump(mode="json", exclude={
+            "occurrences": True,
+            "run": {"report": True, "progress": True, "config": True, "summary": {"result", "settings"}},
+            "pull_request": LATEST_RUN_EXCLUDE,
+        })
         result["occurrence_count"] = len(detail.occurrences)
-        result["run"].pop("report", None)
-        result["run"].pop("progress", None)
         result["saved_sections_tool"] = "reviews_get_run_section"
         return result
 
@@ -566,7 +573,7 @@ class RepositoryScansInput(RepositoryScopedInput):
 def security_list_scans(params: RepositoryScansInput) -> dict[str, Any]:
     """List security scans for a repository, newest first."""
     return _run("security", "security:read", "security_list_scans", params.model_dump(),
-                lambda db, user: security_routes.scans(params.repository_id, db, user, params.page))
+                lambda db, user: security_routes.scans(params.repository_id, db, user, params.page, compact=True))
 
 
 def security_get_scan(params: ScanScopedInput) -> dict[str, Any]:
@@ -1128,12 +1135,13 @@ REVIEW_TOOLS = [
     (reviews_list_pull_requests, "reviews_list_pull_requests", "reviews:read",
      "Search the review inbox across visible repositories.", True),
     (reviews_list_repository_pulls, "reviews_list_repository_pulls", "reviews:read",
-     "List pull requests for one repository with inbox filters.", True),
+     "List pull requests for one repository with inbox filters and latest review metadata. Use reviews_get_run for details.", True),
     (reviews_get_pull_request, "reviews_get_pull_request", "reviews:read",
-     "Inspect a pull request, its latest review, counts, and write capability.", True),
-    (reviews_list_runs, "reviews_list_runs", "reviews:read", "List review runs for a pull request.", True),
+     "Inspect a pull request and latest review metadata. Use reviews_get_run for review details.", True),
+    (reviews_list_runs, "reviews_list_runs", "reviews:read",
+     "List review run metadata for a pull request. Use reviews_get_run or reviews_get_run_section for details.", True),
     (reviews_get_run, "reviews_get_run", "reviews:read",
-     "Inspect a review run: stages, errors, publication, usage, coverage, occurrences.", True),
+     "Inspect stages, errors, publication, usage and finding counts. Read saved sections and findings separately.", True),
     (reviews_get_run_section, "reviews_get_run_section", "reviews:read",
      "Read saved report, progress, config, summary or stages in complete bounded chunks.", True),
     (reviews_list_findings, "reviews_list_findings", "reviews:read",
@@ -1194,7 +1202,8 @@ SECURITY_TOOLS = [
      "List security repositories with grades, freshness, and counts.", True),
     (security_get_repository, "security_get_repository", "security:read",
      "Inspect one security repository with finding and scan counts.", True),
-    (security_list_scans, "security_list_scans", "security:read", "List security scans for a repository.", True),
+    (security_list_scans, "security_list_scans", "security:read",
+     "List scan metadata for a repository. Use security_get_scan or security_get_report for details.", True),
     (security_get_scan, "security_get_scan", "security:read",
      "Inspect a scan: state, stages, errors, usage, pinned commit, bounded activity.", True),
     (security_get_scan_activity, "security_get_scan_activity", "security:read",

@@ -346,9 +346,10 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
                 execution_context.reset(marker)
             if not isinstance(result, dict):
                 result = {"items": result} if isinstance(result, list) else {"result": result}
-            if redact_tool_text(db, json.dumps(result, ensure_ascii=False), grant) != json.dumps(result, ensure_ascii=False):
+            serialized = json.dumps(result, ensure_ascii=False)
+            if redact_tool_text(db, serialized, grant) != serialized:
                 raise HTTPException(422, "This result contains credential material. Inspect its redacted details in Code Mortis.")
-            if len(json.dumps(result).encode()) > 262144:
+            if len(serialized.encode("utf-8")) > 262144:
                 raise HTTPException(413, "The result is too large. Use pagination, narrower filters or a detail tool.")
             if request_key:
                 db.add(McpOperation(grant_id=grant.id, tool=name, request_key=request_key,

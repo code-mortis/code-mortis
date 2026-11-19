@@ -20,7 +20,7 @@ from code_mortis.mcp import auth as mcp_auth
 from code_mortis.mcp import server as mcp_server
 from code_mortis.mcp import tools as mcp_tools
 from code_mortis.mcp.models import McpAuthorization, McpClient, McpGrant, McpToken
-from code_mortis.models import AppConfig, Job, Membership, Repository, ReviewRun
+from code_mortis.models import AppConfig, Job, Membership, PullRequest, Repository, ReviewRun, SecurityScan
 from code_mortis.reviews import service as reviews
 
 VERIFIER = "a" * 64
@@ -498,6 +498,52 @@ def test_actual_tool_discovery_and_calls_obey_scopes(enabled, client):
         assert not db.scalar(select(ReviewRun))
 
 
+def test_large_saved_reports_are_available_separately_from_mcp_history(enabled, client):
+    report = {"findings": [], "notes": "🧪" * 80000}
+    with transaction() as db:
+        db.add(ReviewRun(id="large-run", pr_id="pr", trigger="manual", dedup_key="large-run",
+            base_sha="b" * 40, head_sha="a" * 40, engine="mortis", status="completed", config={}, report=report))
+        db.add(SecurityScan(id="large-scan", repository_id=22, actor_id=7, connection_id="connection",
+            request_key="large-scan", branch="main", head_sha="a" * 40, config={}, report=report))
+    review_token = credentials(client)["access_token"]
+    security_token = credentials(client, domain="security")["access_token"]
+
+    def call(name, params, domain="reviews"):
+        token = review_token if domain == "reviews" else security_token
+        response = rpc(client, token, method="tools/call", domain=domain,
+                       arguments={"name": name, "arguments": {"params": params}})
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert not result.get("isError"), result
+        return result["structuredContent"]
+
+    runs = call("reviews_list_runs", {"pr_id": "pr"})
+    assert runs["total"] == 1
+    assert runs["items"][0]["id"] == "large-run"
+    assert "report" not in runs["items"][0]
+    pulls = call("reviews_list_repository_pulls", {"repository_id": 22})
+    assert pulls["groups"][0]["items"][0]["latest_run"]["id"] == "large-run"
+    pull = call("reviews_get_pull_request", {"pr_id": "pr"})
+    assert pull["pull_request"]["latest_run"]["id"] == "large-run"
+    detail = call("reviews_get_run", {"run_id": "large-run"})
+    assert detail["run"]["status"] == "completed"
+    assert detail["pull_request"]["latest_run"]["id"] == "large-run"
+
+    chunks, offset = [], 0
+    while offset is not None:
+        section = call("reviews_get_run_section", {"run_id": "large-run", "section": "report", "offset": offset})
+        chunks.append(section["content"])
+        assert section["next_offset"] is None or section["next_offset"] > offset
+        offset = section["next_offset"]
+    assert json.loads("".join(chunks)) == report
+
+    scans = call("security_list_scans", {"repository_id": 22}, "security")
+    assert scans["total"] == 1
+    assert scans["items"][0]["id"] == "large-scan"
+    assert "report" not in scans["items"][0]
+    assert call("security_get_report", {"scan_id": "large-scan"}, "security")["next_offset"] > 0
+
+
 def test_actual_write_tool_is_durable_idempotent_and_bound_to_arguments(enabled, client, monkeypatch):
     monkeypatch.setattr(github, "request", lambda *args, **kwargs: {
         "number": 3, "title": "Fix retry logic", "user": {"login": "owner"},
@@ -568,20 +614,19 @@ def test_action_approval_is_human_bound_exact_once_and_retryable(enabled, client
 
 
 def test_tool_errors_and_results_do_not_expose_saved_credentials(enabled, client, monkeypatch):
-    from code_mortis.mcp import tools as mcp_tools
-
     tokens = credentials(client)
-    monkeypatch.setattr(mcp_tools.pulls_routes, "pull_detail", lambda *args: (_ for _ in ()).throw(
-        github.GitHubError(502, "Provider error containing provider-secret")))
-    response = rpc(client, tokens["access_token"], method="tools/call",
-        arguments={"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}})
+    args = {"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}}
+    with monkeypatch.context() as patch:
+        patch.setattr(mcp_tools.pulls_routes, "pull_detail", lambda *args: (_ for _ in ()).throw(
+            github.GitHubError(502, "Provider error containing provider-secret")))
+        response = rpc(client, tokens["access_token"], method="tools/call", arguments=args)
     assert "provider-secret" not in response.text
-    assert response.json()["result"]["isError"] is True
-    monkeypatch.setattr(mcp_tools.pulls_routes, "pull_detail", lambda *args: {"unsafe": "provider-secret"})
-    response = rpc(client, tokens["access_token"], method="tools/call",
-        arguments={"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}})
+    assert response.json()["result"]["structuredContent"]["error"]["status"] == 502
+    with transaction() as db:
+        db.get(PullRequest, "pr").title = "Unsafe title with provider-secret"
+    response = rpc(client, tokens["access_token"], method="tools/call", arguments=args)
     assert "provider-secret" not in response.text
-    assert response.json()["result"]["isError"] is True
+    assert response.json()["result"]["structuredContent"]["error"]["status"] == 422
 
 
 def test_approved_disconnect_commits_revocation_and_replays_without_native_logout(enabled, client, monkeypatch):
