@@ -1,7 +1,4 @@
 # Project defaults; an explicit chat or CLI model selection can override these.
-model = "gpt-6-astra"
-model_reasoning_effort = "xhigh"
-
 developer_instructions = """
 Follow AGENTS.md and use docs/README.md to locate current source-of-truth documents.
 Before engine work, read docs/plans/engine/plan.md and verify the owning source:
