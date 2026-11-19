@@ -11,12 +11,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from runtime_helpers import ask_security, perform_security
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from code_mortis import jobs
 from code_mortis.api_tokens import provenance as pat_provenance
 from code_mortis.core import workflow_inference
-from code_mortis.core.db import now, transaction, uid
+from code_mortis.core.db import engine, now, transaction, uid
 from code_mortis.core.errors import RunnerBlocked
 from code_mortis.core.security import digest
 from code_mortis.integrations import github, llm
@@ -3591,6 +3591,63 @@ def test_scan_activity_filters_findings_before_counts_and_pagination_preserving_
     assert client.get(f"/api/v1/security/findings/{finding_id}").json()["activity_count"] == 15
 
 
+def test_compact_scan_history_and_repository_summary_skip_large_scan_records(seed, security_github, client, monkeypatch):
+    created = now()
+    fields = {"id", "branch", "head_sha", "status", "grade", "created_at", "started_at", "finished_at"}
+    evidence = {"path": "app.py", "explanation": "Saved finding evidence. " * 5000}
+    inventory = {f"src/{index}.py": {"code": True} for index in range(300)}
+    with transaction() as db:
+        scan_ids = []
+        for _ in range(4):
+            scan = saved_scan(db, seed, status="completed", grade="A", created_at=created,
+                              started_at=created, finished_at=created + timedelta(seconds=42))
+            scan.progress = {"freshness": freshness(), "tasks": {
+                f"analysis:{path}": {"status": "completed"} for path in inventory}}
+            scan.coverage = {"inventory": inventory}
+            scan.report = {"findings": [evidence]}
+            scan_ids.append(scan.id)
+    path = "/api/v1/security/repositories/22"
+    scans = f"{path}/scans"
+    projections = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "FROM security_scans" in statement:
+            projections.append({column.name for column in cursor.description})
+
+    event.listen(engine(), "after_cursor_execute", record)
+    try:
+        compact = client.get(scans, params={"compact": "true"})
+        metadata = client.get(path)
+    finally:
+        event.remove(engine(), "after_cursor_execute", record)
+    assert compact.status_code == metadata.status_code == 200
+    assert projections and all(
+        not row.intersection({"report", "coverage", "progress", "config", "stages"}) for row in projections)
+    assert fields in projections and any("freshness" in row for row in projections)
+    assert metadata.json()["summary"]["state"] == "current"
+    assert metadata.json()["summary"]["grade"] == "A"
+    assert metadata.json()["summary"]["latest_scan_id"] == max(scan_ids)
+    assert len(compact.content) < 2000
+    response = client.get(scans)
+    assert response.status_code == 200
+    assert len(response.content) > 400_000
+    full = response.json()
+    history = compact.json()
+    assert history == {**full, "items": [{key: row[key] for key in fields} for row in full["items"]]}
+    assert history["total"] == 4
+    assert [item["id"] for item in history["items"]] == sorted(scan_ids, reverse=True)
+    assert client.get(scans, params={"compact": "true", "page": 2}).json()["items"] == []
+    detail = f"/api/v1/security/scans/{max(scan_ids)}"
+    assert client.get(detail).json()["scan"]["coverage"]["inventory_count"] == len(inventory)
+    assert client.get(f"{detail}/report").json()["findings"] == [evidence]
+
+    def denied(*args, **kwargs):
+        raise HTTPException(403, "Access revoked")
+
+    monkeypatch.setattr(github, "authorize_repo", denied)
+    assert client.get(scans, params={"compact": "true"}).status_code == 403
+
+
 def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(seed, security_github, client, monkeypatch):
     with transaction() as db:
         scan = saved_scan(db, seed, status="completed")
@@ -3620,8 +3677,13 @@ def test_security_histories_and_coverage_have_backend_pages_and_recheck_access(s
         assert client.get(path, params={"page": 0}).status_code == 422
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["scan"]["coverage"]["inventory_count"] == 25
-    history = client.get("/api/v1/security/repositories/22/scans").json()
+    history_path = "/api/v1/security/repositories/22/scans"
+    history = client.get(history_path).json()
     assert history["page_size"] == len(history["items"]) == 10 and history["total"] == 26
+    compact_pages = [client.get(history_path, params={"compact": "true", "page": page}).json() for page in (1, 2, 3)]
+    assert [len(page["items"]) for page in compact_pages] == [10, 10, 6]
+    assert len({row["id"] for page in compact_pages for row in page["items"]}) == 26
+    assert [row["id"] for row in compact_pages[0]["items"]] == [row["id"] for row in history["items"]]
     assert not {"inventory", "excluded", "units", "problems"}.intersection(detail["scan"]["coverage"])
     detail = client.get(f"/api/v1/security/findings/{finding_id}").json()
     assert detail["observation_count"] == detail["activity_count"] == 25

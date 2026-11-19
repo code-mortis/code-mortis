@@ -40,6 +40,8 @@ from code_mortis.schemas.security import (
     SecurityScanInput,
     SecurityScanOut,
     SecurityScanPage,
+    SecurityScanSummary,
+    SecurityScanSummaryPage,
     SecurityTriage,
 )
 from code_mortis.security_scans import assessments as security_assessments
@@ -119,13 +121,23 @@ def repository(repository_id: int, db: DB, user: USER):
         scan_count=db.scalar(select(func.count()).select_from(SecurityScan).where(SecurityScan.repository_id == repo.id)))
 
 
-@router.get("/repositories/{repository_id}/scans", response_model=SecurityScanPage)
-def scans(repository_id: int, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1):
+@router.get("/repositories/{repository_id}/scans", response_model=SecurityScanPage | SecurityScanSummaryPage)
+def scans(repository_id: int, db: DB, user: USER, page: Annotated[int, Query(ge=1, le=1000000)] = 1,
+          compact: Annotated[bool, Query(description="Return scan history metadata only.")] = False):
     repo_access(db, user, repository_id)
-    query = select(SecurityScan).where(SecurityScan.repository_id == repository_id)
-    total = db.scalar(select(func.count()).select_from(query.subquery()))
-    items = db.scalars(query.order_by(SecurityScan.created_at.desc(), SecurityScan.id.desc()).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
-    return SecurityScanPage(items=[repository_security.public_scan(row) for row in items], total=total, page=page, page_size=PAGE_SIZE)
+    scope = SecurityScan.repository_id == repository_id
+    total = db.scalar(select(func.count()).select_from(SecurityScan).where(scope))
+    query = (select(SecurityScan).where(scope).order_by(SecurityScan.created_at.desc(), SecurityScan.id.desc())
+             .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
+    if compact:
+        rows = db.execute(query.with_only_columns(
+            SecurityScan.id, SecurityScan.branch, SecurityScan.head_sha, SecurityScan.status, SecurityScan.grade,
+            SecurityScan.created_at, SecurityScan.started_at, SecurityScan.finished_at,
+        ))
+        return SecurityScanSummaryPage(items=[SecurityScanSummary.model_validate(row) for row in rows],
+                                       total=total, page=page, page_size=PAGE_SIZE)
+    return SecurityScanPage(items=[repository_security.public_scan(row) for row in db.scalars(query)],
+                            total=total, page=page, page_size=PAGE_SIZE)
 
 
 @router.post("/repositories/{repository_id}/scans", response_model=SecurityScanOut, status_code=202)

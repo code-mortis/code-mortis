@@ -4528,6 +4528,23 @@ export interface components {
         SecurityScanOut: {
             /** Id */
             id: string;
+            /** Branch */
+            branch: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Status */
+            status: string;
+            /** Grade */
+            grade: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Started At */
+            started_at: string | null;
+            /** Finished At */
+            finished_at: string | null;
             /** Repository Id */
             repository_id: number;
             /** Actor Id */
@@ -4536,16 +4553,10 @@ export interface components {
             connection_id: string | null;
             /** Parent Id */
             parent_id: string | null;
-            /** Branch */
-            branch: string;
-            /** Head Sha */
-            head_sha: string;
             /** Config */
             config: {
                 [key: string]: unknown;
             };
-            /** Status */
-            status: string;
             /** Stages */
             stages: {
                 [key: string]: unknown;
@@ -4562,10 +4573,32 @@ export interface components {
             report: {
                 [key: string]: unknown;
             };
-            /** Grade */
-            grade: string | null;
             /** Error */
             error: string | null;
+        };
+        /** SecurityScanPage */
+        SecurityScanPage: {
+            /** Items */
+            items: components["schemas"]["SecurityScanOut"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** SecurityScanSummary */
+        SecurityScanSummary: {
+            /** Id */
+            id: string;
+            /** Branch */
+            branch: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Status */
+            status: string;
+            /** Grade */
+            grade: string | null;
             /**
              * Created At
              * Format: date-time
@@ -4576,10 +4609,10 @@ export interface components {
             /** Finished At */
             finished_at: string | null;
         };
-        /** SecurityScanPage */
-        SecurityScanPage: {
+        /** SecurityScanSummaryPage */
+        SecurityScanSummaryPage: {
             /** Items */
-            items: components["schemas"]["SecurityScanOut"][];
+            items: components["schemas"]["SecurityScanSummary"][];
             /** Total */
             total: number;
             /** Page */
@@ -7450,6 +7483,8 @@ export interface operations {
         parameters: {
             query?: {
                 page?: number;
+                /** @description Return scan history metadata only. */
+                compact?: boolean;
             };
             header?: never;
             path: {
@@ -7465,7 +7500,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SecurityScanPage"];
+                    "application/json": components["schemas"]["SecurityScanPage"] | components["schemas"]["SecurityScanSummaryPage"];
                 };
             };
             /** @description Validation Error */

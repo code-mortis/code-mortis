@@ -196,11 +196,15 @@ def summaries(db, repository_ids):
     ids = list(repository_ids)
     if not ids:
         return {}
-    latest = {row.repository_id: row for row in db.scalars(select(SecurityScan).where(SecurityScan.repository_id.in_(ids))
-        .distinct(SecurityScan.repository_id).order_by(SecurityScan.repository_id, SecurityScan.created_at.desc(), SecurityScan.id.desc()))}
-    graded = {row.repository_id: row for row in db.scalars(select(SecurityScan).where(
-        SecurityScan.repository_id.in_(ids), SecurityScan.grade.is_not(None))
-        .distinct(SecurityScan.repository_id).order_by(SecurityScan.repository_id, SecurityScan.created_at.desc(), SecurityScan.id.desc()))}
+    scans = (select(SecurityScan.repository_id, SecurityScan.id).where(SecurityScan.repository_id.in_(ids))
+             .distinct(SecurityScan.repository_id)
+             .order_by(SecurityScan.repository_id, SecurityScan.created_at.desc(), SecurityScan.id.desc()))
+    latest = {row.repository_id: row for row in db.execute(scans.add_columns(
+        SecurityScan.status, SecurityScan.created_at, SecurityScan.progress["freshness"].label("freshness"),
+    ))}
+    graded = {row.repository_id: row for row in db.execute(scans.add_columns(
+        SecurityScan.head_sha, SecurityScan.branch, SecurityScan.finished_at,
+    ).where(SecurityScan.grade.is_not(None)))}
     counts = {}
     for repo_id, severity, count in db.execute(select(SecurityFinding.repository_id, SecurityFinding.severity, func.count())
         .where(SecurityFinding.repository_id.in_(ids), SecurityFinding.state.in_(["open", "accepted_risk"]))
@@ -211,7 +215,7 @@ def summaries(db, repository_ids):
         scan, grade = latest.get(identity), graded.get(identity)
         data = SecuritySummary(counts=counts.get(identity, {}))
         if scan:
-            fresh = scan.progress.get("freshness", {})
+            fresh = scan.freshness or {}
             data.coverage = "complete" if scan.status == "completed" else "incomplete"
             data.latest_scan_id, data.latest_status, data.latest_at = scan.id, scan.status, scan.created_at
             for name in ("default_branch", "head_sha", "checked_at"):

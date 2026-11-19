@@ -460,7 +460,7 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
 }
 
 function ScanHistory({ repositoryId }: { repositoryId: number }) {
-  const { query, items, denied, pagination } = usePagedList<Scan>(`/security/repositories/${repositoryId}/scans`);
+  const { query, items, denied, pagination } = usePagedList<Schema["SecurityScanSummary"]>(`/security/repositories/${repositoryId}/scans?compact=true`);
   if (denied) return <ErrorNotice error={query.error} />;
   if (query.isPending) return <Loading />;
   return !items.length && !query.error ? <Empty title="No security scans yet">Run a scan to save findings, coverage, and a repository grade.</Empty> : <div className="pt-4"><div className="divide-y overflow-hidden rounded-lg border bg-card">
