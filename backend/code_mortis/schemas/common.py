@@ -601,6 +601,12 @@ class CandidateDetail(CandidateOut):
     revision: int = 0
 
 
+class AssessmentProgress(StrictModel):
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
 class AssessmentSummary(StrictModel):
     candidates: int = 0
     new_findings: int = 0
@@ -612,6 +618,7 @@ class AssessmentSummary(StrictModel):
     failed: int = 0
     skipped: int = 0
     published_comments: int = 0
+    progress: AssessmentProgress | None = None
 
 
 class RunDetail(BaseModel):

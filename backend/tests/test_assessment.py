@@ -812,6 +812,7 @@ def test_summary_separates_rejected_and_withheld_candidates(seed, github_stub, c
         "candidates": 10, "new_findings": 3, "repeated_observations": 0,
         "rejected_candidates": 5, "withheld_candidates": 2, "pending": 0,
         "incomplete": 2, "failed": 1, "skipped": 0, "published_comments": 0,
+        "progress": {"completed": 9, "failed": 1, "skipped": 0},
     }
     with transaction() as db:
         run = db.get(ReviewRun, identity)
@@ -2007,7 +2008,8 @@ def test_parallel_quality_checks_and_every_pass_usage_are_preserved(pipeline, mo
     assert counts == {"file_0.py": 1 if failure in {"scope_check", "unknown"} else 3 if failure == "three_passes" else 2, "file_1.py": 1}
 
 
-def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch):
+@pytest.mark.parametrize("outcome", ["completed", "failed", "skipped"])
+def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, monkeypatch, outcome):
     from time import monotonic, sleep
 
     pipeline["comments"] = independent_comments(2)
@@ -2015,14 +2017,23 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
         db.get(Repository, 22).settings = {"concurrency": 2, "token_budget": None}
     identity = new_run(assessed=True)
     started, release = Event(), Event()
+    build_context = assessment.build_context
+
+    def context_for(repo_path, env, fetch_env, run, comment, previous, stopped):
+        if outcome == "failed" and comment["path"] == "file_0.py":
+            raise ValueError("Candidate context was unavailable.")
+        return build_context(repo_path, env, fetch_env, run, comment, previous, stopped)
 
     def api(*args, **kwargs):
         context = args[2]
         if context["finding"]["path"] == "file_1.py":
             started.set()
             assert release.wait(10)
+        elif outcome == "skipped":
+            raise ReviewStopped("Candidate could not continue.")
         return kwargs["validator"](verdict(context, required_paths=[]), context), {"tokens": 25}
 
+    monkeypatch.setattr(assessment, "build_context", context_for)
     monkeypatch.setattr(verification, "mortis_verify", api)
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(perform_review, identity)
@@ -2031,12 +2042,27 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
             deadline = monotonic() + 5
             while monotonic() < deadline:
                 with transaction() as db:
+                    run = db.get(ReviewRun, identity)
+                    counts = assessment.summary(db, run)
                     rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
-                    if rows[0].progress_phase == "validating":
-                        assert all(row.status == "running" and row.result is None and row.finding_id is None for row in rows)
-                        assert rows[0].usage["tokens"] is None
-                        assert db.get(ReviewRun, identity).progress["assessment_revision"] >= 3
+                    if getattr(counts.progress, outcome) == 1:
+                        assert counts.progress.model_dump() == {status: int(status == outcome) for status in assessment.ASSESSMENT_OUTCOMES}
+                        assert counts.pending == 2 and counts.failed == counts.skipped == 0
+                        assert all(row.status in {"queued", "running"} and row.result is None and row.finding_id is None for row in rows)
+                        assert rows[0].progress_phase == ("validating" if outcome == "completed" else None)
+                        assert rows[0].usage["tokens"] == (0 if outcome == "failed" else None)
+                        assert run.progress["assessment_revision"] >= 2
+                        assert "progress" not in run.progress["assessment"]
                         assert db.scalar(select(func.count()).select_from(Finding)) == 0
+                        staged = SimpleNamespace(id=run.id, config={**run.config, "pipeline_version": 2},
+                            status=run.status, cancel_requested=False, progress=run.progress,
+                            stages={"assessment": {"status": "running", "execution": "different-attempt"}},
+                            publication_plan=run.publication_plan)
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 0
+                        staged.stages["assessment"]["execution"] = run.progress["execution"]
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 1
+                        staged.cancel_requested = True
+                        assert getattr(assessment.summary(db, staged).progress, outcome) == 0
                         break
                 sleep(0.01)
             else:
@@ -2046,8 +2072,13 @@ def test_parallel_response_progress_precedes_atomic_batch_acceptance(pipeline, m
             release.set()
         future.result(timeout=10)
     with transaction() as db:
-        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity)))
-        assert all(row.status == "completed" and row.progress_phase is None and row.usage == {"tokens": 25} for row in rows)
+        counts = assessment.summary(db, db.get(ReviewRun, identity))
+        rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == identity).order_by(ReviewCandidate.position)))
+        assert [row.status for row in rows] == [outcome, "completed"]
+        assert all(row.progress_phase is None and "assessment_progress" not in row.usage for row in rows)
+        assert rows[1].usage == {"tokens": 25}
+        assert counts.progress.model_dump() == {"completed": 1 + int(outcome == "completed"),
+            "failed": int(outcome == "failed"), "skipped": int(outcome == "skipped")}
 
 
 @pytest.mark.parametrize("kind", ["api"])

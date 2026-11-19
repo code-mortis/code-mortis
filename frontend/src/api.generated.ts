@@ -2198,6 +2198,24 @@ export interface components {
             /** Role */
             role: string;
         };
+        /** AssessmentProgress */
+        AssessmentProgress: {
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+        };
         /** AssessmentResult */
         AssessmentResult: {
             /**
@@ -2283,6 +2301,7 @@ export interface components {
              * @default 0
              */
             published_comments: number;
+            progress?: components["schemas"]["AssessmentProgress"] | null;
         };
         /** BackgroundInput */
         BackgroundInput: {

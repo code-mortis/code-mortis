@@ -7,7 +7,7 @@ from datetime import datetime
 from threading import Event
 
 from pydantic import Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import require_execution_engine
@@ -34,9 +34,10 @@ from code_mortis.models import (
 from code_mortis.reviews import context as review_context
 from code_mortis.reviews import policy as review_policy
 from code_mortis.reviews import verification
-from code_mortis.schemas.common import AssessmentResult, AssessmentSummary
+from code_mortis.schemas.common import AssessmentProgress, AssessmentResult, AssessmentSummary
 
 POLICY_VERSION = 1
+ASSESSMENT_OUTCOMES = {"completed", "failed", "skipped"}
 INSTRUCTIONS = (
     "Adjudicate only the supplied proposed finding; do not search for additional findings. "
     "The proposal is an allegation to test, not an established requirement. "
@@ -153,15 +154,30 @@ def enabled(run):
 def summary(db, run):
     if not enabled(run):
         return None
-    result = AssessmentSummary()
+    progress = AssessmentProgress()
+    result = AssessmentSummary(progress=progress)
     linked = ReviewCandidate.finding_id.is_not(None)
     verdict = ReviewCandidate.result["verdict"].as_string()
-    for status, has_finding, is_new, decision, count in db.execute(select(
-        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict, func.count(),
+    status_column = ReviewCandidate.status
+    progress_status = status_column
+    if run.status == "running" and not run.cancel_requested:
+        stage = run.stages.get("assessment", {}) if run.config.get("pipeline_version") == 2 else run.progress
+        claim = stage.get("execution")
+        if claim and (run.config.get("pipeline_version") != 2 or stage.get("status") == "running"):
+            pending = ReviewCandidate.usage["assessment_progress"]
+            progress_status = case(
+                (status_column.in_(["queued", "running"]) & (pending["claim"].as_string() == claim),
+                 pending["status"].as_string()),
+                else_=status_column,
+            )
+    for status, has_finding, is_new, decision, work_status, count in db.execute(select(
+        status_column, linked, ReviewCandidate.is_new, verdict, progress_status, func.count(),
     ).where(ReviewCandidate.run_id == run.id).group_by(
-        ReviewCandidate.status, linked, ReviewCandidate.is_new, verdict,
+        status_column, linked, ReviewCandidate.is_new, verdict, progress_status,
     )):
         result.candidates += count
+        if work_status in ASSESSMENT_OUTCOMES:
+            setattr(progress, work_status, getattr(progress, work_status) + count)
         if has_finding:
             if is_new:
                 result.new_findings += count
@@ -195,7 +211,7 @@ def record_summary(db, run, *, advance_revision=False, totals_unchanged=False):
     if advance_revision:
         run.progress = {**run.progress, "assessment_revision": run.progress.get("assessment_revision", 0) + 1}
     if value is not None:
-        run.progress = {**run.progress, "assessment": value.model_dump()}
+        run.progress = {**run.progress, "assessment": value.model_dump(exclude={"progress"})}
     if pipeline.enabled(run) and run.stages.get("assessment"):
         rows = list(db.scalars(select(ReviewCandidate).where(ReviewCandidate.run_id == run.id)))
         amounts = [row.usage.get("tokens", 0 if not row.usage else None) for row in rows]
@@ -210,6 +226,8 @@ def withhold_pending(db, run, reason):
     )):
         row.status, row.error, row.finished_at = "skipped", reason, now()
         row.failure_reason = None
+        if "assessment_progress" in row.usage:
+            row.usage = {key: value for key, value in row.usage.items() if key != "assessment_progress"}
         changed = True
     db.flush()
     record_summary(db, run, advance_revision=changed)
@@ -566,6 +584,8 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
             for row in rows:
                 if row.status == "running":
                     row.status, row.usage = "queued", {"tokens": 0}
+                elif row.status == "queued" and "assessment_progress" in row.usage:
+                    row.usage = {key: value for key, value in row.usage.items() if key != "assessment_progress"}
             rows = [row for row in rows if row.status == "queued"]
             if not rows:
                 return None
@@ -807,16 +827,19 @@ def perform(run_id, repo_path, env, fetch_env, connection, credentials, claim, *
                                for row in batch}
                     results = {}
                     for future in as_completed(futures):
-                        results[futures[future]] = future.result()
-                        if results[futures[future]] is None:
+                        identity = futures[future]
+                        outcome = results[identity] = future.result()
+                        if outcome is None:
                             stop_workers.set()
-                        elif len(results) < len(futures) and results[futures[future]][1] is not None:
+                        elif outcome[2] in ASSESSMENT_OUTCOMES:
                             with transaction() as db:
                                 current = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update())
                                 if owns(current) and not current.cancel_requested and current.status == "running":
-                                    row = db.get(ReviewCandidate, futures[future])
-                                    if row.status == "running":
-                                        row.usage = {**row.usage, "response_received": True}
+                                    row = db.get(ReviewCandidate, identity)
+                                    if row.status in {"queued", "running"}:
+                                        row.usage = {**(row.usage or {"tokens": 0}),
+                                            "assessment_progress": {"claim": claim, "status": outcome[2]},
+                                            **({"response_received": True} if outcome[1] is not None else {})}
                                         current.progress = {**current.progress, "assessment_revision": current.progress.get("assessment_revision", 0) + 1}
                     outcomes = [results[row.id] for row in batch]
                 else:

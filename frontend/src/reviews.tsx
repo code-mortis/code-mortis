@@ -85,7 +85,7 @@ import { RepositorySettings } from "./settings";
 import { assessmentFeedback, runFeedback } from "./lib/run-feedback";
 import { coverageFiles, RunCoverage } from "./components/run-coverage";
 import { RunActivity, runActivityEvents } from "./components/run-activity";
-import { RunStages } from "./components/run-stages";
+import { assessmentExceptions, RunStages } from "./components/run-stages";
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
@@ -912,9 +912,11 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       const stage = key === "analysis" ? run.stages?.analysis ?? run.stages?.ocr : run.stages?.[key];
       if (!stage) return null;
       const status = key === "assessment" ? assessmentStatus : stage.status;
+      const exceptions = key === "assessment" ? assessmentExceptions(assessment) : "";
       return <div key={key} className="space-y-2">
         <div className="flex items-center justify-between gap-2"><span className="font-medium">{name}</span><Status value={status} /></div>
         <p className="text-muted-foreground">{tokenUsage(stage.tokens, status)}</p>
+        {exceptions && <p className="tabular-nums text-muted-foreground">{exceptions}</p>}
         {stage.waiting_for === "verification" && <p className="text-muted-foreground">Waiting for fix verification to finish updating finding history.</p>}
         {stage.error && <TechnicalDetails error={stage.error} name={name} />}
       </div>;

@@ -11,6 +11,13 @@ const descriptions = {
   summary: ["PR summary", "Preparing the pull request summary."],
 } as const;
 
+export function assessmentExceptions(assessment?: Schema["AssessmentSummary"] | null) {
+  return (["failed", "skipped"] as const).flatMap((status) => {
+    const count = assessment?.progress?.[status] ?? assessment?.[status];
+    return typeof count === "number" && Number.isSafeInteger(count) && count > 0 ? [`${count.toLocaleString()} ${status}`] : [];
+  }).join(" · ");
+}
+
 export function RunStages({ run, assessment, assessmentStatus, summaryStage, summaryPublicationPending, summarySyncFailed, children }: {
   run: Run; assessmentStatus: string; summaryStage?: Schema["StageState"] | Schema["SummaryState"]; children: ReactNode;
   assessment?: Schema["AssessmentSummary"] | null;
@@ -70,7 +77,9 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   if (progressPhase === "assessment") {
     unit = "candidates";
     total = assessment?.candidates;
-    completed = assessment && typeof assessment.pending === "number" ? assessment.candidates - assessment.pending : undefined;
+    completed = assessment?.progress?.completed ?? (assessment && Number.isSafeInteger(assessment.pending)
+      && assessment.pending >= 0 && assessment.pending <= assessment.candidates
+      ? assessment.candidates - assessment.pending - (assessment.failed ?? 0) - (assessment.skipped ?? 0) : undefined);
   } else if (progressPhase === "verification") {
     unit = "findings";
     const verification = run.progress.verification;
@@ -82,6 +91,7 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   const progress = status !== "queued" && typeof total === "number" && typeof completed === "number"
     && Number.isSafeInteger(total) && Number.isSafeInteger(completed) && total >= 0 && completed >= 0 && completed <= total
     ? `${completed.toLocaleString()} / ${total.toLocaleString()} ${unit}` : null;
+  const exceptions = progressPhase === "assessment" ? assessmentExceptions(assessment) : "";
   const Icon = status === "completed" ? CircleCheck : status === "running" ? CircleDot : status === "failed" ? CircleX
     : status === "partial" ? TriangleAlert : ["blocked", "waiting"].includes(status) ? Pause : ["cancelled", "superseded", "skipped"].includes(status) ? CircleSlash : Circle;
   const color = status === "completed" ? "text-emerald-700 dark:text-emerald-300" : status === "failed" ? "text-red-700 dark:text-red-300"
@@ -90,8 +100,10 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   const title = <><Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{titleText}</span></>;
   return <StageCard label="Review stages" status={status} progress={progress} detailsLabel="Review stage details"
     progressLabel={progress ? "Review progress count" : "Stage progress unavailable"}
-    explanation={explanations[status] ?? "Stage details are not available yet."}
-    title={<span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}</span>}>
+    explanation={exceptions ? `Assessment: ${exceptions}.` : explanations[status] ?? "Stage details are not available yet."}
+    title={<span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}
+      {exceptions && <span className="sr-only">{exceptions}</span>}
+    </span>}>
     {stages.length ? children : null}
   </StageCard>;
 }
