@@ -343,7 +343,7 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, infer, source_packing=None, select_packing=None,
         output_token_policy=analysis.OUTPUT_TOKEN_POLICY, navigation=None, select_navigation=None,
-        record_sources=None):
+        record_sources=None, record_required_paths=None):
     require_shared(connection)
     deadline = time.monotonic() + timeout if timeout is not None else None
     denied = payload.excluded_source_paths({"sources": context.get("sources", {}), "assigned_path": context.get("assigned_path")})
@@ -582,6 +582,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             except verification.VerificationOutputError as exc:
                 exc.usage = {"tokens": used}
                 raise
+        if record_required_paths is not None:
+            record_required_paths(result["required_paths"])
         if attempt == 3:
             reason = "Additional source was still required after four evidence passes."
             break
