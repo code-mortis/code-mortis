@@ -96,25 +96,28 @@ class SecurityFixSelection(SecurityFix):
     evidence: list[SecurityEvidenceSelection] = Field(max_length=20)
 
 
-class SecurityScanOut(ORMModel):
+class SecurityScanSummary(ORMModel):
     id: str
+    branch: str
+    head_sha: str
+    status: str
+    grade: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class SecurityScanOut(SecurityScanSummary):
     repository_id: int
     actor_id: int
     connection_id: str | None
     parent_id: str | None
-    branch: str
-    head_sha: str
     config: dict[str, Any]
-    status: str
     stages: dict[str, Any]
     progress: dict[str, Any]
     coverage: dict[str, Any]
     report: dict[str, Any]
-    grade: str | None
     error: str | None
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
 
 
 class SecurityFindingOut(ORMModel):
@@ -214,6 +217,13 @@ class SecurityFindingDetail(StrictModel):
 
 class SecurityScanPage(StrictModel):
     items: list[SecurityScanOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class SecurityScanSummaryPage(StrictModel):
+    items: list[SecurityScanSummary]
     total: int
     page: int
     page_size: int

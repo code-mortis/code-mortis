@@ -20,14 +20,16 @@ const repository: Schema["RepositoryOut"] = { id: 22, installation_id: 10, full_
 const summary: Schema["SecuritySummary"] = { grade: "D", state: "current", coverage: "complete", freshness: "current", grade_scan_id: "scan", grade_sha: sha,
   graded_at: at, latest_scan_id: "scan", latest_status: "completed", latest_at: at, default_branch: "main", head_sha: sha,
   checked_at: at, counts: { high: 1 } };
-const scan: Schema["SecurityScanOut"] = { id: "scan", repository_id: 22, actor_id: 7, connection_id: "connection", parent_id: null,
-  branch: "main", head_sha: sha, config: { analysis_engine: "mortis", connection: { id: "connection", kind: "api", name: "Team API", model: "test-model" },
-    limits: { token_budget: 200000, timeout_seconds: 900 } }, status: "completed", grade: "D", error: null,
+const scanRow: Schema["SecurityScanSummary"] = { id: "scan", branch: "main", head_sha: sha, status: "completed",
+  grade: "D", created_at: at, started_at: at, finished_at: at };
+const scan: Schema["SecurityScanOut"] = { ...scanRow, repository_id: 22, actor_id: 7, connection_id: "connection", parent_id: null,
+  config: { analysis_engine: "mortis", connection: { id: "connection", kind: "api", name: "Team API", model: "test-model" },
+    limits: { token_budget: 200000, timeout_seconds: 900 } }, error: null,
   stages: Object.fromEntries(["snapshot", "trivy", "analysis", "assessment", "verification", "report"].map((name) => [name, { status: "completed" }])),
   progress: { tokens: 4500, work: { completed: 3, failed: 0, analysis_total: 1, analysis_completed: 1 } },
   coverage: { inventory: { "src/orders.ts": { code: true, hash: "source", lines: 40 } }, excluded: [{ path: "dist/app.js", reason: "Generated directory" }],
     trivy: { version: "0.76.0", database_fresh: true }, targets: { "bun.lock": { type: "bun" } }, problems: [] },
-  report: {}, created_at: at, started_at: at, finished_at: at };
+  report: {} };
 const finding: Schema["SecurityFindingOut"] = { id: "finding", repository_id: 22, state: "open", kind: "code", severity: "high",
   title: "Order lookup does not verify ownership", path: "src/orders.ts", first_scan_id: "scan", last_scan_id: "scan", version: 0,
   rotation: null, issue: {}, evidence: { source_sha: sha, explanation: "A signed-in user can retrieve another account's order.",
@@ -151,7 +153,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
     else if (path === "/repositories") json = [{ ...repository, security: state }];
     else if (path === "/security/repositories") json = { items: [{ repository, summary: state }], total: 1, registered_total: 1, grade_counts: { [state.grade ?? "unrated"]: 1 }, status_counts: { [state.state]: 1 }, page: 1, page_size: 10 };
     else if (path === "/security/repositories/22") json = { repository, summary: state, can_write: options.canWrite ?? true, finding_count: 1, finding_state_counts: { [current.state]: 1 }, scan_count: 1 };
-    else if (path === "/security/repositories/22/scans") json = { items: [saved], total: 1, page: 1, page_size: 10 };
+    else if (path === "/security/repositories/22/scans") json = { items: [{ ...scanRow, status: saved.status, grade: saved.grade }], total: 1, page: 1, page_size: 10 };
     else if (path === "/security/repositories/22/findings" || path === "/security/scans/scan/findings") {
       const row = path.includes("/scans/") ? historical : current;
       json = { items: url.searchParams.get("state") === row.state ? [row] : [], total: url.searchParams.get("state") === row.state ? 1 : 0, registered_total: 1, state_counts: { [row.state]: 1 }, page: 1, page_size: 10 };
@@ -409,7 +411,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: [{ ...scan, status: "partial", grade }], total: 1, page: 1, page_size: 10,
+    items: [{ ...scanRow, status: "partial", grade }], total: 1, page: 1, page_size: 10,
   } }));
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
@@ -1639,10 +1641,12 @@ test("scan history fills missing grades without substituting a previous grade", 
   const statuses = [["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"],
     ["blocked", "shield-alert"], ["running", "loader-circle"], ["queued", "loader-circle"]];
   const otherGrades = ["A", "B", "C", "F"];
-  const rows = [...statuses.map(([status]) => ({ ...scan, id: status, status, grade: null })), { ...scan, id: "warnings", status: "partial" }, scan,
-    ...otherGrades.map((grade) => ({ ...scan, id: `grade-${grade}`, grade }))];
+  const rows = [...statuses.map(([status]) => ({ ...scanRow, id: status, status, grade: null })), { ...scanRow, id: "warnings", status: "partial" }, scanRow,
+    ...otherGrades.map((grade) => ({ ...scanRow, id: `grade-${grade}`, grade }))];
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => {
-    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page"));
+    const params = new URL(route.request().url()).searchParams;
+    expect(params.get("compact")).toBe("true");
+    const pageNumber = Number(params.get("page"));
     return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: rows.length, page: pageNumber, page_size: 10 } });
   });
   await page.goto("/security/repositories/22?tab=history");
@@ -1697,7 +1701,7 @@ test("repository security tabs show stable totals before opening lists and refre
   let findingRequests = 0;
   await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: { repository, summary, can_write: true, ...totals } }));
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
-    items: Array.from({ length: 4 }, (_, index) => ({ ...scan, id: `scan-${index}` })), total: 4, page: 1, page_size: 10,
+    items: Array.from({ length: 4 }, (_, index) => ({ ...scanRow, id: `scan-${index}` })), total: 4, page: 1, page_size: 10,
   } }));
   await page.route("**/api/v1/security/repositories/22/findings?**", (route) => {
     if (["resolved", "false_positive", "accepted_risk"].includes(new URL(route.request().url()).searchParams.get("state") ?? "")) return route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
@@ -1916,7 +1920,7 @@ for (const history of [false, true]) {
     await mock(page);
     await page.clock.install();
     const label = history ? "scan history" : "open findings";
-    const rows = Array.from({ length: 5 }, (_, index) => ({ ...(history ? scan : finding), id: `item-${index}` }));
+    const rows = Array.from({ length: 5 }, (_, index) => ({ ...(history ? scanRow : finding), id: `item-${index}` }));
     let failure = 503;
     const requests: number[] = [];
     await page.route(`**/api/v1/security/repositories/22/${history ? "scans" : "findings"}?**`, (route) => {
@@ -2001,13 +2005,13 @@ test("security history and details show recorded durations and live elapsed time
   await page.clock.setFixedTime(new Date("2026-10-18T23:08:00Z"));
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page);
-  const timed = { ...scan, status: "partial", grade: null, started_at: "2026-10-18T22:38:14.256114Z", finished_at: "2026-10-18T23:07:56.739231Z" };
-  const running: Schema["SecurityScanOut"] = { ...scan, id: "running", status: "running", started_at: "2026-10-18T23:07:50Z", finished_at: null };
-  const rows = [timed, running, { ...scan, id: "queued", status: "queued", started_at: null, finished_at: null },
-    { ...scan, id: "unknown", status: "cancelled", finished_at: null }];
+  const timed = { ...scanRow, status: "partial", grade: null, started_at: "2026-10-18T22:38:14.256114Z", finished_at: "2026-10-18T23:07:56.739231Z" };
+  const running: Schema["SecurityScanSummary"] = { ...scanRow, id: "running", status: "running", started_at: "2026-10-18T23:07:50Z", finished_at: null };
+  const rows = [timed, running, { ...scanRow, id: "queued", status: "queued", started_at: null, finished_at: null },
+    { ...scanRow, id: "unknown", status: "cancelled", finished_at: null }];
   await page.route("**/api/v1/security/repositories/22/scans**", (route) => route.fulfill({ json: { items: rows, total: rows.length, page: 1, page_size: 10 } }));
-  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: timed, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
-  await page.route("**/api/v1/security/scans/running", (route) => route.fulfill({ json: { repository, scan: running, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
+  await page.route("**/api/v1/security/scans/scan", (route) => route.fulfill({ json: { repository, scan: { ...scan, ...timed }, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
+  await page.route("**/api/v1/security/scans/running", (route) => route.fulfill({ json: { repository, scan: { ...scan, ...running }, can_write: false, finding_count: 0, activity_count: 0, activity: [] } }));
   await page.goto("/security/repositories/22?tab=history");
   const history = page.getByRole("tabpanel").last();
   await expect(history.locator('a[href="/security/scans/scan"]')).toContainText("29m 42s");
