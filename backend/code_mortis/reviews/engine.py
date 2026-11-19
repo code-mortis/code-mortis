@@ -68,11 +68,14 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
     redacted_options["max_output_tokens"] = analysis.output_token_limit(output_token_policy)
     graphs = context.sanitize(graph_by_path, credentials, stopped) if graph_by_path else None
     engine_credentials = {key: value for key, value in credentials.items() if key != "redaction_rules"}
-    batches = native.prepare_batches(redacted_plan, connection, redacted_options, engine_credentials,
+    engine_connection = llm.engine_connection(connection, preserve_cache_key_budget=True)
+    batches = native.prepare_batches(redacted_plan, engine_connection, redacted_options, engine_credentials,
         graph_by_path=graphs, stopped=lambda: engine_stopped(stopped), output_token_policy=output_token_policy,
         source_code_policy=source_code_policy, prompt_version=prompt_version, source_tool_policy=source_tool_policy)
     result = []
     for batch in batches:
+        if engine_connection is not connection:
+            batch.connection = dict(connection)
         batch.options = dict(options)
         if output_token_policy == analysis.WORKFLOW_OUTPUT_POLICY:
             batch.options["max_output_tokens"] = 0

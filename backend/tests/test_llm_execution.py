@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import socket
 from datetime import timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -115,6 +116,64 @@ def test_package_transport_uses_trusted_hosts_from_app_config(seed, monkeypatch)
     _, ids, _, _ = planned(seed, requests={"a": value}, workflow=True)
     response = execute(ids["a"], value, lambda _: httpx.Response(200, json=result("openai", usage=True)))
     assert response.output == {"ok": True}
+
+
+@pytest.mark.parametrize(("failure", "code", "message"), [
+    ("public_http", "endpoint_policy", "require HTTPS"),
+    ("trusted_dns", "endpoint_policy", "could not be found"),
+    ("engine_dns", "request_validation", "could not be found"),
+])
+def test_endpoint_policy_failures_settle_without_provider_usage(seed, monkeypatch, failure, code, message):
+    host = "provider.example"
+    trusted = host if failure == "trusted_dns" else ""
+    scheme = "https" if failure == "engine_dns" else "http"
+    with transaction() as db:
+        db.get(Connection, "connection").base_url = f"{scheme}://{host}/v1"
+    plan_id, ids, values, _ = planned(seed, workflow=True)
+    monkeypatch.setattr(settings(), "allow_private_endpoints", True)
+    monkeypatch.setattr(settings(), "trusted_endpoint_hosts", trusted)
+    resolve = socket.getaddrinfo
+    lookups = 0
+
+    def resolve_provider(hostname, port, *args, **kwargs):
+        nonlocal lookups
+        if hostname != host:
+            return resolve(hostname, port, *args, **kwargs)
+        lookups += 1
+        assert port == (443 if scheme == "https" else 80)
+        if trusted or (failure == "engine_dns" and lookups == 2):
+            raise socket.gaierror("fixture DNS failure")
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", port))]
+
+    def no_http(_):
+        pytest.fail("Endpoint policy must fail before any HTTP request")
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_provider)
+    monkeypatch.setenv("CM_ALLOW_PRIVATE_ENDPOINTS", "true")
+    monkeypatch.setenv("CM_TRUSTED_ENDPOINT_HOSTS", trusted)
+    with pytest.raises(llm.InferenceError, match=message) as caught:
+        execute(ids["a"], values["a"], no_http)
+    assert caught.value.code == code and not caught.value.consumption_unknown
+    _, attempts, admissions = rows()
+    assert len(attempts) == 1 and len(admissions) == 1 and admissions[0].status == "released"
+    assert attempts[0].usage_state == "known" and attempts[0].usage_tokens == 0
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan_id, "analysis")).charged_tokens == 0
+
+
+def test_package_transport_value_error_after_dispatch_retains_unknown_usage(seed, monkeypatch):
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    _, ids, values, _ = planned(seed, workflow=True)
+
+    def fail_after_dispatch(_):
+        raise ValueError("Fixture transport failure")
+
+    with pytest.raises(ValueError, match="Fixture transport failure"):
+        execute(ids["a"], values["a"], fail_after_dispatch)
+    tasks, attempts, _ = rows()
+    assert len(attempts) == 1 and attempts[0].usage_state == "unknown" and attempts[0].usage_tokens is None
+    assert tasks[0].status == "uncertain"
 
 
 @pytest.mark.parametrize("known_usage", [True, False])

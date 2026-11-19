@@ -1678,6 +1678,44 @@ def test_snapshot_analyzes_astro_without_loading_protected_generated_or_document
         item.source(".agents/skill/page.astro")
 
 
+def test_snapshot_and_model_diff_withhold_unsupported_git_paths(tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False)
+    item.git.mkdir()
+
+    def git(*args):
+        return security_engine.git_source.git(item.git, item.env, *args)
+
+    git("init", "--quiet")
+    for path, source in {"app.py": "original()", "before.py": "move_to_unsupported()",
+                         "original\x7f.py": "move_from_unsupported()"}.items():
+        (item.git / path).write_text(source + "\n")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "original")
+    original = git("rev-parse", "HEAD").strip()
+    (item.git / "app.py").write_text("current()\n")
+    unsupported = "current\x7f.py"
+    (item.git / "before.py").rename(item.git / unsupported)
+    (item.git / "original\x7f.py").rename(item.git / "after.py")
+    generated = item.git / "node_modules" / "generated\x7f.py"
+    generated.parent.mkdir()
+    generated.write_text("generated()\n")
+    git("add", "-A")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "current")
+    item.sha = git("rev-parse", "HEAD").strip()
+
+    item.populate()
+    assert set(item.inventory) == {"app.py", "after.py"}
+    assert [problem["path"] for problem in item.problems] == [unsupported]
+    assert [entry["path"] for entry in item.excluded] == ["node_modules/generated\x7f.py"]
+    assert {path.name for path in item.files.iterdir()} == set(item.inventory)
+    assert item.renamed(original, "before.py") == "before.py"
+    with pytest.raises(ValueError, match="invalid repository path"):
+        item.read(unsupported)
+    diff = item.diff(original, model_context=True)
+    assert "current()" in diff
+    assert "move_to_unsupported()" not in diff and "move_from_unsupported()" not in diff
+
+
 def test_model_verification_diff_fits_prompt_without_excluded_files_or_losing_evidence(tmp_path):
     item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False)
     item.git.mkdir()
