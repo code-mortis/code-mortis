@@ -700,7 +700,7 @@ def perform(scan_id, claim):
                     and cached.get("result", {}).get("verdict") != "uncertain" and payload.reusable_source_context(cached))
         return context, identity, cached if reusable else None
 
-    def ai(item, task, context, key, allowance=None, *, parallel=False):
+    def ai(item, task, context, key, allowance=None, *, parallel=False, record_required_paths=None):
         context, identity, cached = task_input(task, context, key)
         if cached is not None:
             checkpoint(scan_id, key, "completed", result=cached["result"], input_hash=identity, tokens=0, reused=True,
@@ -779,7 +779,8 @@ def perform(scan_id, claim):
                                                 remaining, timeout(), stopped, uid(),
                                                 infer=infer, source_packing=packing, output_token_policy=token_policy,
                                                 select_packing=select_packing, navigation=navigation,
-                                                select_navigation=select_navigation, record_sources=record_sources)
+                                                select_navigation=select_navigation, record_sources=record_sources,
+                                                record_required_paths=record_required_paths)
             checkpoint(scan_id, key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                        citation_contract=security_engine.CITATION_CONTRACT)
             return result
@@ -815,6 +816,7 @@ def perform(scan_id, claim):
             raise
 
     problems, observed, verdicts, advisories = [], set(), {}, {}
+    assessment_problems, uncertain_keys, assessment_blockers = [], set(), set()
     item = None
     try:
         settings().work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -942,10 +944,10 @@ def perform(scan_id, claim):
                     if used is None:
                         raise ValueError("Token usage is unknown; further AI checks require an explicit retry.")
                     allowance = None if limits["token_budget"] is None or not needed else (limits["token_budget"] - used) // needed
-                    pending = {}
+                    pending, required_paths = {}, {candidate.id: [] for candidate in batch}
                     for candidate in batch:
                         pending[pool.submit(ai, item, "assessment", contexts[candidate.id], f"assessment:{candidate.id}", allowance,
-                                            parallel=parallel)] = candidate
+                                            parallel=parallel, record_required_paths=required_paths[candidate.id].extend)] = candidate
                     results, fatal = {}, None
                     for future in as_completed(pending):
                         candidate = pending[future]
@@ -981,7 +983,13 @@ def perform(scan_id, claim):
                                 continue
                             assessment_completed += 1
                             if assessed["verdict"] == "uncertain":
-                                problems.append("A proposed security finding requires additional verification.")
+                                assessment_problems.append("A proposed security finding requires additional verification.")
+                                proposal = candidate.proposal
+                                uncertain_keys.update(assessment_keys({
+                                    **proposal,
+                                    "evidence": [*proposal["evidence"], *assessed["evidence"],
+                                                 *({"path": path} for path in required_paths[candidate.id])],
+                                }, item, history))
                             if assessed["verdict"] != "confirmed":
                                 continue
                             proposal = candidate.proposal
@@ -993,7 +1001,8 @@ def perform(scan_id, claim):
                             observed.add(finding.id)
                     stage(scan_id, "assessment", "running", completed=assessment_completed)
                     remaining = [row for row in remaining if row not in batch]
-            stage(scan_id, "assessment", "completed" if len(problems) == assessment_problem_count else "partial")
+            stage(scan_id, "assessment",
+                  "completed" if len(problems) == assessment_problem_count and not assessment_problems else "partial")
             stage(scan_id, "verification", "running", total=sum(old["id"] not in observed and
                 (old["state"] in {"open", "accepted_risk"} or old["pending_close"]) for old in previous), completed=0)
             for old in previous:
@@ -1013,11 +1022,18 @@ def perform(scan_id, claim):
                             dependency_advisory(evidence, packages, token, stopped, advisories))
                 except (ValueError, KeyError) as exc:
                     verdict = {"verdict": "uncertain", "explanation": item.redact(str(exc))[:1000]}
+                if verdict["verdict"] == "fixed" and uncertain_keys:
+                    fix_keys = assessment_keys(old, item) | assessment_keys({
+                        "path": old["path"], "evidence": verdict.get("evidence", []),
+                    }, item)
+                    if uncertain_keys & fix_keys:
+                        assessment_blockers.add(old["id"])
                 verdicts[old["id"]] = {**verdict, "finding_version": old["version"]}
                 stage(scan_id, "verification", "running", completed=len(verdicts))
             stage(scan_id, "verification", "partial" if any(row["verdict"] == "uncertain" for row in verdicts.values()) else "completed", findings=len(verdicts))
             fresh = branch_head(full_name, token)
-            finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]))
+            finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]),
+                   assessment_problems=assessment_problems, assessment_blockers=assessment_blockers)
     except TransientAuthorizationError:
         with transaction() as db:
             row = db.scalar(select(SecurityScan).where(SecurityScan.id == scan_id).with_for_update())
@@ -1044,11 +1060,11 @@ def perform(scan_id, claim):
                 row.error, row.finished_at = message[:2000], now()
                 row.stages = {name: {**value, "status": "failed" if value.get("status") == "running" else "skipped"}
                               if value.get("status") in {"running", "pending"} else value for name, value in row.stages.items()}
-                row.report = report_data(db, row, problems + [message[:2000]])
+                row.report = report_data(db, row, problems + assessment_problems + [message[:2000]])
                 activity(db, "scan_failed", scan=row, reason=row.error)
 
 
-def finish(scan_id, verdicts, problems, freshness, supported):
+def finish(scan_id, verdicts, problems, freshness, supported, *, assessment_problems=(), assessment_blockers=()):
     with transaction() as db:
         scan = db.get(SecurityScan, scan_id)
         if not scan or scan.status != "running" or scan.cancel_requested:
@@ -1075,8 +1091,9 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         if db.scalar(select(SecurityFinding.id).where(SecurityFinding.repository_id == scan.repository_id,
             SecurityFinding.state.in_(["open", "accepted_risk"]), SecurityFinding.severity.not_in(security_engine.SEVERITIES)).limit(1)):
             problems.append("An unresolved finding has unclassified severity; the repository cannot be graded.")
-        # Coverage failures still block resolution; another finding's uncertainty or stale version does not.
+        # Coverage failures block all closures. Candidate uncertainty only blocks related findings.
         resolution_ready = not problems
+        problems = [*problems, *assessment_problems]
         for identity, verdict in verdicts.items():
             finding = db.scalar(select(SecurityFinding).where(SecurityFinding.id == identity).with_for_update())
             if finding.version != verdict["finding_version"]:
@@ -1087,7 +1104,8 @@ def finish(scan_id, verdicts, problems, freshness, supported):
         for identity, verdict in verdicts.items():
             finding = db.get(SecurityFinding, identity)
             outcome = {"fixed": "fixed", "still_present": "present", "uncertain": "uncertain"}[verdict["verdict"]]
-            verified = resolution_ready and current and finding.version == verdict["finding_version"] and verdict["verdict"] == "fixed"
+            verified = (resolution_ready and current and identity not in assessment_blockers
+                        and finding.version == verdict["finding_version"] and verdict["verdict"] == "fixed")
             if verified and finding.state in {"open", "accepted_risk"}:
                 finding.state, finding.updated_at = "resolved", now()
                 finding.version += 1

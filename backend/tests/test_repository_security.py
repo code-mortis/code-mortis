@@ -1711,6 +1711,64 @@ def test_invalid_assessment_preserves_other_confirmed_findings(seed, security_gi
         assert len(scan.report["findings"]) == 1
 
 
+@pytest.mark.parametrize("relationship", ["rename", "requested_source", "fix_evidence", "incomplete_trivy"])
+def test_partial_assessment_closes_only_independent_fixes(seed, security_github, monkeypatch, tmp_path, relationship):
+    related_path = "old.py" if relationship == "rename" else "dependent.py"
+    paths = ("candidate.py", "dependent.py", "independent.py")
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {"code": True, "hash": digest(path), "lines": 1} for path in paths}
+    item.source = lambda path, sha=None: path
+    item.renamed = lambda sha, path: "candidate.py" if path == "old.py" else path
+    item.diff = lambda sha, **kwargs: "Source changed"
+
+    def citation(path, revision="current"):
+        return {"revision": revision, "path": path, "start_line": 1, "end_line": 1, "quote": path}
+
+    proposal = {"title": "Pending candidate", "category": "test", "severity": "low", "path": "candidate.py",
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact", "remediation": "Fix",
+                "verification": "Test", "evidence": [citation("candidate.py")]}
+
+    def ask(*args, **kwargs):
+        task, context = args[3:5]
+        if task == "analysis":
+            return {"findings": [proposal] if context["assigned_path"] == "candidate.py" else [], "required_paths": []}, {"tokens": 1}
+        if task == "assessment":
+            if relationship == "requested_source":
+                kwargs["record_required_paths"]([related_path])
+            return {"verdict": "uncertain", "finding_id": None, "explanation": "Still needs evaluation",
+                    "evidence": [citation("candidate.py")], "required_paths": []}, {"tokens": 1}
+        evidence = [citation(context["finding"]["path"], "original"), citation(next(iter(context["sources"]["current"])))]
+        if relationship == "fix_evidence" and context["finding"]["path"] == related_path:
+            evidence.append(citation("candidate.py"))
+        return {"verdict": "fixed", "explanation": "Correction verified", "evidence": evidence}, {"tokens": 1}
+
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "targets": {},
+        "problems": ["Coverage incomplete"] if relationship == "incomplete_trivy" else [], "metadata": {}})
+    monkeypatch.setattr(security_engine, "ask", ask)
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed")
+        related = saved_finding(db, seed, prior, path=related_path).id
+        independent = saved_finding(db, seed, prior, path="independent.py").id
+        scan_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid())).id
+    perform_security(scan_id, "test:1")
+
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.status == scan.report["status"] == "partial", scan.error
+        assert scan.stages["assessment"]["status"] == "partial"
+        assert scan.stages["verification"]["completed"] == 2
+        assert scan.report["unsettled_candidates"][0]["proposal"]["path"] == "candidate.py"
+        assert db.get(SecurityFinding, related).state == "open"
+        blocked = relationship == "incomplete_trivy"
+        assert db.get(SecurityFinding, independent).state == ("open" if blocked else "resolved")
+        assert {row["finding_id"]: row["outcome"] for row in scan.report["findings"]} == {
+            related: "not_observed", independent: "not_observed" if blocked else "fixed",
+        }
+        assert next(row for row in scan.report["findings"] if row["finding_id"] == related)["verification"]["verdict"] == "fixed"
+
+
 @pytest.mark.parametrize(("earlier_error", "assessment_result", "verification_result"), [
     (None, "rejected", "still_present"),
     ("analysis", "rejected", "still_present"),
@@ -2837,7 +2895,7 @@ def test_security_unavailable_evidence_preserves_uncertainty_and_scope(tmp_path,
 def test_security_evidence_pass_limit_keeps_uncertainty_identity_and_usage(tmp_path, monkeypatch, kind, task, redaction_failure):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
     item.inventory = {f"guard{i}.py": {} for i in range(1, 5)}
-    calls, reads = [], []
+    calls, reads, requested = [], [], []
     def read(path, sha=None):
         reads.append((path, sha))
         return "guard = True"
@@ -2865,10 +2923,11 @@ def test_security_evidence_pass_limit_keeps_uncertainty_identity_and_usage(tmp_p
             ask_security(*args)
         assert error.value.usage == {"tokens": 28} and error.value.feedback["kind"] == "redaction"
     else:
-        result, usage = ask_security(*args)
+        result, usage = ask_security(*args, record_required_paths=requested.extend)
         assert result["verdict"] == "uncertain" and result["required_paths"] == []
         assert result.get("finding_id") is None and usage == {"tokens": 28}
         assert "guard4.py" in result["explanation"] and "four evidence passes" in result["explanation"]
+        assert requested == [f"guard{i}.py" for i in range(1, 5)]
     assert calls == [100, 93, 86, 79]
     assert reads == [(f"guard{i}.py", revision) for i in range(1, 4)
                      for revision in ([None, OLD] if task == "verification" else [None])]
