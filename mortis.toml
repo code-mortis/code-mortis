@@ -1,0 +1,33 @@
+[review]
+analysis_engine = "mortis"
+effort = "high"
+review_sensitivity = "broad"
+language = "English"
+concurrency = 8
+max_files = 0
+timeout_seconds = 0
+token_budget = 0
+assessment_token_budget = 0
+verification_token_budget = 0
+summary_timeout_seconds = 0
+summary_token_budget = 0
+auto_resolve = true
+summary_diagram_enabled = true
+ai_fix_prompts_enabled = false
+automatic = true
+include_bot_prs = false
+exclusions = "AGENTS.md,.gitignore,collections/code-mortis/api/*/*.yml,collections/code-mortis/public/*.yml"
+max_output_tokens = 0
+
+background = '''
+Code Mortis (wilfredinni/code-mortis) is a self-hosted web workspace for GitHub pull-request reviews powered by Open Code Review (OCR). It turns OCR and delegated-model reviews into GitHub App comments while keeping runs, coverage, findings and resolution history in one workspace. Resolving or reopening a thread in either GitHub or Code Mortis updates the other. It supports shared administrator-managed API connections and member-owned personal ChatGPT and Claude Code subscriptions sharing normalized history and publisher, with explicit per-repository owner consent required for personal automation and no silent provider fallback.
+
+Stack is FastAPI, Pydantic-settings, SQLAlchemy, Alembic, PostgreSQL, Celery/Redis, httpx, cryptography, PyJWT and Authlib on Python >=3.12 <3.15; React 19, TypeScript ~5.8, Vite 6, React Router 7, TanStack Query 5, Tailwind 4, shadcn/ui Radix primitives, lucide-react, react-markdown, diff, highlight.js and Inter Variable. It bundles unmodified OCR 1.12.11 (Apache-2.0) plus provider metadata with added OpenCode/custom presets, and optionally installs unmodified @openai/codex 0.160.1 and @anthropic-ai/claude-code 2.1.292 for native execution. Frontend UI primitives are shadcn-generated MIT code.
+
+Architecture: production serves compiled frontend and API from one HTTPS origin behind a reverse proxy to 127.0.0.1:8080 with WebSocket forwarding; development is an independent Compose project at http://localhost:5173 with Vite HMR in Docker, backend reload, separate database, Redis, profiles, secrets/volumes and GitHub App, using smee.io as webhook relay. CM_PUBLIC_URL is browser/callback origin; CM_WEBHOOK_URL optionally overrides only webhook destination. GitHub provides application identity and current permissions with numeric membership surviving renames; registration, Authlib PKCE login and installation are separate browser-bound single-use flows. Native clients run on the server with persistent private per-connection profiles. Celery uses separate review and synchronization queues plus scheduler/runner/worker services.
+
+Important modules in this sample: backend/code_mortis/api.py (/api/v1 session/CSRF/origin checks, admin/bootstrap, browser binding, OAuth attempts), github.py/checks.py, reviews.py/ocr.py/model_discovery.py/verification.py/resolution_probe.py, subscriptions.py/delegated.py/native_runner.py/runner_client.py/jobs.py, config.py/db.py/models.py/schemas.py/security.py/main.py/manage.py; Alembic env with compare_type and migrations for auth transactions, connections/grants/console-tickets and review-run engine/progress/blocking; tests for checks, model discovery, OCR, review commands/flow/limits, subscriptions and verification plus smoke tests; frontend src/api.ts (same-origin fetch with X-CSRF-Token, useApi polling, useAction invalidation), reviews.tsx/settings.tsx/subscriptions.tsx/main.tsx, components/code.tsx (highlight.js with 60k fallback, diff patch), model-picker.tsx/common.tsx, lib/run-feedback.ts (skipped/cancelled/superseded/blocked reasoning) and ui/*, playwright workspace.spec.ts, and docs/acceptance.md/operations.md plus DESIGN/PLAN/PRODUCT/README.
+
+Conventions: locked/exact OCR and client versions, Ruff 110/py312 with E,F,I,UP,B, pytest under tests/, tsc -b plus vite build, openapi-typescript generation, Playwright list reporter with zero retries, reduced-motion/light/trace-on-failure and desktop/mobile projects, additive migrations, manage.py init-env without committing .env, and keyboard/focus/contrast/responsive/light-dark accessibility.
+
+Gaps: many sources in this bundle are truncated (README, DESIGN, PLAN, api.py and UI/libs), and Compose files, full backend/frontend implementations and docs/acceptance/operations evidence are absent, so deployment topology, job recovery, permission revalidation, quota/cancellation behavior and real-account integrations cannot be fully verified here.'''
