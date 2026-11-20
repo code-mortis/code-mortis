@@ -2322,8 +2322,14 @@ export interface components {
         };
         /** BackgroundInput */
         BackgroundInput: {
+            /**
+             * Mode
+             * @default draft
+             * @enum {string}
+             */
+            mode: "draft" | "context" | "summary";
             /** Connection Id */
-            connection_id: string;
+            connection_id?: string | null;
             /**
              * Model
              * @default
@@ -2342,6 +2348,8 @@ export interface components {
             status: "queued" | "running" | "done" | "failed";
             /** Background */
             background?: string | null;
+            /** Project Summary */
+            project_summary?: string | null;
             /** Error */
             error?: string | null;
         };
@@ -3723,8 +3731,8 @@ export interface components {
              */
             open_findings: number;
         };
-        /** RepoSettings */
-        RepoSettings: {
+        /** RepoSettingsWithSummary */
+        RepoSettingsWithSummary: {
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /** Token Budget */
@@ -3813,6 +3821,8 @@ export interface components {
             rules?: {
                 [key: string]: unknown;
             } | null;
+            /** Project Summary */
+            project_summary?: string | null;
         };
         /** RepositoryActivity */
         RepositoryActivity: {
@@ -3840,8 +3850,10 @@ export interface components {
             code_graph_limits?: components["schemas"]["CodeGraphLimits"] | null;
             /** Connection Id */
             connection_id?: string | null;
-            settings?: components["schemas"]["RepoSettings"];
+            settings?: components["schemas"]["RepoSettingsWithSummary"];
             scan_settings?: components["schemas"]["ScanSettings"] | null;
+            /** Expected Background */
+            expected_background?: string | null;
         };
         /** RepositoryOut */
         RepositoryOut: {
@@ -3870,7 +3882,7 @@ export interface components {
              * @default false
              */
             connection_requires_setup: boolean;
-            settings: components["schemas"]["RepoSettings"];
+            settings: components["schemas"]["RepoSettingsWithSummary"];
             scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs

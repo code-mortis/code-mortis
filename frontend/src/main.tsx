@@ -33,6 +33,7 @@ import { AppHeader } from "./components/app-header";
 import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
 import { AppBreadcrumb } from "./components/app-breadcrumb";
 import { RepositoryActivity } from "./components/repository-activity";
+import { RepositorySummary } from "./components/repository-summary";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
@@ -53,7 +54,7 @@ function NavigationError() {
   return <div className="mb-4 space-y-2"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
 }
 
-function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
+function RepositoryOverview({ analytics = false, admin = false }: { analytics?: boolean; admin?: boolean }) {
   const route = useLocation();
   const params = new URLSearchParams(route.search);
   const { directory, repository } = useWorkspaceNavigation();
@@ -63,7 +64,12 @@ function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
   if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
     return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
   }
-  if (!analytics) return <><PageTitle title="Overview" /><RepositoryActivity key={repository.id} repositoryId={repository.id} /></>;
+  if (!analytics) return <>
+    <PageTitle title="Overview">
+      {(admin || repository.settings.project_summary) && <RepositorySummary key={repository.id} repository={repository} admin={admin} />}
+    </PageTitle>
+    <RepositoryActivity key={repository.id} repositoryId={repository.id} />
+  </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
 }
 
@@ -308,7 +314,7 @@ function App() {
             <Routes>
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
               <Route path="/analytics" element={<LegacyAnalytics />} />
-              <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview />} />
+              <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview admin={session.data.role === "admin"} />} />
               <Route path="/repositories/:repositoryId/analytics" element={<RepositoryOverview analytics />} />
               <Route path="/organizations/:owner/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />

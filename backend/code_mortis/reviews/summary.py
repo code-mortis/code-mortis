@@ -321,7 +321,7 @@ def retry_generation(db, run, repo, actor):
     if not connection:
         raise ValueError("Select an AI connection in repository settings before retrying the summary.")
     authorize_connection(db, connection, repo, "manual", actor)
-    config = {"settings": RepoSettings.model_validate(repo.settings).model_dump(),
+    config = {"settings": RepoSettings.for_execution(repo.settings),
               "connection": connection_snapshot(connection, workflow=True), "execution_limits": EXECUTION_LIMITS}
     config.update(engine_snapshot(config["settings"]))
     require_available_engine(config)

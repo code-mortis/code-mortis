@@ -42,9 +42,10 @@ def test_settings_defaults_round_trip_and_validation(seed, github_stub, client):
             "enabled": True, "connection_id": "connection", "settings": values,
         })
         assert response.status_code == 200
-        assert response.json()["settings"] == RepoSettings(**values).model_dump()
+        expected = RepoSettings(**values).model_dump()
+        assert response.json()["settings"] == {**expected, "project_summary": None}
         with transaction() as db:
-            assert db.get(Repository, 22).settings == response.json()["settings"]
+            assert db.get(Repository, 22).settings == expected
     for key, values in {"timeout_seconds": [0, 59, 3601], "token_budget": [0, 999, 5000001],
                         "max_files": [0, -1, 1.5, True], "delegated_context_bytes": [0, 4095, 20000001],
                         "review_sensitivity": [None, "high", 1]}.items():
@@ -66,9 +67,10 @@ def test_review_sensitivity_snapshots_preserve_settings_and_legacy_runs(seed, gi
             "verification_token_budget", "summary_token_budget", "summary_timeout_seconds", "delegated_context_bytes",
         ))
         original = copy.deepcopy(first.config)
-        repo.settings = {**repo.settings, "review_sensitivity": "low_noise"}
+        repo.settings = {**repo.settings, "review_sensitivity": "low_noise", "project_summary": "About the project."}
         second = reviews.create_run(db, pr, repo, "manual")
         assert second.config["settings"]["review_sensitivity"] == "low_noise"
+        assert "project_summary" not in second.config["settings"]
         assert first.config == original
         assert repo.settings["rules"] == second.config["settings"]["rules"] == rules
         assert repo.settings["background"] == second.config["settings"]["background"] == "Project context"

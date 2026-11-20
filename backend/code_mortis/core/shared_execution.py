@@ -17,6 +17,13 @@ def require_shared(connection):
         raise ValueError(RETIRED_MESSAGE)
 
 
+def background_result_saved(payload) -> bool:
+    mode = payload.get("mode")
+    if mode == "summary":
+        return bool(payload.get("project_summary"))
+    return bool(payload.get("background") and (not mode or payload.get("project_summary")))
+
+
 def cancel_retired_review(db, run, reason=RETIRED_MESSAGE):
     from code_mortis.reviews.service import cancel_review
 
@@ -57,7 +64,7 @@ def settle_job(db, job, reason=RETIRED_MESSAGE):
     from code_mortis.reviews.summary import fail_retry
     from code_mortis.security_scans.service import cancel
 
-    saved = job.kind == "generate_background" and bool(job.payload.get("background"))
+    saved = job.kind == "generate_background" and background_result_saved(job.payload)
     if job.kind == "generate_summary":
         run = db.get(ReviewRun, job.payload.get("run_id"))
         outcome = job.payload.get("summary_attempt_result")

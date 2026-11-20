@@ -143,6 +143,13 @@ def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
         raise ValueError("The plan review does not match its durable job")
     if specification.scan_id and job.payload.get("scan_id") != specification.scan_id:
         raise ValueError("The plan security scan does not match its durable job")
+    if "context" in specification.revisions and (
+        job.kind != "generate_background" or job.payload.get("mode") != "summary"
+        or job.payload.get("repository_id") != specification.repository_id
+        or job.payload.get("context_fingerprint") != specification.revisions["context"]
+        or job.payload.get("connection") != specification.connection
+    ):
+        raise ValueError("The repository summary plan must match its pinned job context")
     if specification.run_id:
         # Lock before the FK insert so concurrent stage plans cannot deadlock upgrading KEY SHARE locks.
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == specification.run_id).with_for_update())

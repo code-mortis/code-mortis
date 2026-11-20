@@ -38,7 +38,7 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
     let json: unknown;
     if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
-    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true }));
+    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "" } }));
     else if (path.startsWith("/analytics/")) {
       requests.push(url);
       const view = path.split("/").at(-1)!;

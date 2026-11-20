@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, Shield, SlidersHorizontal, Users } from "lucide-react";
 import {
   api,
@@ -13,6 +13,7 @@ import {
 import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
+import { savedBackgroundInputs } from "./hooks/use-background-generation";
 import { CodeGraphSettings } from "./components/code-graph-settings";
 import { SettingsNavigation } from "./components/settings-navigation";
 import { GitHubInstallations } from "./components/github-installations";
@@ -187,6 +188,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const action = useAction();
   const id = useId();
   const location = useLocation();
+  const navigate = useNavigate();
+  const contextGeneration = location.state?.contextGeneration as { jobId: string; inputs: string } | undefined;
   const [params, setParams] = useSearchParams();
   const sections = [
     { value: "reviews", label: "Review behavior", icon: GitPullRequest },
@@ -226,6 +229,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
       ? "Maximum individual file size cannot exceed Maximum total source size." : "");
   }, [graphLimits.max_file_bytes, graphLimits.max_source_bytes]);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
+  const savedBackground = useRef(repo.settings.background ?? "");
+  const savedProjectSummary = useRef(repo.settings.project_summary);
   const [settings, setSettings] = useState({
     ...repo.settings,
     analysis_engine: "mortis" as const,
@@ -236,6 +241,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
     summary_timeout_seconds: repo.settings.summary_timeout_seconds ?? null,
     summary_token_budget: repo.settings.summary_token_budget ?? null,
     max_files: repo.settings.max_files ?? null,
+    background: repo.settings.background ?? "",
   });
   const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
   const sensitivity = reviewSensitivities[sensitivityIndex];
@@ -282,6 +288,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
           || scanSettings.concurrency !== savedScanSettings.current.concurrency;
         try {
+          const { project_summary, ...nextSettings } = settings;
+          const contextChanged = savedBackground.current !== settings.background;
+          const summaryChanged = !!project_summary && (contextChanged || savedProjectSummary.current !== project_summary);
           await action.mutateAsync({
             path: `/repositories/${repo.id}`,
             method: "PUT",
@@ -290,14 +299,23 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               code_graph_enabled: codeGraphEnabled,
               code_graph_limits: graphLimits,
               connection_id: connection || null,
+              expected_background: savedBackground.current,
               ...(scanSettingsChanged ? { scan_settings: scanSettings } : {}),
               settings: {
-                ...settings,
+                ...nextSettings,
+                ...(summaryChanged ? { project_summary } : {}),
                 concurrency: settings.concurrency,
                 rules: rules.trim() ? parseObject(rules, "Rules") : null,
               },
             },
           });
+          if (contextChanged || summaryChanged) savedProjectSummary.current = project_summary;
+          savedBackground.current = settings.background;
+          if (contextGeneration && (contextChanged || summaryChanged)) {
+            const state = { ...location.state };
+            delete state.contextGeneration;
+            navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state });
+          }
           if (scanSettingsChanged) savedScanSettings.current = scanSettings;
           toast.success("Repository configuration saved.");
         } catch (e) {
@@ -483,8 +501,10 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               defaultModel={selectedConnection?.model ?? ""}
               tokenBudget={settings.token_budget}
               timeoutSeconds={settings.timeout_seconds}
-              value={settings.background}
-              onChange={(value) => setSettings((current) => ({ ...current, background: value }))}
+              value={{ background: settings.background, project_summary: settings.project_summary }}
+              onChange={(value) => setSettings((current) => ({ ...current, ...value }))}
+              initialJobId={contextGeneration?.jobId}
+              initialContextChanged={!!contextGeneration && contextGeneration.inputs !== savedBackgroundInputs(repo)}
             />
           </section>
           <section hidden={section !== "code-graph"} data-settings-section="code-graph" aria-labelledby={`${id}-code-graph`} className="space-y-6">

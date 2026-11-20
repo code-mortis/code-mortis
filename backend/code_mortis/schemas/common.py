@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
@@ -132,6 +132,9 @@ class ScanSettings(RunLimits):
     concurrency: int = Field(default=4, ge=1, le=8, strict=True)
 
 
+ProjectSummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]
+
+
 class RepoSettings(RunLimits):
     analysis_engine: Literal["mortis"] = "mortis"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -171,18 +174,28 @@ class RepoSettings(RunLimits):
     def trim_language(cls, value):
         return value.strip() if isinstance(value, str) else value
 
+    @classmethod
+    def for_execution(cls, settings):
+        return cls.model_validate({key: value for key, value in settings.items() if key != "project_summary"}).model_dump()
+
+
+class RepoSettingsWithSummary(RepoSettings):
+    project_summary: ProjectSummary | None = None
+
 
 class RepositoryInput(StrictModel):
     enabled: bool
     code_graph_enabled: bool | None = None
     code_graph_limits: CodeGraphLimits | None = None
     connection_id: str | None = None
-    settings: RepoSettings = Field(default_factory=RepoSettings)
+    settings: RepoSettingsWithSummary = Field(default_factory=RepoSettingsWithSummary)
     scan_settings: ScanSettings | None = None
+    expected_background: str | None = Field(default=None, max_length=20000)
 
 
 class BackgroundInput(StrictModel):
-    connection_id: str = Field(min_length=1, max_length=36)
+    mode: Literal["draft", "context", "summary"] = "draft"
+    connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     limits: RunLimits | None = None
 
@@ -198,10 +211,19 @@ class BackgroundResult(StrictModel):
         return value.strip()
 
 
+class BackgroundWithSummary(BackgroundResult):
+    project_summary: ProjectSummary
+
+
+class ProjectSummaryResult(StrictModel):
+    project_summary: ProjectSummary
+
+
 class BackgroundJobOut(StrictModel):
     id: str
     status: Literal["queued", "running", "done", "failed"]
     background: str | None = None
+    project_summary: str | None = None
     error: str | None = None
 
 
@@ -343,7 +365,7 @@ class RepositoryOut(ORMModel):
     code_graph_limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
     connection_id: str | None
     connection_requires_setup: bool = False
-    settings: RepoSettings
+    settings: RepoSettingsWithSummary
     scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False

@@ -1,67 +1,60 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
 import { LoaderCircle, Sparkles } from "lucide-react";
-import { api, ApiError, type Schema } from "../api";
+import { useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
-type Generation = Schema["BackgroundJobOut"];
-// Keep aligned with BackgroundResult and RepoSettings.background in backend/code_mortis/schemas.py.
+type ContextDraft = { background: string; project_summary?: string | null };
+// Keep aligned with BackgroundResult and RepoSettings.background in the API schema.
 const BACKGROUND_MAX_LENGTH = 20_000;
 const STALE_MESSAGE = "Your selections or context changed. Generate again to use the current values.";
 
-export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange }: {
+export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange, initialJobId, initialContextChanged }: {
   repositoryId: number;
   connectionId: string;
   model: string;
   defaultModel: string;
   tokenBudget: number | null;
   timeoutSeconds: number | null;
-  value: string;
-  onChange: (value: string) => void;
+  value: ContextDraft;
+  onChange: (value: ContextDraft) => void;
+  initialJobId?: string;
+  initialContextChanged: boolean;
 }) {
-  const [job, setJob] = useState<Generation>();
+  const [jobId, setJobId] = useState(initialJobId);
   const [error, setError] = useState<unknown>();
   const [message, setMessage] = useState("");
   const [failedJob, setFailedJob] = useState<string>();
-  const [undo, setUndo] = useState<string>();
+  const [undo, setUndo] = useState<ContextDraft>();
   const revision = useRef(0);
-  const request = useRef({ revision: 0, previous: "" });
+  const request = useRef({ revision: initialContextChanged ? -1 : 0, previous: value });
+  const selection = JSON.stringify([repositoryId, connectionId, model, tokenBudget, timeoutSeconds, value.background]);
+  const previousSelection = useRef(selection);
+  const previousDefaultModel = useRef(defaultModel);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {
-    revision.current += 1;
-  }, [repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value]);
+    if (previousSelection.current !== selection || (previousDefaultModel.current && previousDefaultModel.current !== defaultModel)) {
+      revision.current += 1;
+    }
+    previousSelection.current = selection;
+    previousDefaultModel.current = defaultModel;
+  }, [selection, defaultModel]);
   useEffect(() => {
     setMessage("");
     setError(undefined);
     setFailedJob(undefined);
-  }, [repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds]);
+  }, [repositoryId, connectionId, model, tokenBudget, timeoutSeconds]);
 
-  const start = useMutation({
-    mutationFn: () => api<Generation>(`/repositories/${repositoryId}/background`, "POST", {
-      connection_id: connectionId, model, limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
-    }),
-  });
-  const result = useQuery({
-    queryKey: [`/repositories/${repositoryId}/background`, job?.id ?? null] as const,
-    queryFn: ({ queryKey: [path, id] }) => {
-      if (!id) throw new Error("No context generation is active.");
-      return api<Generation>(`${path}/${id}`);
-    },
-    enabled: !!job,
-    retry: (count, error) => count < 3 && (!(error instanceof ApiError)
-      || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500),
-    retryDelay: 1000,
-    refetchInterval: (query) => ["done", "failed"].includes(query.state.data?.status ?? "") ? false : 1000,
-  });
+  const start = useStartBackground(repositoryId);
+  const result = useBackgroundStatus(repositoryId, jobId);
 
   useEffect(() => {
-    if (!job) return;
+    if (!jobId) return;
     const failed = result.error || result.data?.status === "failed";
     if (!failed && result.data?.status !== "done") return;
     if (request.current.revision !== revision.current) {
@@ -70,19 +63,19 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
       setFailedJob(undefined);
     } else if (failed) {
       setError(result.error ?? new Error(result.data?.error || "Context generation failed. Try again."));
-      setFailedJob(job.id);
+      setFailedJob(jobId);
       setMessage("");
     } else if (result.data?.background) {
       setUndo(request.current.previous);
-      onChange(result.data.background);
+      onChange({ background: result.data.background, project_summary: result.data.project_summary ?? null });
       setMessage("Context generated. Review it, then save.");
     } else {
       setError(new Error("The model returned no context. Try again."));
     }
-    setJob(undefined);
-  }, [job, result.data, result.error, onChange]);
+    setJobId(undefined);
+  }, [jobId, result.data, result.error, onChange]);
 
-  const pending = start.isPending || !!job;
+  const pending = start.isPending || !!jobId;
   let missing = "";
   if (!connectionId) {
     missing = "Choose an AI connection to generate context.";
@@ -111,8 +104,10 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
               setFailedJob(undefined);
               setMessage("");
               try {
-                const created = await start.mutateAsync();
-                if (mounted.current) setJob(created);
+                const created = await start.mutateAsync({
+                  connection_id: connectionId, model, limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
+                });
+                if (mounted.current) setJobId(created.id);
               } catch (error) {
                 if (mounted.current) {
                   if (request.current.revision !== revision.current) setMessage(STALE_MESSAGE);
@@ -126,14 +121,18 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
           </div>
         }
       >
-        {(id) => <Textarea id={id} rows={4} className="min-h-48 max-h-96 resize-y overflow-y-auto" maxLength={BACKGROUND_MAX_LENGTH} value={value} onChange={(event) => {
-          onChange(event.target.value);
+        {(id) => <Textarea id={id} rows={4} className="min-h-48 max-h-96 resize-y overflow-y-auto" maxLength={BACKGROUND_MAX_LENGTH} value={value.background} onChange={(event) => {
+          onChange({ background: event.target.value, project_summary: null });
           setUndo(undefined);
           setMessage("");
           setError(undefined);
           setFailedJob(undefined);
         }} />}
       </Field>
+      {value.project_summary && <div className="space-y-1">
+        <h3 className="text-sm font-medium">Repository summary</h3>
+        <p className="max-w-prose break-words text-sm leading-relaxed text-muted-foreground">{value.project_summary}</p>
+      </div>}
       <p className="text-xs leading-relaxed text-muted-foreground">
         Generation uses these review limits: {tokenLimit}, {timeLimit}.
         {" Provider limits still apply."}
