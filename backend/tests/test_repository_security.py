@@ -617,9 +617,13 @@ def test_repository_scan_settings_default_independently_and_retry_keeps_saved_li
     body = {"enabled": False, "connection_id": "connection", "settings": seed["repo"].settings}
     original = client.put(path, json=body)
     assert original.status_code == 200, original.text
-    assert original.json()["scan_settings"] == {"token_budget": None, "timeout_seconds": None, "concurrency": 4}
+    defaults = {"effort": "high", "exclusions": "", "max_output_tokens": None,
+                "assessment_token_budget": None, "verification_token_budget": None}
+    assert original.json()["scan_settings"] == {**defaults, "token_budget": None, "timeout_seconds": None, "concurrency": 4}
 
-    limits = {"token_budget": 45000, "timeout_seconds": 600, "concurrency": 8}
+    options = {"effort": "medium", "exclusions": "fixtures/**,\nexample.py", "max_output_tokens": 4000,
+               "assessment_token_budget": 10000, "verification_token_budget": 12000}
+    limits = {"token_budget": 45000, "timeout_seconds": 600, "concurrency": 8, **options}
     saved = client.put(path, json={**body, "scan_settings": limits})
     assert saved.status_code == 200, saved.text
     assert saved.json()["settings"]["token_budget"] == 200000
@@ -637,7 +641,7 @@ def test_repository_scan_settings_default_independently_and_retry_keeps_saved_li
     with transaction() as db:
         db.get(SecurityScan, scan["id"]).status = "partial"
     changed_limits = {"token_budget": 60000, "timeout_seconds": None, "concurrency": 3}
-    changed = client.put(path, json={**body, "scan_settings": changed_limits})
+    changed = client.put(path, json={**body, "scan_settings": {**changed_limits, **defaults}})
     assert changed.status_code == 200, changed.text
     retried = client.post(f"/api/v1/security/scans/{scan['id']}/retry", json={**scan_body, "request_key": uid()})
     assert retried.status_code == 202, retried.text
@@ -649,6 +653,15 @@ def test_repository_scan_settings_default_independently_and_retry_keeps_saved_li
     legacy = client.post(scan_path, json={**scan_body, "request_key": uid(), "token_budget": None})
     assert legacy.status_code == 202, legacy.text
     assert legacy.json()["config"]["limits"] == {**changed_limits, "token_budget": None}
+
+
+@pytest.mark.parametrize("invalid", [{"effort": "maximum"}, {"exclusions": "fixtures/**,!tests/**"},
+    {"max_output_tokens": 0}, {"max_output_tokens": 1_000_001}, {"assessment_token_budget": 999},
+    {"verification_token_budget": 5000001}, {"assessment_token_budget": "1000"}])
+def test_repository_rejects_invalid_security_scan_settings(seed, client, security_github, invalid):
+    body = {"enabled": False, "connection_id": "connection", "settings": seed["repo"].settings, "scan_settings": invalid}
+    response = client.put("/api/v1/repositories/22", json=body)
+    assert response.status_code == 422, response.text
 
 
 def saved_scan(db, seed, status="running", sha=SHA, **values):
@@ -1717,7 +1730,10 @@ def test_snapshot_and_model_diff_withhold_unsupported_git_paths(tmp_path):
 
 
 def test_model_verification_diff_fits_prompt_without_excluded_files_or_losing_evidence(tmp_path):
-    item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False)
+    from code_mortis.core import file_policy
+
+    item = security_engine.Snapshot(tmp_path, SHA, security_engine.process.child_environment(), lambda: False,
+        ai_policy=file_policy.policy({"exclusions": "fixtures/**,to_dir.py/private.py,to_file.py/private.py"}))
     item.git.mkdir()
 
     def git(*args):
@@ -1726,9 +1742,12 @@ def test_model_verification_diff_fits_prompt_without_excluded_files_or_losing_ev
     git("init", "--quiet")
     sources = {"app.py": "unsafe()\n", "caller.py": "old_caller()\n", "deleted.py": "deleted_helper()\n",
         'café "name".py': "old_unicode()\n", "uv.lock": "original_lock\n", "AGENTS.md": "old_agent\n",
-        "renamed.lock": "excluded_rename_from_lock()\n", "before.py": "excluded_rename_to_secret()\n"}
+        "renamed.lock": "excluded_rename_from_lock()\n", "before.py": "excluded_rename_to_secret()\n",
+        "fixture_before.py": "excluded_rename_to_fixture()\n", "to_dir.py": "allow_parent()\n"}
     for path, source in sources.items():
         (item.git / path).write_text(source)
+    (item.git / "to_file.py").mkdir()
+    (item.git / "to_file.py" / "private.py").write_text("exclude_old_child()\n")
     (item.git / "image.png").write_bytes(b"\0old image")
     git("add", ".")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "original")
@@ -1741,17 +1760,34 @@ def test_model_verification_diff_fits_prompt_without_excluded_files_or_losing_ev
     (item.git / "deleted.py").unlink()
     (item.git / "renamed.lock").rename(item.git / "renamed.py")
     (item.git / "before.py").rename(item.git / "secret.py")
+    (item.git / "fixtures").mkdir()
+    (item.git / "fixture_before.py").rename(item.git / "fixtures" / "example.py")
+    (item.git / "to_dir.py").unlink()
+    (item.git / "to_dir.py").mkdir()
+    (item.git / "to_dir.py" / "private.py").write_text("exclude_new_child()\n")
+    (item.git / "to_dir.py" / "public.py").write_text("allow_new_child()\n")
+    (item.git / "to_file.py" / "private.py").unlink()
+    (item.git / "to_file.py").rmdir()
+    (item.git / "to_file.py").write_text("allow_new_parent()\n")
     (item.git / "image.png").write_bytes(b"\0new image")
     git("add", "-A")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "current")
     item.sha = git("rev-parse", "HEAD").strip()
     item.populate()
+    excluded = "fixtures/example.py"
+    assert not item.inventory[excluded]["code"] and (item.files / excluded).is_file()
+    assert next(entry for entry in item.excluded if entry["path"] == excluded)["reason"].startswith("Excluded from AI")
     raw, filtered = item.diff(original), item.diff(original, model_context=True)
     assert len(raw.encode()) > 500_000 and "EXCLUDED_LOCK_DATA" in raw
+    assert all(value in raw for value in ("exclude_old_child()", "exclude_new_child()"))
     assert all(value not in filtered for value in ("EXCLUDED_LOCK_DATA", "EXCLUDED_AGENT_DATA", "image.png",
-        "excluded_rename_from_lock", "excluded_rename_to_secret", "renamed.py", "before.py"))
-    assert all(value in filtered for value in ("unsafe()", "safe()", "guarded_caller()", "deleted_helper()", "new_unicode()"))
-    context = {"finding": {"path": "app.py", "title": "Synthetic"}, "task_contract": security_engine.TASK_CONTRACT,
+        "excluded_rename_from_lock", "excluded_rename_to_secret", "renamed.py", "before.py",
+        "fixture_before.py", excluded, "excluded_rename_to_fixture", "exclude_old_child()", "exclude_new_child()"))
+    assert all(value in filtered for value in ("unsafe()", "safe()", "guarded_caller()", "deleted_helper()",
+                                               "new_unicode()", "allow_new_child()"))
+    context = {"finding": {"path": "app.py", "title": "Synthetic", "evidence": {"source_sha": original,
+                   "evidence": [{"path": "app.py", "revision": "current", "start_line": 1, "end_line": 1, "quote": "unsafe()"}]}},
+        "task_contract": security_engine.TASK_CONTRACT,
         "original_sha": original, "head_sha": item.sha, "diff": raw,
         "sources": {"original": {"app.py": item.source("app.py", original)}, "current": {"app.py": item.source("app.py")}}}
     connection = {"id": "connection", "kind": "api", "protocol": "openai", "model": "test",

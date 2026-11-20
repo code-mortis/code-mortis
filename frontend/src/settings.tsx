@@ -133,7 +133,7 @@ const reviewSensitivities = [
   { value: "broad", label: "Broad", description: "Also minor bugs and rare cases." },
 ] as const;
 
-function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onChange, onInvalidDraft }: {
+function ExecutionLimitField({ id, label, hint, min, max, value, fallback, unsetLabel = "Unlimited", onChange, onInvalidDraft }: {
   id: string;
   label: string;
   hint: string;
@@ -141,6 +141,7 @@ function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onCha
   max?: number;
   value: number | null;
   fallback?: number;
+  unsetLabel?: string;
   onChange: (value: number | null) => void;
   onInvalidDraft: (id: string, invalid: boolean) => void;
 }) {
@@ -175,14 +176,14 @@ function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onCha
         <input
           type="checkbox"
           className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          aria-label={`Unlimited ${label.toLowerCase()}`}
+          aria-label={`${unsetLabel} ${label.toLowerCase()}`}
           checked={value === null}
           onChange={(event) => {
             onInvalidDraft(id, false);
             onChange(event.target.checked ? null : limited.current);
           }}
         />
-        Unlimited
+        {unsetLabel}
       </label>}
     </div>
   </div>;
@@ -269,10 +270,15 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   });
   const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
   const sensitivity = reviewSensitivities[sensitivityIndex];
-  const [scanSettings, setScanSettings] = useState({
+  const [scanSettings, setScanSettings] = useState<Required<Schema["ScanSettings"]>>({
     token_budget: repo.scan_settings?.token_budget ?? null,
     timeout_seconds: repo.scan_settings?.timeout_seconds ?? null,
     concurrency: repo.scan_settings?.concurrency ?? 4,
+    effort: repo.scan_settings?.effort ?? "high",
+    exclusions: repo.scan_settings?.exclusions ?? "",
+    max_output_tokens: repo.scan_settings?.max_output_tokens ?? null,
+    assessment_token_budget: repo.scan_settings?.assessment_token_budget ?? null,
+    verification_token_budget: repo.scan_settings?.verification_token_budget ?? null,
   });
   const savedScanSettings = useRef(scanSettings);
   const [rules, setRules] = useState(
@@ -353,9 +359,10 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           if (rulesInput.current) revealInvalidField(rulesInput.current, "reviews");
           return;
         }
-        const scanSettingsChanged = scanSettings.token_budget !== savedScanSettings.current.token_budget
-          || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
-          || scanSettings.concurrency !== savedScanSettings.current.concurrency;
+        const scanSettingsChanged = JSON.stringify(scanSettings) !== JSON.stringify(savedScanSettings.current);
+        const { token_budget, timeout_seconds, concurrency, ...scanOptions } = scanSettings;
+        const changedScanOptions = Object.fromEntries(Object.entries(scanOptions)
+          .filter(([key, value]) => value !== savedScanSettings.current[key as keyof typeof scanOptions]));
         try {
           const { background, project_summary: summaryDraft, ...nextSettings } = settings;
           const project_summary = summaryDraft?.trim() || null;
@@ -372,7 +379,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               ...(contextChanged ? { expected_background: expectedBackground.current ?? savedBackground.current } : {}),
               ...(summaryChanged ? { expected_project_summary: expectedProjectSummary.current === undefined
                 ? savedProjectSummary.current : expectedProjectSummary.current } : {}),
-              ...(scanSettingsChanged ? { scan_settings: scanSettings } : {}),
+              ...(scanSettingsChanged ? { scan_settings: { token_budget, timeout_seconds, concurrency, ...changedScanOptions } } : {}),
               settings: {
                 ...nextSettings,
                 ...(contextChanged ? { background } : {}),
@@ -591,7 +598,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           <section hidden={section !== "scan-limits"} data-settings-section="scan-limits" aria-labelledby={`${id}-scan-limits`} className="space-y-6">
             <div>
               <h2 id={`${id}-scan-limits`} className="text-xl font-semibold tracking-tight">Security scans</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Set execution limits for new security scans of this repository.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Configure AI analysis and execution limits for new scans of this repository.</p>
             </div>
             <section aria-labelledby={`${id}-scan-execution`} className="space-y-3">
               <h3 id={`${id}-scan-execution`} className="text-base font-semibold">Run limits</h3>
@@ -608,13 +615,45 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   hint="Total budget shared by scan analysis, assessment, verification, and correction attempts."
                   min={1000} max={5000000} fallback={200000} value={scanSettings.token_budget}
                   onChange={(token_budget) => setScanSettings((current) => ({ ...current, token_budget }))} onInvalidDraft={trackInvalidLimitDraft} />
+                {([
+                  { key: "max_output_tokens", label: "Maximum output tokens per response",
+                    hint: "Automatic uses the available scan budget and provider limits.", min: 1, max: 1000000,
+                    fallback: 16384, unsetLabel: "Automatic" },
+                  { key: "assessment_token_budget", label: "Scan assessment token budget",
+                    hint: "Caps AI assessment and its correction attempts within the total scan budget.", min: 1000,
+                    max: 5000000, fallback: 200000, unsetLabel: "No separate cap" },
+                  { key: "verification_token_budget", label: "Scan verification token budget",
+                    hint: "Caps AI fix verification and its correction attempts within the total scan budget.", min: 1000,
+                    max: 5000000, fallback: 200000, unsetLabel: "No separate cap" },
+                ] as const).map(({ key, ...field }) => <ExecutionLimitField key={key} id={`${id}-scan-${key}`}
+                  {...field} value={scanSettings[key]}
+                  onChange={(value) => setScanSettings((current) => ({ ...current, [key]: value }))} onInvalidDraft={trackInvalidLimitDraft} />)}
               </div>
             </section>
             <section aria-labelledby={`${id}-scan-policy`} className="space-y-3">
               <h3 id={`${id}-scan-policy`} className="text-base font-semibold">What scans check</h3>
-              <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
-                Mortis analyzes source code and assesses findings. Trivy uses built-in rules to check for exposed secrets, vulnerable dependencies, and infrastructure misconfigurations.
-              </p>
+              <div className="divide-y rounded-lg border bg-card">
+                <div className="p-5">
+                  <Field label="Scan reasoning effort" hint="Higher effort can take longer and use more tokens.">
+                    {(fieldId) => <SearchSelect id={fieldId} required value={scanSettings.effort}
+                      onChange={(value) => setScanSettings((current) => ({ ...current, effort: value as typeof current.effort }))}
+                      options={[{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }]} />}
+                  </Field>
+                </div>
+                <div className="p-5">
+                  <Field label="AI path exclusions"
+                    hint="Separate glob patterns with commas or new lines, for example fixtures/**. Patterns only exclude files. Trivy still checks eligible files.">
+                    {(fieldId) => <Textarea id={fieldId} rows={3} maxLength={4000} value={scanSettings.exclusions}
+                      onChange={(event) => {
+                        const input = event.currentTarget;
+                        input.setCustomValidity(input.value.split(/[,\n]/).some((pattern) => pattern.trim().startsWith("!"))
+                          ? "Inclusion overrides are not allowed." : "");
+                        trackInvalidLimitDraft(fieldId, !input.validity.valid);
+                        setScanSettings((current) => ({ ...current, exclusions: input.value }));
+                      }} />}
+                  </Field>
+                </div>
+              </div>
             </section>
           </section>
           <section hidden={section !== "connection"} data-settings-section="connection" aria-labelledby={`${id}-connection`} className="space-y-6">

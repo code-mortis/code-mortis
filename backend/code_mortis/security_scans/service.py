@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from code_mortis.api_tokens.provenance import TransientAuthorizationError
+from code_mortis.core import file_policy
 from code_mortis.core import source as git_source
 from code_mortis.core.analysis import (
     EXECUTION_LIMITS,
@@ -29,7 +30,12 @@ from code_mortis.core.analysis import (
 )
 from code_mortis.core.config import settings
 from code_mortis.core.db import now, transaction, uid
-from code_mortis.core.errors import InferenceBudgetError, ReviewStopped, RunnerBlocked
+from code_mortis.core.errors import (
+    InferenceBudgetError,
+    InferenceStageBudgetError,
+    ReviewStopped,
+    RunnerBlocked,
+)
 from code_mortis.core.security import clean_text, digest, safe_repo_name, unseal
 from code_mortis.core.shared_execution import RETIRED_MESSAGE, is_shared
 from code_mortis.integrations import github
@@ -50,7 +56,7 @@ from code_mortis.models import (
 from code_mortis.reviews import assessment, verification
 from code_mortis.reviews import diagnostics as result_diagnostics
 from code_mortis.reviews.service import authorize_connection, connection_snapshot, enqueue
-from code_mortis.schemas.common import ScanSettings, SecuritySummary
+from code_mortis.schemas.common import ScanLimits, ScanSettings, SecuritySummary
 from code_mortis.schemas.security import SecurityScanOut
 from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans import payload
@@ -161,10 +167,12 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
     if parent and (parent.branch != freshness["default_branch"] or parent.head_sha != freshness["head_sha"]):
         raise HTTPException(409, "The default branch changed. Start a new scan instead of retrying the old revision.")
     workflow = parent is None or parent.config.get("execution_limits") == EXECUTION_LIMITS
-    limits = ScanSettings.model_validate(scan_settings).model_dump() if parent is None else {
-        "concurrency": 1, **parent.config["limits"],
-    }
-    limits.update(body.model_dump(include=set(ScanSettings.model_fields), exclude_unset=True))
+    if parent is None:
+        selected = ScanSettings.model_validate(scan_settings)
+        limits = {**selected.model_dump(exclude_defaults=True), **selected.model_dump(include=set(ScanLimits.model_fields))}
+    else:
+        limits = {"concurrency": 1, **parent.config["limits"]}
+    limits.update(body.model_dump(include=set(ScanLimits.model_fields), exclude_unset=True))
     if connection.kind != "api":
         limits["concurrency"] = 1
     config = {"connection": connection_snapshot(connection, workflow=workflow),
@@ -431,7 +439,15 @@ def assessment_keys(value, item, history=()):
 
 def assessment_history(proposal, history, item):
     connected = assessment_keys(proposal, item, history)
-    return [old for old in history if connected & assessment_keys(old, item)]
+    return [old for old in history if connected & assessment_keys(old, item) and model_finding_allowed(old, item)]
+
+
+def model_finding_allowed(finding, item):
+    ai_policy = getattr(item, "ai_policy", None)
+    return not ai_policy or (
+        not payload.excluded_source_paths(finding, ai_policy, additional_only=True)
+        and not any(file_policy.additionally_excluded(path, ai_policy)
+                    for kind, path in assessment_keys(finding, item) if kind == "path"))
 
 
 def assessment_batch(rows, history, item, concurrency):
@@ -734,8 +750,8 @@ def perform(scan_id, claim):
                 scan.status = "blocked"
                 raise RunnerBlocked("busy")
         workflow = scan.config.get("execution_limits") == EXECUTION_LIMITS
-        finite_rolling = (scan.config["limits"]["token_budget"] is not None
-                          and rolling_budget_enabled(db, claim, scan.config))
+        rolling_budget = rolling_budget_enabled(db, claim, scan.config)
+        finite_rolling = scan.config["limits"]["token_budget"] is not None and rolling_budget
         current_connection = connection_snapshot(connection, workflow=workflow)
         if any(current_connection[key] != scan.config["connection"][key]
                for key in ("kind", "owner_id", "protocol", "base_url", "provider", "options")):
@@ -842,6 +858,11 @@ def perform(scan_id, claim):
             return remaining
         return max(1, int(remaining))
 
+    ai_policy = file_policy.policy(limits) if limits.get("exclusions") else None
+    effort, output_cap = limits.get("effort", "high"), limits.get("max_output_tokens")
+    assessment_capped = rolling_budget and limits.get("assessment_token_budget") is not None
+    verification_capped = rolling_budget and limits.get("verification_token_budget") is not None
+
     def task_input(task, context, key, saved_histories=None):
         context = {**context, "language": config.get("language", "English"),
                    "task_contract": config.get("task_contract", "security-task/v2")}
@@ -852,7 +873,7 @@ def perform(scan_id, claim):
         identity = digest(json.dumps([cache_config, context], sort_keys=True))
         for source_id, saved_config, cached in saved.get(key, ()):
             if (cached.get("status") != "completed" or cached.get("result", {}).get("verdict") == "uncertain"
-                    or not payload.reusable_source_context(cached)):
+                    or not payload.reusable_source_context(cached, ai_policy)):
                 continue
             contexts = [context]
             if saved_histories and source_id in saved_histories:
@@ -893,7 +914,7 @@ def perform(scan_id, claim):
             used = row.progress.get("tokens")
             packing, navigation = None, None
             for prior in (row.progress.get("tasks", {}).get(key, {}), *(entry[2] for entry in saved.get(key, ()))):
-                if not payload.reusable_source_context(prior):
+                if not payload.reusable_source_context(prior, ai_policy):
                     continue
                 if packing is None:
                     packing = prior.get("source_packing")
@@ -906,6 +927,9 @@ def perform(scan_id, claim):
             remaining = min(remaining, allowance)
         if remaining is not None:
             remaining = max(0, remaining)
+        if task == "assessment" and assessment_capped:
+            # Optional bulk context could take the remaining budget for required evidence.
+            packing = False
         save_task(key, "running", input_hash=identity, **({"proposal": context["proposal"]} if task == "assessment" else {}))
         usage = {}
         try:
@@ -940,7 +964,8 @@ def perform(scan_id, claim):
 
                 return execute(config["connection"], credentials, context, instructions=instructions, schema=schema,
                     validator=validator, claim=claim, stage="security", task_key=f"{key}:round:{round}", scan_id=scan_id,
-                    stopped=stopped, authorize=authorized, effort="high", token_budget=budget, timeout=timeout,
+                    stopped=stopped, authorize=authorized, effort=effort, token_budget=budget, timeout=timeout,
+                    **({"scan_phase": task} if limits.get(f"{task}_token_budget") is not None else {}),
                     **({"budget_demand": budget_demand} if budget_demand is not None else {}))
 
             from code_mortis.core.workflow_inference import output_token_policy
@@ -951,7 +976,9 @@ def perform(scan_id, claim):
                                                 infer=infer, source_packing=packing, output_token_policy=token_policy,
                                                 select_packing=select_packing, navigation=navigation,
                                                 select_navigation=select_navigation, record_sources=record_sources,
-                                                record_required_paths=record_required_paths)
+                                                record_required_paths=record_required_paths,
+                                                **({"effort": effort} if effort != "high" else {}),
+                                                **({"max_output_tokens": output_cap} if output_cap is not None else {}))
             save_task(key, "completed", result=result, input_hash=identity, tokens=usage["tokens"],
                       citation_contract=security_engine.CITATION_CONTRACT)
             return result
@@ -993,7 +1020,8 @@ def perform(scan_id, claim):
         settings().work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         stage(scan_id, "snapshot", "running")
         old_shas = [row["evidence"]["source_sha"] for row in previous]
-        with security_engine.snapshot(full_name, scan.head_sha, old_shas, token, stopped) as item:
+        with security_engine.snapshot(full_name, scan.head_sha, old_shas, token, stopped,
+                                      **({"ai_policy": ai_policy} if ai_policy else {})) as item:
             item.secret_values.extend(value for value in (token, credentials.get("api_key", ""),
                                       *credentials.get("extra_headers", {}).values()) if value)
             stage(scan_id, "snapshot", "completed", files=len(item.inventory))
@@ -1158,7 +1186,7 @@ def perform(scan_id, claim):
                                 break
                             ready.popleft()
                             admitted[candidate.id] = settled
-                            demand = len(ready) + len(futures) + 1 if finite_rolling else None
+                            demand = len(ready) + len(futures) + 1 if finite_rolling or assessment_capped else None
                             futures[submit_assessment(pool, candidate, prepared.pop(candidate.id), required_paths,
                                                       budget_demand=demand)] = candidate
                         if not futures:
@@ -1219,6 +1247,12 @@ def perform(scan_id, claim):
                                     keys[candidate.id] = initial_keys[candidate.id] | added
                                     ready.clear()
                                     ready.extend(assessment.independent_batch(remaining, keys, admitted=admitted))
+                        except InferenceStageBudgetError:
+                            assessment_failed += 1
+                            assessment_problems.append(f"Assessment token budget could not admit assessment: {candidate.proposal['path']}.")
+                            proposal = candidate.proposal
+                            uncertain_keys.update(assessment_keys({**proposal, "evidence": [*proposal["evidence"],
+                                *({"path": path} for path in required_paths[candidate.id])]}, item, history))
                         except InferenceBudgetError:
                             assessment_failed += 1
                             problems.append(f"Token budget could not admit assessment: {candidate.proposal['path']}.")
@@ -1329,6 +1363,8 @@ def perform(scan_id, claim):
             def verify_one(old, budget_demand=None):
                 try:
                     if old["kind"] == "code":
+                        if not model_finding_allowed(old, item):
+                            raise ValueError("Required finding evidence is excluded from AI analysis by repository settings.")
                         original = old["evidence"]["source_sha"]
                         current_path = item.renamed(original, old["path"])
                         context = {"finding": old, "original_sha": original, "head_sha": item.sha,
@@ -1352,14 +1388,14 @@ def perform(scan_id, claim):
                 stop_admitting = Event()
 
                 def submit_verification(old):
-                    demand = outstanding_model_checks if finite_rolling and old["kind"] == "code" else None
+                    demand = outstanding_model_checks if (finite_rolling or verification_capped) and old["kind"] == "code" else None
                     return pool.submit(verify_one, old, demand)
 
                 pending = (rolling_analysis(to_verify, concurrency, submit_verification,
                                             stopped, stop_admitting) if pool else ((old, None) for old in to_verify))
                 for old, future in pending:
                     try:
-                        verdict = future.result() if future is not None else verify_one(old, 1 if finite_rolling else None)
+                        verdict = future.result() if future is not None else verify_one(old, 1 if finite_rolling or verification_capped else None)
                         if verdict["verdict"] == "fixed" and uncertain_keys:
                             fix_keys = assessment_keys(old, item) | assessment_keys({
                                 "path": old["path"], "evidence": verdict.get("evidence", []),

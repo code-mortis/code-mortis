@@ -128,8 +128,22 @@ class RunLimits(StrictModel):
     token_budget: int | None = Field(default=None, ge=1000, le=5000000)
 
 
-class ScanSettings(RunLimits):
+class ScanLimits(RunLimits):
     concurrency: int = Field(default=4, ge=1, le=8, strict=True)
+
+
+class ScanSettings(ScanLimits):
+    effort: Literal["low", "medium", "high"] = "high"
+    exclusions: str = Field(default="", max_length=4000)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=1000000, strict=True)
+    assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000, strict=True)
+    verification_token_budget: int | None = Field(default=None, ge=1000, le=5000000, strict=True)
+
+    @field_validator("exclusions")
+    @classmethod
+    def deny_only_exclusions(cls, value):
+        file_policy.patterns(value)
+        return value
 
 
 ProjectSummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]

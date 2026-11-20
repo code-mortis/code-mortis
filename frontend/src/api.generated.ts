@@ -4289,6 +4289,23 @@ export interface components {
              * @default 4
              */
             concurrency: number;
+            /**
+             * Effort
+             * @default high
+             * @enum {string}
+             */
+            effort: "low" | "medium" | "high";
+            /**
+             * Exclusions
+             * @default
+             */
+            exclusions: string;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /** Assessment Token Budget */
+            assessment_token_budget?: number | null;
+            /** Verification Token Budget */
+            verification_token_budget?: number | null;
         };
         /** SecurityActivityOut */
         SecurityActivityOut: {

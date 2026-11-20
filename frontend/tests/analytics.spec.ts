@@ -81,6 +81,10 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(tooltip.getByText("6", { exact: true })).toBeVisible();
   await expect(tooltip.getByText("2", { exact: true })).toBeVisible();
   if (info.project.name === "desktop") {
+    await calendar.getByRole("button", { name: /^Nov 19, 2026/ }).hover({ position: { x: 6, y: 2 } });
+    await expect(tooltip).toContainText("Nov 19, 2026 · 0 runs");
+    await today.hover();
+    await expect(tooltip).toContainText("Nov 20, 2026 · 8 runs");
     await today.focus();
     await page.keyboard.press("ArrowLeft");
     await expect(tooltip).toContainText("Nov 13, 2026 · 0 runs");

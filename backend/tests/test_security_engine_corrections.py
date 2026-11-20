@@ -3,14 +3,19 @@
 import json
 from copy import deepcopy
 
+import httpx
 import pytest
 from sqlalchemy import select
+from test_llm_http import result as wire_result
 from test_mortis_security import scan_workflow as scan_workflow
 from test_mortis_security import selected_result
+from test_repository_security import saved_finding, saved_scan
 
+from code_mortis.core import file_policy
 from code_mortis.core.db import transaction
 from code_mortis.core.security import digest
-from code_mortis.models import SecurityScan
+from code_mortis.integrations import llm
+from code_mortis.models import AnalysisBudget, AnalysisPlan, SecurityFinding, SecurityScan
 from code_mortis.security_scans import engine, policy, service
 
 
@@ -211,3 +216,112 @@ def test_context_checkpoint_cancellation_retains_known_consumption(tmp_path, can
             select_navigation=select_navigation, record_sources=record_sources)
     assert len(calls) == (0 if cancel_at == "navigation" else 1)
     assert stopped.value.usage == {"tokens": 7 * len(calls)}
+
+
+@pytest.mark.parametrize(("unknown", "related"), [(False, False), (True, False), (False, True)])
+def test_scan_phase_caps_charge_evidence_rounds_and_enforce_provider_output_cap(scan_workflow, seed, monkeypatch, unknown, related):
+    state = scan_workflow
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed", sha="b" * 40)
+        old = saved_finding(db, seed, prior, path="legacy.py")
+        old.path = "legacy.py"
+        finding_id = old.id
+        scan = db.get(SecurityScan, state["scan_id"])
+        scan.config = {**scan.config, "limits": {**scan.config["limits"], "token_budget": 4000,
+            "effort": "low", "max_output_tokens": 600, "assessment_token_budget": 1000, "verification_token_budget": 1100}}
+
+    item = state["item"]
+    item.inventory.update({path: {"code": False, "hash": digest("guard"), "lines": 1} for path in ("legacy.py", "guard.py")})
+    item.read = lambda path, sha=None: path + (" old" if sha else " current")
+    item.diff = lambda original, **kwargs: "-legacy.py old\n+legacy.py current"
+    wire = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        properties = body["response_format"]["json_schema"]["schema"]["properties"]
+        if "findings" in properties:
+            phase, result, amount = "analysis", selected_result("analysis"), 50
+        elif "finding_id" in properties:
+            phase, result, amount = "assessment", selected_result("assessment",
+                required=["legacy.py" if related else "guard.py"]), 250
+        else:
+            phase, amount = "verification", 50
+            result = {"verdict": "fixed", "original_issue_present": True, "explanation": "Guard installed.",
+                      "change_explanation": "The unauthorized request is rejected.", "required_paths": [],
+                      "evidence": [{"source_id": ref, "start_line": 1, "end_line": 1} for ref in ("source_1", "source_2")]}
+        wire.append((phase, body["reasoning_effort"], body["max_tokens"]))
+        response = wire_result("openai", content=json.dumps(result), usage=not (unknown and phase == "assessment"))
+        if "usage" in response:
+            response["usage"] = {"prompt_tokens": amount - 1, "completion_tokens": 1, "total_tokens": amount}
+        return httpx.Response(200, json=response)
+
+    monkeypatch.setattr(llm, "reservation", lambda *args: 800)
+    monkeypatch.setattr(llm, "send", state["send"])
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    service.perform(state["scan_id"], state["claim"])
+
+    assert wire[:2] == [("analysis", "low", 600), ("assessment", "low", 200)]
+    assert wire[2:] == ([] if unknown else [("verification", "low", 300)])
+    with transaction() as db:
+        scan = db.get(SecurityScan, state["scan_id"])
+        plan = db.scalar(select(AnalysisPlan))
+        budgets = {stage: db.get(AnalysisBudget, (plan.id, stage)).charged_tokens
+                   for stage in ("security", "assessment", "verification")}
+        if unknown:
+            assert db.get(SecurityFinding, finding_id).state == "open"
+            assert scan.progress["tokens"] is None
+            assert budgets == {"security": 1050, "assessment": 1000, "verification": 0}
+        else:
+            assert scan.status == "partial" and scan.progress["tokens"] == 350
+            assert scan.stages["assessment"]["failed"] == 1
+            assert scan.progress["tasks"]["assessment:0"]["tokens"] == 250
+            assert scan.progress["tasks"]["assessment:0"]["source_packing"] is False
+            assert db.get(SecurityFinding, finding_id).state == ("open" if related else "resolved")
+            assert budgets == {"security": 350, "assessment": 250, "verification": 50}
+
+
+def test_ai_exclusions_deny_retained_evidence_and_excluded_supporting_paths(tmp_path):
+    ai_policy = file_policy.policy({"exclusions": "fixtures/**"})
+    item = engine.Snapshot(tmp_path, "a" * 40, {}, lambda: False, ai_policy=ai_policy)
+    blocked = "fixtures/guard.py"
+    item.inventory = {"app.py": {}, blocked: {}}
+    context = {"assigned_path": "app.py", "sources": {"current": {"app.py": "unsafe(value)"}}}
+    history = [{"path": "app.py", "evidence": [{"path": blocked, "quote": "excluded evidence"}]}]
+    with pytest.raises(engine.verification.VerificationOutputError, match="excluded"):
+        engine.ask(item, {"kind": "api"}, {}, "analysis", {**context, "history": history}, 100, None,
+                   lambda: False, "test", infer=lambda *args, **kwargs: pytest.fail("Excluded history reached AI"))
+
+    calls = []
+
+    def infer(supplied, **kwargs):
+        calls.append(supplied)
+        assert blocked not in supplied["available_paths"]
+        return kwargs["validator"](selected_result("analysis", required=[blocked]), supplied), {"tokens": 7}
+
+    with pytest.raises(engine.verification.VerificationOutputError, match="excluded") as caught:
+        engine.ask(item, {"kind": "api"}, {}, "analysis", context, 100, None, lambda: False, "test", infer=infer)
+    assert len(calls) == 1 and caught.value.usage == {"tokens": 7}
+    assert not engine.payload.reusable_source_context({"source_packing": True, "context_paths": [blocked]}, ai_policy)
+
+
+def test_ai_exclusions_keep_only_revalidated_historical_evidence_in_model_context(tmp_path):
+    item = engine.Snapshot(tmp_path, "a" * 40, {}, lambda: False,
+                           ai_policy=file_policy.policy({"exclusions": "fixtures/**"}))
+    item.inventory = {"app.py": {}}
+    item.read = lambda path, sha=None: "allowed evidence" if sha == "b" * 40 else "current source"
+    cite = {"path": "app.py", "revision": "current", "start_line": 1, "end_line": 1, "quote": "allowed evidence"}
+    finding = {"id": "older", "path": "app.py", "kind": "code", "title": "Uncited historical prose",
+               "evidence": {"source_sha": "b" * 40, "explanation": "Content from fixtures/hidden.py", "evidence": [cite]}}
+    invalid = {**finding, "id": "invalid", "evidence": {**finding["evidence"], "evidence": [{**cite, "quote": "wrong"}]}}
+
+    def infer(supplied, **kwargs):
+        assert supplied["history"] == [{"id": "history_1", "path": "app.py", "kind": "code",
+                                       "evidence": {"source_sha": "b" * 40, "evidence": [cite]}}]
+        return kwargs["validator"](selected_result("assessment"), supplied), {"tokens": 7}
+
+    _, usage = engine.ask(item, {"kind": "api"}, {}, "assessment", {
+        "sources": {"current": {"app.py": "current source"}}, "history": [finding, invalid],
+    }, None, None, lambda: False, "test", infer=infer)
+    assert usage == {"tokens": 7}

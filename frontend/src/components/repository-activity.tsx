@@ -52,7 +52,7 @@ function ActivityCalendar({ days }: { days: Schema["RepositoryActivity"]["days"]
   const offset = dates[0].getUTCDay();
   const weeks = Math.ceil((offset + days.length) / 7);
   const firstMonthStart = dates.findIndex((date) => date.getUTCDate() === 1);
-  const columns = { gridTemplateColumns: `repeat(${weeks}, minmax(0, 1fr))` };
+  const columns = { gridTemplateColumns: `repeat(${weeks}, 12px)` };
   const counts = days.reduce((total, day) => ({
     reviews: total.reviews + day.reviews, scans: total.scans + day.scans,
   }), { reviews: 0, scans: 0 });
@@ -89,7 +89,7 @@ function ActivityCalendar({ days }: { days: Schema["RepositoryActivity"]["days"]
       }
       const center = cell.left - bounds.left + cell.width / 2;
       panel.style.left = `${Math.max(0, Math.min(bounds.width - panel.offsetWidth, center - panel.offsetWidth / 2))}px`;
-      panel.style.top = `${cell.top - bounds.top - panel.offsetHeight}px`;
+      panel.style.top = `${cell.top - bounds.top - panel.offsetHeight - 8}px`;
     }
     position();
     const resize = new ResizeObserver(position);
@@ -155,7 +155,7 @@ function ActivityCalendar({ days }: { days: Schema["RepositoryActivity"]["days"]
           setActive(index >= 0 && focused?.matches(":focus-visible") ? index : null);
         }}>
           <div ref={scroll} className="overflow-x-auto p-0.5 pb-1 [scroll-padding-inline:38px_2px] [scrollbar-width:thin]">
-            <div className="grid min-w-[52rem] grid-cols-[36px_minmax(0,1fr)]">
+            <div className="mx-auto grid w-max grid-cols-[36px_auto]">
               <div aria-hidden="true" className="col-start-2 mb-2 grid gap-[3px] text-xs text-muted-foreground" style={columns}>
                 {dates.map((date, index) =>
                   (date.getUTCDate() === 1 || (index === 0 && firstMonthStart + offset >= 14)) && (
@@ -189,7 +189,7 @@ function ActivityCalendar({ days }: { days: Schema["RepositoryActivity"]["days"]
               </div>
             </div>
           </div>
-          {selected && <div role="tooltip" ref={tooltip} className="absolute z-20 w-max max-w-full min-w-44 rounded-lg border bg-popover p-2.5 text-xs text-popover-foreground shadow-md tabular-nums">
+          {selected && <div role="tooltip" ref={tooltip} className="pointer-events-none absolute z-20 w-max max-w-full min-w-44 rounded-lg border bg-popover p-2.5 text-xs text-popover-foreground shadow-md tabular-nums">
             <p className="mb-1.5 font-semibold">{dateFormat.format(dates[active!])} · {numberFormat.format(selected.reviews + selected.scans)} {selected.reviews + selected.scans === 1 ? "run" : "runs"}</p>
             <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5">
               <dt className="text-muted-foreground">Review runs</dt><dd className="text-right font-semibold">{numberFormat.format(selected.reviews)}</dd>

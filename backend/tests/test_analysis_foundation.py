@@ -95,6 +95,53 @@ def test_single_eligible_task_can_use_full_rolling_budget(seed, demand, keys):
     assert lease is not None and lease.output_tokens == 800
 
 
+@pytest.mark.parametrize("unknown", [False, True])
+def test_parallel_scan_attempts_reserve_and_settle_both_token_budgets(seed, unknown):
+    from test_repository_security import saved_scan
+
+    with transaction() as db:
+        scan = saved_scan(db, seed)
+        db.add(Job(id="analysis-job", kind="security_scan", payload={"scan_id": scan.id}, status="running", attempts=1,
+                   lease_until=now() + timedelta(minutes=10)))
+        db.flush()
+        spec = specification(scan_id=scan.id, connection=scan.config["connection"],
+            revisions={"head": scan.head_sha}, settings={"concurrency": 2},
+            versions={**specification().versions, "output_tokens": analysis.WORKFLOW_OUTPUT_POLICY,
+                      "budget_schedule": analysis.ROLLING_BUDGET},
+            budgets={"security": 1500, "assessment": 1000, "verification": 2000},
+            tasks=[{"key": key, "stage": "security", "input_hash": "d" * 64, "scope": [{"budget_stage": stage}]}
+                   for key, stage in (("a", "assessment"), ("b", "assessment"), ("v", "verification"))])
+        plan_id = analysis.persist_plan(db, "analysis-job", spec).id
+        tasks = {row.key: row.id for row in db.scalars(select(AnalysisTask).where(AnalysisTask.plan_id == plan_id))}
+
+    barrier = Barrier(2)
+
+    def reserve(key):
+        barrier.wait(5)
+        return claim(tasks[key], input_tokens=100, output_tokens=0, budget_demand=2)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.map(reserve, ("a", "b"))
+    assert all(lease is not None and lease.output_tokens == 400 for lease in (first, second))
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan_id, "security")).charged_tokens == 1000
+        assert db.get(AnalysisBudget, (plan_id, "assessment")).charged_tokens == 1000
+        assert db.get(AnalysisBudget, (plan_id, "verification")).charged_tokens == 0
+    assert analysis.finish_task(first, usage_tokens=150, result={"ok": True})
+    if unknown:
+        assert analysis.finish_task(second, usage_tokens=None, error_code="usage_unknown")
+    else:
+        assert analysis.finish_task(second, usage_tokens=100, result={"ok": True})
+    with transaction() as db:
+        for stage in ("security", "assessment"):
+            assert db.get(AnalysisBudget, (plan_id, stage)).charged_tokens == (650 if unknown else 250)
+    verification = claim(tasks["v"], input_tokens=100, output_tokens=0, budget_demand=1)
+    if unknown:
+        assert verification is None
+    else:
+        assert verification is not None and verification.output_tokens == 1150
+
+
 def test_plan_inputs_and_task_identity_survive_restart_and_reordering(seed):
     identity, tasks = planned(seed)
     with transaction() as db:

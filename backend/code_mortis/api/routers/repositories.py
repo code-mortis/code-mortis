@@ -35,6 +35,7 @@ from code_mortis.schemas.common import (
     RepositoryOut,
     RepositoryPullFilters,
     RunOut,
+    ScanLimits,
 )
 
 router = APIRouter()
@@ -123,7 +124,8 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
     if body.code_graph_limits is not None:
         repo.code_graph_limits = body.code_graph_limits.model_dump()
     if body.scan_settings is not None:
-        repo.scan_settings = body.scan_settings.model_dump()
+        repo.scan_settings = {**repo.scan_settings, **body.scan_settings.model_dump(include=set(ScanLimits.model_fields)),
+                              **body.scan_settings.model_dump(exclude_unset=True)}
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,

@@ -4,6 +4,7 @@ import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } f
 import { createRoot } from "react-dom/client";
 import {
   createBrowserRouter,
+  matchPath,
   NavLink,
   Navigate,
   Route,
@@ -23,7 +24,6 @@ import {
   ErrorNotice,
   Field,
   Loading,
-  PageTitle,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
@@ -76,9 +76,7 @@ function RepositoryOverview({ analytics = false, admin = false }: { analytics?: 
   }
   if (!analytics) return <>
     {directoryError && <div className="mb-4">{directoryError}</div>}
-    <PageTitle title="Overview">
-      {(admin || repository.settings.project_summary) && <RepositorySummary key={repository.id} repository={repository} admin={admin} />}
-    </PageTitle>
+    <RepositorySummary key={`summary-${repository.id}`} repository={repository} admin={admin} />
     <RepositoryActivity key={repository.id} repositoryId={repository.id} />
   </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
@@ -322,7 +320,7 @@ function App() {
       <AppSidebar admin={session.data.role === "admin"} />
       <div className="min-w-0 flex-1">
         <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8 has-[[data-slot=breadcrumb]]:pt-4">
-          <div className="mx-auto max-w-6xl">
+          <div className={`mx-auto ${matchPath("/repositories/:repositoryId/overview", route.pathname) ? "max-w-4xl" : "max-w-6xl"}`}>
             <NavigationError />
             <AppBreadcrumb admin={session.data.role === "admin"} />
             <ErrorNotice error={action.error} />

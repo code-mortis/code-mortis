@@ -674,7 +674,9 @@ def test_scan_request_keys_are_isolated_between_mcp_grants(enabled, client, monk
 
     monkeypatch.setattr(repository_security, "branch_head", lambda *args: {
         "default_branch": "main", "head_sha": "a" * 40, "checked_at": now().isoformat()})
-    saved_limits = {"token_budget": 50000, "timeout_seconds": 600, "concurrency": 3}
+    saved_limits = {"token_budget": 50000, "timeout_seconds": 600, "concurrency": 3,
+                    "effort": "low", "max_output_tokens": 8192, "assessment_token_budget": 3000,
+                    "verification_token_budget": 5000, "exclusions": "fixtures/**"}
     with transaction() as db:
         db.get(Repository, 22).scan_settings = saved_limits
     first = credentials(client, domain="security", scopes=["security:run"])

@@ -51,13 +51,16 @@ def matches(path, pattern):
             or path.startswith(pattern.rstrip("/") + "/"))
 
 
+def additionally_excluded(path, rules):
+    return any(matches(path, pattern) for pattern in (rules or {}).get("exclusions", []))
+
+
 def excluded(path, rules=None):
     parts = PurePosixPath(path).parts
     if (not parts or path.startswith("/") or PurePosixPath(path).as_posix() != path or "\\" in path
         or ".." in parts or any(ord(c) < 32 or ord(c) == 127 for c in path)):
         return True
-    return (any(matches(path.lower(), pattern) for pattern in MANDATORY)
-            or any(matches(path, pattern) for pattern in (rules or {}).get("exclusions", [])))
+    return any(matches(path.lower(), pattern) for pattern in MANDATORY) or additionally_excluded(path, rules)
 
 
 def review_rules(options):

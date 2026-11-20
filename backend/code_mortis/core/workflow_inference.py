@@ -11,7 +11,12 @@ from sqlalchemy import select
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.core import analysis, file_policy, inference_admission
 from code_mortis.core.db import now, transaction
-from code_mortis.core.errors import InferenceBudgetError, InferenceOutputError, ReviewStopped
+from code_mortis.core.errors import (
+    InferenceBudgetError,
+    InferenceOutputError,
+    InferenceStageBudgetError,
+    ReviewStopped,
+)
 from code_mortis.core.review_results import evidence_bundle
 from code_mortis.core.security import unseal
 from code_mortis.integrations import github, llm
@@ -63,7 +68,7 @@ def output_token_policy(job_id, config=None):
 
 def execute(connection, credentials, context, *, instructions, schema, validator, claim, stage, task_key,
             run_id=None, scan_id=None, repository_id=None, revisions=None, stopped=lambda: False,
-            authorize=None, effort="medium", token_budget=None, timeout=None, budget_demand=None):
+            authorize=None, effort="medium", token_budget=None, timeout=None, budget_demand=None, scan_phase=None):
     from code_mortis.reviews import context as review_context
     from code_mortis.reviews.service import authorize_connection, execution_identity, target_matches
 
@@ -187,12 +192,17 @@ def execute(connection, credentials, context, *, instructions, schema, validator
         workflow_budget = token_policy == analysis.WORKFLOW_OUTPUT_POLICY
         budget_schedule = (plan.snapshot["versions"].get("budget_schedule") if plan
                            else config.get("budget_schedule") if workflow_budget and stage != "summary" else None)
+        options = dict(config.get("settings", config.get("limits", {})))
+        phase_budgets = ({phase: options[f"{phase}_token_budget"] for phase in ("assessment", "verification")
+                          if options.get(f"{phase}_token_budget") is not None} if scan else {})
+        budget_stage = scan_phase if scan_phase in phase_budgets else None
         if plan is None:
-            options = dict(config.get("settings", config.get("limits", {})))
             if scan:
-                budgets = {"security": options.get("token_budget")}
+                budgets = {"security": options.get("token_budget"), **phase_budgets}
                 duration, start = (None if workflow_budget else options.get("timeout_seconds")), scan.started_at
                 policy = {"scanner_policy": config["policy"]}
+                if options.get("exclusions"):
+                    policy.update(file_policy.policy(options))
             elif run:
                 budgets = {"analysis": options.get("token_budget"), "assessment": options.get("assessment_token_budget"),
                            "verification": options.get("verification_token_budget"), "summary": options.get("summary_token_budget", 60000)}
@@ -222,9 +232,11 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                 or {key: value for key, value in plan.snapshot["settings"].items()
                     if key not in {"workflow_contract", "max_evidence_rounds"}} != config.get("settings", config.get("limits", {}))):
             raise ValueError("The existing workflow plan has a different owner or immutable source")
-        request = request.model_copy(update={"max_output_tokens": analysis.output_token_limit(token_policy)})
+        output_cap = options.get("max_output_tokens") if scan else None
+        request = request.model_copy(update={"max_output_tokens": output_cap or analysis.output_token_limit(token_policy)})
         spec = TaskSpec(key=key, stage=stage, input_hash=llm.input_fingerprint(request),
-                        scope=[{"identity": analysis.fingerprint(task_key), "context": analysis.fingerprint(supplied)}])
+                        scope=[{"identity": analysis.fingerprint(task_key), "context": analysis.fingerprint(supplied),
+                                **({"budget_stage": budget_stage} if budget_stage else {})}])
         task = analysis.workflow_task(db, plan.id, job_attempt, spec)
         plan_id, task_id = plan.id, task.id
 
@@ -233,8 +245,8 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             task = db.get(AnalysisTask, task_id)
             attempts = list(db.scalars(select(AnalysisAttempt).where(AnalysisAttempt.task_id == task_id)))
             amount = sum(row.usage_tokens for row in attempts) if all(row.usage_state == "known" for row in attempts) else None
-            budget, unknown, running = analysis.budget_state(db, plan_id, stage)
-            return task.status, task.result, amount, budget, unknown, running
+            budget, unknown, running, *scoped = analysis.budget_state(db, plan_id, stage, scoped_stage=budget_stage)
+            return task.status, task.result, amount, budget, unknown, running, next(iter(scoped), None)
 
     def validate(response):
         try:
@@ -256,14 +268,15 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             try:
                 while True:
                     await asyncio.to_thread(check_local)
-                    status, result, amount, budget, unknown, running = await asyncio.to_thread(state)
+                    status, result, amount, budget, unknown, running, stage_remaining = await asyncio.to_thread(state)
                     if status == "completed":
                         await asyncio.to_thread(fresh_authority)
                         return result, {"tokens": amount}
                     if status not in {"pending", "running"}:
                         raise InferenceOutputError("The saved request failed or its consumption is uncertain", {"tokens": amount})
                     required = llm.reservation(connection, request) + (
-                        max(1, request.max_output_tokens) if workflow_budget else request.max_output_tokens)
+                        1 if output_cap is not None else max(1, request.max_output_tokens)
+                        if workflow_budget else request.max_output_tokens)
                     if status == "pending" and token_budget is not None and required > token_budget:
                         raise budget_error("The request exceeds the remaining workflow allowance", {"tokens": 0})
                     deadline = budget.deadline_at
@@ -271,6 +284,9 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                         raise InferenceOutputError("The stage deadline or unknown consumption prevents inference", {"tokens": amount})
                     if (budget.token_limit is not None and budget.charged_tokens + required > budget.token_limit and not running):
                         raise budget_error("The stage token budget cannot admit this request", {"tokens": amount})
+                    if stage_remaining is not None and stage_remaining < required and not running:
+                        raise InferenceStageBudgetError("The configured scan stage token budget cannot admit this request",
+                                                        {"tokens": amount})
                     response = await llm.execute_task(task_id, job_id, job_attempt, request, credentials, client=client,
                         authorize=fresh_authority, authorize_admission=check_local, validate_result=validate, stopped=stopped,
                         timeout=max(0, dispatch_deadline - time.monotonic()) if dispatch_deadline is not None else None,

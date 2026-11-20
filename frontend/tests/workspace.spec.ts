@@ -482,6 +482,7 @@ async function mock(
   const current: Schema["FindingOut"] = { ...structuredClone(finding), sync_intent: null, ...options.finding };
   const fixedSnapshots = new Map<string, Schema["OccurrenceOut"]>();
   let savedContext: Pick<Schema["RepositoryOut"]["settings"], "background" | "project_summary"> | undefined;
+  let savedScanSettings: Schema["RepositoryOut"]["scan_settings"] | undefined;
   const requests: {
     path: string;
     method: string;
@@ -523,7 +524,12 @@ async function mock(
         avatar_url: "",
         csrf: "csrf-from-session",
       };
-    else if (path === "/repositories") data = [{ ...repo, settings: { ...repo.settings, ...savedContext } }];
+    else if (path === "/repositories") data = [{ ...repo, scan_settings: savedScanSettings, settings: { ...repo.settings, ...savedContext } }];
+    else if (path === "/repositories/22" && method === "PUT") {
+      const nextScanSettings = request.postDataJSON().scan_settings;
+      if (nextScanSettings) savedScanSettings = { ...savedScanSettings, ...nextScanSettings };
+      data = { ...repo, scan_settings: savedScanSettings };
+    }
     else if (/^\/repositories\/\d+\/activity$/.test(path)) data = {
       days: Array.from({ length: 365 }, (_, index) => ({
         date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10), reviews: 0, scans: 0,
@@ -1622,11 +1628,48 @@ test("repository scan limits validate across sections and save independently of 
   expect(requests).toHaveLength(0);
   await concurrency.fill("6");
   await noOverflow(page);
+  const effort = form.getByRole("combobox", { name: "Scan reasoning effort" });
+  const exclusions = form.getByLabel("AI path exclusions");
+  const cap = form.getByLabel("Maximum output tokens per response", { exact: true });
+  const assessment = form.getByLabel("Scan assessment token budget", { exact: true });
+  const verification = form.getByLabel("Scan verification token budget", { exact: true });
+  await expect(effort).toHaveValue("High");
+  await expect(exclusions).toHaveValue("");
+  await expect(cap).toBeDisabled();
+  await expect(assessment).toBeDisabled();
+  await expect(verification).toBeDisabled();
+  await chooseOption(page, effort, "Medium");
+  await exclusions.fill("fixtures/**\nexamples/sample.py");
+  await form.getByLabel(/^Automatic maximum output tokens/).uncheck();
+  await cap.fill("4096");
+  await form.getByLabel(/^No separate cap scan assessment/).uncheck();
+  await assessment.fill("50000");
+  await form.getByLabel(/^No separate cap scan verification/).uncheck();
+  await verification.fill("55000");
   await form.getByRole("button", { name: "Save", exact: true }).click();
-  expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
-    scan_settings: { token_budget: 250000, timeout_seconds: 1200, concurrency: 6 },
+  await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
+    scan_settings: { token_budget: 250000, timeout_seconds: 1200, concurrency: 6, effort: "medium",
+      exclusions: "fixtures/**\nexamples/sample.py", max_output_tokens: 4096,
+      assessment_token_budget: 50000, verification_token_budget: 55000 },
     settings: { token_budget: 200000, timeout_seconds: 900, concurrency: 2 },
   });
+  await page.reload();
+  await expect(effort).toHaveValue("Medium");
+  await expect(exclusions).toHaveValue("fixtures/**\nexamples/sample.py");
+  await expect(cap).toHaveValue("4096");
+  await expect(assessment).toHaveValue("50000");
+  await expect(verification).toHaveValue("55000");
+  await concurrency.fill("5");
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => requests.filter((request) => request.path === "/repositories/22").at(-1)?.body)
+    .toMatchObject({ scan_settings: { token_budget: 250000, timeout_seconds: 1200, concurrency: 5 } });
+  expect(requests.filter((request) => request.path === "/repositories/22").at(-1)?.body).not.toHaveProperty("scan_settings.exclusions");
+  expect(requests.filter((request) => request.path === "/repositories/22").at(-1)?.body).not.toHaveProperty("scan_settings.assessment_token_budget");
+  await exclusions.clear();
+  await form.getByLabel(/^No separate cap scan assessment/).check();
+  await form.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => requests.filter((request) => request.path === "/repositories/22").at(-1)?.body)
+    .toMatchObject({ scan_settings: { exclusions: "", assessment_token_budget: null } });
 });
 
 test("stage budgets and optional overview content save independently", async ({ page }) => {
@@ -4439,9 +4482,18 @@ test("repository summary notification opens Overview without a generation card, 
   await expect(page.getByRole("region", { name: "Repository summary generation" })).toHaveCount(0);
   const edit = page.getByRole("link", { name: /^Edit(?: (?:repository )?summary)?$/ });
   await expect(edit).toHaveAttribute("href", "/repositories/22/settings?tab=context");
-  const summary = page.getByText(paymentsSummary, { exact: true });
-  const positions = await Promise.all([summary.boundingBox(), edit.boundingBox()]);
-  expect(positions[1]!.y).toBeGreaterThanOrEqual(positions[0]!.y + positions[0]!.height);
+  const heading = page.getByRole("heading", { name: "Overview", exact: true });
+  const regenerate = page.getByRole("button", { name: "Regenerate", exact: true });
+  const headingBox = (await heading.boundingBox())!;
+  for (const [action, label] of [[regenerate, "Regenerate"], [edit, "Edit"]] as const) {
+    await expect(action).toBeEmpty();
+    await expect(action.locator("svg")).toHaveCSS("width", "14px");
+    const box = (await action.boundingBox())!;
+    expect(box.x).toBeGreaterThan(headingBox.x + headingBox.width);
+    expect(box.y + box.height / 2).toBeCloseTo(headingBox.y + headingBox.height / 2);
+    await action.focus();
+    await expect(page.getByRole("tooltip", { name: label, exact: true })).toBeVisible();
+  }
   await noOverflow(page);
   await edit.click();
   await expect(page).toHaveURL("/repositories/22/settings?tab=context");
