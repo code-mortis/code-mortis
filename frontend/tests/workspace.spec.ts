@@ -61,12 +61,12 @@ test("code graph stays opt-in and saves with the existing repository draft", asy
   await expect(page.getByText("Save graph settings before indexing.", { exact: true })).toBeVisible();
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Existing project context");
-  await repositorySection(page, "Review behavior");
+  await repositorySection(page, "Pull request reviews");
   await repositorySection(page, "Code graph");
   await expect(toggle).toBeChecked();
   expect(statusReads).toBe(0);
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=code-graph$/);
   expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
     code_graph_enabled: true, enabled: true, connection_id: "connection", settings: { background: "Existing project context" },
@@ -137,7 +137,7 @@ for (const mode of ["light", "dark"] as const) {
     await expect(page.getByText("Save to disable indexing and code access.")).toBeVisible();
     await expect(retry).toBeDisabled();
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+    await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
     await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=code-graph$/);
     expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({ code_graph_enabled: false });
   });
@@ -230,7 +230,7 @@ test("code graph limits retain drafts across tabs and focus invalid settings", a
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `../.impeccable/review/graph-limits-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=code-graph$/);
   expect(requests.find((r) => r.path === "/repositories/22")?.body).toMatchObject({
     code_graph_enabled: true, code_graph_limits: { max_files: 2000, max_file_bytes: 4194304, max_source_bytes: 33554432 },
@@ -733,6 +733,11 @@ async function breadcrumbAncestor(page: Page, name: string) {
   return page.getByRole("menuitem", { name, exact: true });
 }
 
+async function repositoryPullsLink(page: Page) {
+  await openNavigation(page);
+  return page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true });
+}
+
 async function chooseOption(page: Page, input: Locator, choice: string) {
   await input.fill(choice);
   await page.getByRole("option").filter({ hasText: choice }).click();
@@ -864,7 +869,7 @@ test("workspace pages keep one visible heading and let keyboard users skip navig
     ["pull", "/pulls/pr", `#${pr.number} ${pr.title}`],
     ["run", "/runs/run", "Review run"],
     ["settings", "/settings", "Settings"],
-    ["repository-settings", "/repositories/22/settings", "Repository configuration"],
+    ["repository-settings", "/repositories/22/settings", "Repository settings"],
   ]) {
     await page.goto(path);
     await expect(page.getByRole("main").getByRole("heading", { level: 1 })).toHaveText(heading);
@@ -991,18 +996,19 @@ test("repository paths preserve legacy settings links and never fall back from a
   await mockRepositoryPulls(page, 23, () => []);
   await page.goto("/repositories?repo=23&configure=limits#settings");
   await expect(page).toHaveURL(/\/repositories\/23\/settings\?tab=limits$/);
+  await expect(page.getByRole("heading", { name: "Run limits", exact: true })).toBeInViewport();
   await expect(page.getByRole("combobox", { name: "Organization: other", exact: true })).toBeVisible();
-  await expect(page.getByRole("form", { name: "Repository configuration" })).not.toContainText("other/payments");
-  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository settings" })).not.toContainText("other/payments");
+  await expect(page.getByLabel("Time limit (seconds)", { exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
-  await (await breadcrumbAncestor(page, "Pull requests")).click();
+  await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
+  await (await repositoryPullsLink(page)).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
   await page.goto("/repositories/22/settings?repo=23&configure=limits&state=all&q=retry&tab=connection");
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?state=all&q=retry&tab=limits$/);
-  const repositoryCrumb = await breadcrumbAncestor(page, "Pull requests");
-  await expect(repositoryCrumb).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
-  await repositoryCrumb.click();
+  const repositoryLink = await repositoryPullsLink(page);
+  await expect(repositoryLink).toHaveAttribute("href", "/repositories/22?state=all&q=retry");
+  await repositoryLink.click();
   await expect(page).toHaveURL((url) => url.pathname === "/repositories/22" && url.searchParams.size === 2
     && url.searchParams.get("state") === "all" && url.searchParams.get("q") === "retry");
   await page.goto("/repositories/999");
@@ -1301,9 +1307,9 @@ test("repository breadcrumbs and sidebar match only supported routes", async ({ 
     await page.goto(`/repositories/22${suffix}`);
     await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Pull requests");
     await page.goto(`/repositories/22/settings${suffix}?state=all&tab=limits`);
-    await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
-    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-    await expect(await breadcrumbAncestor(page, "Pull requests")).toHaveAttribute("href", "/repositories/22?state=all");
+    await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Repository settings");
+    await expect(breadcrumb.getByRole("link")).toHaveText(["payments", "Repository settings"]);
     await page.keyboard.press("Escape");
     await openNavigation(page);
     const repository = navigation.getByRole("link", { name: "Pull requests", exact: true });
@@ -1321,15 +1327,15 @@ test("repository breadcrumbs and sidebar match only supported routes", async ({ 
   }
 });
 
-test("repository settings breadcrumbs omit Configure for members when access fails", async ({ page }) => {
+test("repository settings breadcrumbs omit Repository settings for members when access fails", async ({ page }) => {
   await mock(page, { role: "member" });
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
   await page.goto("/repositories/22/settings?tab=limits");
   await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access was revoked.");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Repositories");
-  await expect(breadcrumb.getByText("Configure", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+  await expect(breadcrumb.getByText("Repository settings", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
 });
 
 test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {
@@ -1410,9 +1416,9 @@ test("repository filters survive configuration and the pull request run round tr
   await page.goto("/repositories/22?q=148&author=maria&findings=open");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
   await noOverflow(page);
-  await (await breadcrumbAncestor(page, "Pull requests")).click();
+  await (await repositoryPullsLink(page)).click();
   await expect(page).toHaveURL(/q=148&state=open&author=maria&findings=open$/);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await page.getByRole("tab", { name: "Run history" }).click();
@@ -1450,7 +1456,11 @@ test("repository sensitivity preserves custom rules and saves all three policies
     await route.fulfill({ json: { ...repo, settings: savedSettings } });
   });
   await page.goto("/repositories/22/settings");
-  const slider = page.getByRole("slider", { name: "Review sensitivity", exact: true });
+  const review = page.getByRole("region", { name: "Pull request reviews", exact: true });
+  await expect(review.getByRole("heading", { level: 3 })).toHaveText([
+    "When reviews run", "Review behavior", "GitHub output", "Run limits",
+  ]);
+  const slider = review.getByRole("slider", { name: "Finding sensitivity", exact: true });
   await expect(slider).toHaveValue("1");
   await expect(slider).toHaveAttribute("aria-valuetext", "Balanced");
   await expect(slider).toHaveAccessibleDescription("Actionable bugs and edge cases.");
@@ -1459,9 +1469,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   await expect(slider).toHaveValue("0");
   await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
   await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
-  await repositorySection(page, "Reviews");
-  await expect(page.getByRole("textbox", { name: "Review rules JSON" })).toHaveValue(JSON.stringify(rules, null, 2));
-  await repositorySection(page, "Review behavior");
+  await expect(page.getByRole("textbox", { name: "Custom review rules (JSON)" })).toHaveValue(JSON.stringify(rules, null, 2));
   await expect(slider).toHaveValue("0");
   expect(saves).toHaveLength(0);
   expect(requests).toHaveLength(0);
@@ -1480,7 +1488,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
     expect(layout.height).toBeLessThanOrEqual(layout.lineHeight + 1);
     expect(layout.contentWidth).toBeLessThanOrEqual(layout.availableWidth);
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+    await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
     expect(saves.at(-1)).toMatchObject({ review_sensitivity: value, rules, background: "Saved project context" });
     await page.goto("/repositories/22/settings");
     await expect(slider).toHaveValue(String(index));
@@ -1501,21 +1509,20 @@ test("repository configuration keeps drafts and stays on the selected section af
   const effort = page.getByRole("combobox", { name: "Review effort", exact: true });
   await expect(effort).toHaveValue("medium");
   await chooseOption(page, effort, "high");
-  await page.getByRole("switch", { name: "Automatic reviews", exact: true }).uncheck();
+  await page.getByRole("switch", { name: "Automatically review new commits", exact: true }).uncheck();
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Keep this draft while changing sections.");
-  await repositorySection(page, "Reviews");
-  await page.getByLabel("Maximum files", { exact: true }).fill("75");
-  await repositorySection(page, "Review behavior");
+  await repositorySection(page, "Pull request reviews");
+  await page.getByLabel("Maximum reviewable files", { exact: true }).fill("75");
   await expect(effort).toHaveValue("high");
-  await expect(page.getByRole("switch", { name: "Automatic reviews", exact: true })).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Automatically review new commits", exact: true })).not.toBeChecked();
   await repositorySection(page, "Project context");
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft while changing sections.");
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/repository-settings-context-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page).toHaveURL(/repositories\/22\/settings\?q=retry&state=all&active_pages=2&tab=context$/);
-  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository configuration saved." })).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: "Repository settings saved." })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/repository-save-toast-${info.project.name}.png` });
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
@@ -1552,24 +1559,23 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=limits");
   for (const [group, labels] of [
-    ["Review execution", ["Maximum files", "Timeout (seconds)", "Concurrency"]],
+    ["Execution", ["Maximum reviewable files", "Time limit (seconds)", "Parallel review tasks"]],
     ["Token budgets", ["Analysis token budget", "Assessment token budget", "Verification token budget"]],
-    ["PR summary", ["Summary timeout (seconds)", "Summary token budget"]],
-    ["Review rules", ["Review rules JSON"]],
+    ["PR summary", ["Summary time limit (seconds)", "Summary token budget"]],
   ] as const) {
     const section = page.getByRole("region", { name: group, exact: true });
-    await expect(section.getByRole("heading", { name: group, level: 3, exact: true })).toBeVisible();
+    await expect(section.getByRole("heading", { name: group, level: 4, exact: true })).toBeVisible();
     for (const label of labels) await expect(section.getByLabel(label, { exact: true })).toBeVisible();
   }
   await expect(page.getByLabel("Summary token budget", { exact: true })).toHaveValue("60000");
-  await expect(page.getByLabel("Summary timeout (seconds)", { exact: true })).toHaveValue("180");
+  await expect(page.getByLabel("Summary time limit (seconds)", { exact: true })).toHaveValue("180");
   await expect(page.getByText(/Adds input and output token usage beyond the review budget/)).toBeVisible();
   await page.getByLabel("Summary token budget", { exact: true }).fill("45000");
   await page.getByLabel("Unlimited summary token budget", { exact: true }).check();
   await expect(page.getByLabel("Summary token budget", { exact: true })).toBeDisabled();
   await page.getByLabel("Unlimited summary token budget", { exact: true }).uncheck();
   await expect(page.getByLabel("Summary token budget", { exact: true })).toHaveValue("45000");
-  await page.getByLabel("Summary timeout (seconds)", { exact: true }).fill("240");
+  await page.getByLabel("Summary time limit (seconds)", { exact: true }).fill("240");
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-settings-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -1583,11 +1589,11 @@ test("summary allowance is separate and keeps unlimited preferences", async ({ p
 test("repository scan limits validate across sections and save independently of review limits", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=scan-limits");
-  const form = page.getByRole("form", { name: "Repository configuration" });
-  const budget = form.getByLabel("Scan token budget", { exact: true });
-  const unlimitedBudget = form.getByLabel("Unlimited scan token budget", { exact: true });
-  const unlimitedTimeout = form.getByLabel("Unlimited scan timeout (seconds)", { exact: true });
-  const concurrency = form.getByLabel("Scan concurrency", { exact: true });
+  const form = page.getByRole("form", { name: "Repository settings" });
+  const budget = form.getByLabel("Total scan token budget", { exact: true });
+  const unlimitedBudget = form.getByLabel("Unlimited total scan token budget", { exact: true });
+  const unlimitedTimeout = form.getByLabel("Unlimited scan time limit (seconds)", { exact: true });
+  const concurrency = form.getByLabel("Parallel scan tasks", { exact: true });
   await expect(unlimitedBudget).toBeChecked();
   await expect(unlimitedTimeout).toBeChecked();
   await expect(concurrency).toHaveValue("4");
@@ -1598,9 +1604,9 @@ test("repository scan limits validate across sections and save independently of 
   await unlimitedBudget.uncheck();
   await expect(budget).toHaveValue("250000");
   await unlimitedTimeout.uncheck();
-  await form.getByLabel("Scan timeout (seconds)", { exact: true }).fill("1200");
+  await form.getByLabel("Scan time limit (seconds)", { exact: true }).fill("1200");
   await concurrency.fill("9");
-  await repositorySection(page, "Reviews");
+  await repositorySection(page, "Pull request reviews");
   await expect(form.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
   await form.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page).toHaveURL(/tab=scan-limits$/);
@@ -1618,12 +1624,11 @@ test("repository scan limits validate across sections and save independently of 
 test("stage budgets and optional overview content save independently", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=reviews");
-  for (const name of ["Diagram", "Prompt to fix with AI"]) {
+  for (const name of ["Include a diagram in the PR overview", "Include AI fix prompts"]) {
     const toggle = page.getByRole("switch", { name, exact: true });
     await expect(toggle).not.toBeChecked();
     await toggle.check();
   }
-  await repositorySection(page, "Reviews");
   await page.getByLabel("Analysis token budget", { exact: true }).fill("11000");
   await page.getByLabel("Assessment token budget", { exact: true }).fill("22000");
   await page.getByLabel("Unlimited verification token budget", { exact: true }).check();
@@ -2374,34 +2379,117 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   await noOverflow(page);
 });
 
+test("repository settings exposes the rules draft, run limits, and unsaved state", async ({ page }) => {
+  const requests = await mock(page);
+  await page.goto("/repositories/22/settings");
+  const form = page.getByRole("form", { name: "Repository settings" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  const unsaved = form.getByText("Unsaved changes", { exact: true });
+  await expect(save).toBeInViewport();
+  await expect(unsaved).toHaveCount(0);
+
+  const jump = form.getByRole("link", { name: "Jump to run limits" });
+  await jump.press("Enter");
+  const limits = form.getByRole("heading", { name: "Run limits", exact: true });
+  await expect(limits).toBeFocused();
+  expect((await limits.boundingBox())!.y).toBeGreaterThanOrEqual((await page.getByRole("banner").boundingBox())!.height);
+  expect(requests).toEqual([]);
+
+  const time = form.getByLabel("Time limit (seconds)", { exact: true });
+  await time.fill("");
+  await expect(unsaved).toBeVisible();
+  await time.fill("900");
+  await expect(unsaved).toHaveCount(0);
+
+  const disclosure = form.getByText("Custom review rules", { exact: true });
+  const rules = form.getByRole("textbox", { name: "Custom review rules (JSON)" });
+  await expect(rules).toBeHidden();
+  await disclosure.click();
+  await rules.fill("{");
+  await disclosure.click();
+  await repositorySection(page, "Security scans");
+  await expect(unsaved).toBeVisible();
+  await save.click();
+  await expect(rules).toBeFocused();
+  await expect(rules).toHaveValue("{");
+  await expect(form.getByRole("alert")).toContainText("Rules must contain valid JSON");
+  expect(requests).toEqual([]);
+
+  await rules.fill('{"rules":[]}');
+  await save.click();
+  await expect(page.getByText("Repository settings saved.", { exact: true })).toBeVisible();
+  await expect(unsaved).toHaveCount(0);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ path: "/repositories/22", body: { settings: { rules: { rules: [] } } } });
+
+  await rules.fill("");
+  await save.click();
+  await expect(rules).toBeHidden();
+  await expect(unsaved).toHaveCount(0);
+  expect(requests[1]).toMatchObject({ path: "/repositories/22", body: { settings: { rules: null } } });
+  await disclosure.click();
+  await expect(rules).toBeEditable();
+});
+
+test("repository settings keeps later edits marked unsaved after an in-flight save", async ({ page }) => {
+  await mock(page);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const settings: Schema["RepositoryOut"]["settings"][] = [];
+  await page.route("**/api/v1/repositories/22", async (route) => {
+    settings.push(route.request().postDataJSON().settings);
+    await pending;
+    await route.fulfill({ json: { ...repo, settings: settings.at(-1) } });
+  });
+  await page.goto("/repositories/22/settings");
+  const form = page.getByRole("form", { name: "Repository settings" });
+  const bots = form.getByRole("switch", { name: "Include bot pull requests" });
+  const save = form.getByRole("button", { name: "Save", exact: true });
+  const unsaved = form.getByText("Unsaved changes", { exact: true });
+  await bots.check();
+  await save.click();
+  await expect(form.getByRole("button", { name: "Saving…" })).toBeDisabled();
+  await bots.uncheck();
+  await form.getByText("Custom review rules", { exact: true }).click();
+  const rules = form.getByRole("textbox", { name: "Custom review rules (JSON)" });
+  await rules.fill('{"rules":[]}');
+  release();
+  await expect(save).toBeEnabled();
+  await expect(unsaved).toBeVisible();
+  await expect(rules).toHaveValue('{"rules":[]}');
+  await save.click();
+  await expect(unsaved).toHaveCount(0);
+  expect(settings.map((draft) => draft.include_bot_prs)).toEqual([true, false]);
+  expect(settings.map((draft) => draft.rules)).toEqual([null, { rules: [] }]);
+});
+
 test("repository configuration validates hidden fields and retains drafts after a failed save", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=limits");
-  await page.getByLabel("Timeout (seconds)", { exact: true }).fill("");
+  await page.getByLabel("Time limit (seconds)", { exact: true }).fill("");
   await repositorySection(page, "Project context");
   await page.getByRole("textbox", { name: "Project context", exact: true }).fill("Keep this draft after validation and server errors.");
-  await repositorySection(page, "Review behavior");
-  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).not.toBeVisible();
-  expect(await page.getByLabel("Timeout (seconds)", { exact: true }).evaluate((element: HTMLInputElement) => element.willValidate)).toBe(true);
+  await expect(page.getByLabel("Time limit (seconds)", { exact: true })).not.toBeVisible();
+  expect(await page.getByLabel("Time limit (seconds)", { exact: true }).evaluate((element: HTMLInputElement) => element.willValidate)).toBe(true);
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("Time limit (seconds)", { exact: true })).toBeFocused();
   expect(requests).toEqual([]);
-  await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
-  await repositorySection(page, "AI connection");
-  await chooseOption(page, page.getByRole("combobox", { name: "AI connection", exact: true }), "No connection");
-  await repositorySection(page, "Review behavior");
+  await page.getByLabel("Time limit (seconds)", { exact: true }).fill("1200");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByRole("combobox", { name: "Default AI connection", exact: true }), "No connection");
+  await repositorySection(page, "Pull request reviews");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "AI connection", exact: true })).toBeFocused();
+  await expect(page.getByRole("combobox", { name: "Default AI connection", exact: true })).toBeFocused();
   expect(requests).toEqual([]);
-  await chooseOption(page, page.getByRole("combobox", { name: "AI connection", exact: true }), "Team reviews");
+  await chooseOption(page, page.getByRole("combobox", { name: "Default AI connection", exact: true }), "Team reviews");
   await page.route("**/api/v1/repositories/22", (route) => route.fulfill({ status: 422, json: { detail: "Repository settings could not be saved. Try again." } }));
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Repository settings could not be saved");
   await expect(page.locator("[data-sonner-toast]")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Keep this draft after validation and server errors.");
-  await repositorySection(page, "Reviews");
-  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toHaveValue("1200");
+  await repositorySection(page, "Pull request reviews");
+  await expect(page.getByLabel("Time limit (seconds)", { exact: true })).toHaveValue("1200");
 });
 
 test("repository configuration shows connection failures across every section", async ({ page }, info) => {
@@ -2409,19 +2497,23 @@ test("repository configuration shows connection failures across every section", 
   const error = "AI connections could not be loaded. Try again.";
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ status: 503, json: { detail: error } }));
   await page.goto("/repositories/22/settings");
-  const form = page.getByRole("form", { name: "Repository configuration" });
+  const form = page.getByRole("form", { name: "Repository settings" });
   const notice = form.getByRole("alert").filter({ hasText: error });
-  for (const section of ["Review behavior", "Project context", "Reviews", "Security scan", "AI connection"]) {
+  for (const section of ["Pull request reviews", "Security scans", "AI defaults", "Project context", "Code graph"]) {
     await repositorySection(page, section);
     await expect(notice).toBeVisible();
     await expect(notice).toHaveCount(1);
   }
-  await chooseOption(page, page.getByRole("combobox", { name: "AI connection", exact: true }), "No connection");
-  await repositorySection(page, "Review behavior");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByRole("combobox", { name: "Default AI connection", exact: true }), "No connection");
+  await repositorySection(page, "Pull request reviews");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "AI connection", exact: true })).toBeFocused();
+  await expect(page.getByRole("combobox", { name: "Default AI connection", exact: true })).toBeFocused();
   await expect(notice).toBeVisible();
   await expect(form.getByRole("alert")).toHaveCount(2);
+  const errors = form.getByRole("region", { name: "Settings errors" });
+  await expect(errors).toHaveCSS("overflow-y", "auto");
+  await expect(errors).toHaveAttribute("tabindex", "0");
   expect(requests).toEqual([]);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/repository-settings-connection-error-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -2431,35 +2523,37 @@ test("repository configuration sections retain navigation and fit both themes", 
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?q=148&state=all&tab=connection");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb", exact: true });
-  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Configure");
-  const back = await breadcrumbAncestor(page, "Pull requests");
-  await expect(back).toHaveAttribute("href", "/repositories/22?q=148&state=all");
-  await page.keyboard.press("Escape");
+  await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Repository settings");
+  await expect(breadcrumb.getByRole("link", { name: "payments", exact: true })).toHaveAttribute("href", "/repositories/22/overview");
   await openNavigation(page);
   const repository = page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true });
   await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(repository).toHaveAttribute("href", "/repositories/22?q=148&state=all");
   await closeNavigation(page);
+  const sections = page.getByRole("navigation", { name: "Repository settings sections" });
+  const names = ["Pull request reviews", "Security scans", "AI defaults", "Project context", "Code graph"];
+  await expect(sections.getByRole("link")).toHaveText(names);
   for (const theme of ["light", "dark"]) {
     const toggle = page.getByRole("button", { name: `Switch to ${theme} mode` });
     if (await toggle.isVisible()) await toggle.click();
-    for (const name of ["Review behavior", "AI connection", "Project context", "Code graph", "Reviews", "Security scan"]) {
-      const link = page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name, exact: true });
+    for (const name of names) {
+      const link = sections.getByRole("link", { name, exact: true });
       await expect(link.locator("svg[aria-hidden=true]")).toBeVisible();
       await link.focus();
       await link.press("Enter");
       await expect(link).toHaveAttribute("aria-current", "page");
-      const footer = page.getByRole("form", { name: "Repository configuration" }).locator("footer");
+      const footer = page.getByRole("form", { name: "Repository settings" }).locator("footer");
       await expect(footer).toHaveCSS("border-top-width", "0px");
       await expect(footer.getByRole("button")).toHaveText(["Save"]);
       await noOverflow(page);
       await page.screenshot({ path: `../.impeccable/review/repository-settings-${name.toLowerCase().replaceAll(" ", "-").replace("&-", "")}-${info.project.name}-${theme}.png`, fullPage: true });
     }
   }
+  await repositorySection(page, "Security scans");
   await page.reload();
   await expect(page).toHaveURL(/tab=scan-limits$/);
-  await expect(page.getByLabel("Scan concurrency", { exact: true })).toBeVisible();
-  await (await breadcrumbAncestor(page, "Pull requests")).click();
+  await expect(page.getByLabel("Parallel scan tasks", { exact: true })).toBeVisible();
+  await (await repositoryPullsLink(page)).click();
   await expect(page).toHaveURL(/repositories\/22\?q=148&state=all$/);
   expect(requests).toEqual([]);
 });
@@ -2530,19 +2624,19 @@ for (const role of ["admin", "member"]) {
     if (role === "member") {
       await page.goto("/repositories/22/settings?tab=limits");
       await expect(page).toHaveURL(/repositories\/22\?state=open$/);
-      await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+      await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
     }
     for (const [id, repositories] of [[999, [repo]], [22, []]] as const) {
       await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: repositories }));
       await page.goto(`/repositories/${id}/settings?state=all&tab=limits`);
       await expect(page).toHaveURL(new RegExp(`/repositories/${id}\\?state=all$`));
       await expect(page.getByRole("heading", { name: "Repository unavailable" })).toBeVisible();
-      await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+      await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
     }
     await page.route("**/api/v1/repositories", (route) => route.fulfill({ status: 403, json: { detail: "Repository access was revoked." } }));
     await page.goto("/repositories/22/settings?tab=limits");
     await expect(page.getByRole("main").getByRole("alert")).toHaveText("Repository access was revoked.");
-    await expect(page.getByRole("form", { name: "Repository configuration" })).toHaveCount(0);
+    await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
     expect(requests).toEqual([]);
   });
 }
@@ -3904,7 +3998,7 @@ test("repository language searches suggestions and preserves custom language ent
   const requests = await mock(page);
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  const language = page.getByRole("combobox", { name: "Language", exact: true });
+  const language = page.getByRole("combobox", { name: "Review language", exact: true });
   const trigger = page.locator('[data-slot="input-group"]').filter({ has: language }).getByRole("button", { name: "Show options" });
   await language.fill("span");
   if (info.project.name === "mobile") await trigger.tap();
@@ -3954,11 +4048,11 @@ for (const search of ["", "   "]) {
       const requests = await mock(page);
       await page.goto("/repositories/22");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
-      const language = page.getByRole("combobox", { name: "Language", exact: true });
+      const language = page.getByRole("combobox", { name: "Review language", exact: true });
       await language.fill(search);
       if (close !== "Save") {
         if (close === "Tab") await language.press("Tab");
-        else await page.getByRole("heading", { name: "Repository configuration", exact: true }).click();
+        else await page.getByRole("heading", { name: "Repository settings", exact: true }).click();
         await expect(language).toHaveValue("English");
       }
       await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -3972,7 +4066,7 @@ for (const commit of ["Enter", "Save"] as const) {
     const requests = await mock(page);
     await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
-    const language = page.getByRole("combobox", { name: "Language", exact: true });
+    const language = page.getByRole("combobox", { name: "Review language", exact: true });
     await language.fill("  Mapudungun  ");
     await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
     if (commit === "Enter") {
@@ -3989,7 +4083,7 @@ test("closed custom language input submits the configuration with Enter", async 
   const requests = await mock(page);
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  const language = page.getByRole("combobox", { name: "Language", exact: true });
+  const language = page.getByRole("combobox", { name: "Review language", exact: true });
   await language.fill("Mapudungun");
   await language.press("Enter");
   await expect(language).toHaveAttribute("aria-expanded", "false");
@@ -4013,8 +4107,8 @@ for (const available of [true, false]) {
     });
     await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "AI connection");
-    const picker = page.getByRole("combobox", { name: "AI connection", exact: true });
+  await repositorySection(page, "AI defaults");
+    const picker = page.getByRole("combobox", { name: "Default AI connection", exact: true });
     await expect(picker).toBeDisabled();
     await expect(picker).toHaveValue("Loading connections…");
     await expect(picker).toHaveAttribute("placeholder", "Loading connections…");
@@ -4026,14 +4120,14 @@ for (const available of [true, false]) {
     } else {
       await expect(picker).toHaveValue("Connection unavailable");
       expect(modelRequests).toHaveLength(0);
-      await repositorySection(page, "Review behavior");
-    await page.getByRole("switch", { name: "Enable reviews", exact: true }).click();
+      await repositorySection(page, "Pull request reviews");
+    await page.getByRole("switch", { name: "Enable pull request reviews", exact: true }).click();
       await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ enabled: false, connection_id: "connection" });
     }
-    await repositorySection(page, "Review behavior");
-    await page.getByRole("switch", { name: "Enable reviews", exact: true }).uncheck();
-    await repositorySection(page, "AI connection");
+    await repositorySection(page, "Pull request reviews");
+    await page.getByRole("switch", { name: "Enable pull request reviews", exact: true }).uncheck();
+    await repositorySection(page, "AI defaults");
     await chooseOption(page, picker, "No connection");
     await expect(picker).toHaveValue("");
     await picker.fill("No connection");
@@ -4258,12 +4352,12 @@ test("repository model choices follow its selected connection", async ({ page },
   await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "AI connection");
+  await repositorySection(page, "AI defaults");
   const model = page.getByLabel("Model override (optional)");
   await expect(model).toHaveAttribute("placeholder", "review-model");
   await expectOption(page, model, "next-model", 1);
   await chooseOption(page, model, "next-model");
-  const aiConnection = page.getByRole("combobox", { name: "AI connection", exact: true });
+  const aiConnection = page.getByRole("combobox", { name: "Default AI connection", exact: true });
   await aiConnection.fill("second");
   await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(1);
   await noOverflow(page);
@@ -4281,12 +4375,12 @@ test("repository model choices follow its selected connection", async ({ page },
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     connection_id: "second", settings: { model: "" },
   });
-  await repositorySection(page, "AI connection");
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "No connection");
   await expect(model).toBeDisabled();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect(requests.filter((request) => request.path === "/repositories/22")).toHaveLength(1);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
 });
 
 const paymentsSummary = "This project helps businesses accept payments and keeps their systems informed when a payment changes.";
@@ -4386,7 +4480,7 @@ for (const context of ["Technical context about payment processing.", ""]) {
     await expect(page.getByRole("status", { name: "Summary generation status" })).toContainText("Summary generated");
     expect(savedSettings.project_summary).toBe(paymentsSummary);
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+    await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
     await page.goto("/repositories/22/overview");
     await expect(page.getByText("This repository helps merchants accept payments and receive updates.", { exact: true }).locator("strong")).toHaveText("accept payments");
     expect(starts).toBe(1);
@@ -4468,7 +4562,7 @@ test("repository summary and context started from Overview require a Settings sa
   expect(savedSettings.project_summary).toBeNull();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => savedSettings.project_summary).toBe(paymentsSummary);
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(draft);
   await expect(page.getByRole("status", { name: "Context generation status" })).toBeEmpty();
@@ -4502,7 +4596,7 @@ test("repository summary can be entered without context and updates Overview on 
   await expect(rendered).toHaveCount(0);
   expect(savedSettings.project_summary).toBeNull();
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   await page.goto("/repositories/22/overview");
   await expect(rendered.locator("strong")).toHaveText("accept payments");
   expect(saves).toBe(1);
@@ -4528,7 +4622,7 @@ test("repository summary survives clearing and saving project context", async ({
   await context.clear();
   await expect(summary).toHaveValue(paymentsSummary);
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   await page.reload();
   await expect(context).toHaveValue("");
   await expect(summary).toHaveValue(paymentsSummary);
@@ -4536,7 +4630,7 @@ test("repository summary survives clearing and saving project context", async ({
   await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
 });
 
-for (const target of ["Overview", "AI connection"]) {
+for (const target of ["Overview", "AI defaults"]) {
   test(`project background stays running unless leaving for ${target} is confirmed`, async ({ page }) => {
     await mock(page, { background: { id: "active-context", status: "running" } });
     const ids: string[] = [];
@@ -4614,9 +4708,9 @@ test("project background generates an editable draft with unsaved selections and
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await field.fill("Existing context");
-  await repositorySection(page, "AI connection");
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "Second connection");
-  await repositorySection(page, "AI connection");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "Second connection");
+  await repositorySection(page, "AI defaults");
   await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -4645,8 +4739,8 @@ test("project background generates an editable draft with unsaved selections and
   await field.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `../.impeccable/review/project-background-${info.project.name}.png`, fullPage: true });
   expect(requests).toHaveLength(1);
-  await repositorySection(page, "Review behavior");
-  await page.getByRole("switch", { name: "Automatic reviews", exact: true }).click();
+  await repositorySection(page, "Pull request reviews");
+  await page.getByRole("switch", { name: "Automatically review new commits", exact: true }).click();
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await repositorySection(page, "Project context");
@@ -4655,8 +4749,8 @@ test("project background generates an editable draft with unsaved selections and
   await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
   await repositorySection(page, "Project context");
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Previous context restored.");
-  await repositorySection(page, "Review behavior");
-  await expect(page.getByRole("switch", { name: "Automatic reviews", exact: true })).not.toBeChecked();
+  await repositorySection(page, "Pull request reviews");
+  await expect(page.getByRole("switch", { name: "Automatically review new commits", exact: true })).not.toBeChecked();
   background.id = "second-background-job";
   await repositorySection(page, "Project context");
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -4717,13 +4811,13 @@ for (const outcome of ["done", "failed"] as const) {
         await expect(page.getByText("Generation reference: feedback-job")).toBeVisible();
       }
       if (change === "background") await page.getByRole("textbox", { name: "Project context", exact: true }).fill("New manual text");
-      if (change === "model") await repositorySection(page, "AI connection");
+      if (change === "model") await repositorySection(page, "AI defaults");
       if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
-      if (change === "connection") await repositorySection(page, "AI connection");
-      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
+      if (change === "connection") await repositorySection(page, "AI defaults");
+      if (change === "connection") await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "No connection");
       if (change === "limits") {
-        await repositorySection(page, "Reviews");
-        await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
+        await repositorySection(page, "Pull request reviews");
+        await page.getByLabel("Time limit (seconds)", { exact: true }).fill("1200");
       }
       await repositorySection(page, "Project context");
       await expect(page.getByRole("status", { name: "Context generation status" })).toBeEmpty();
@@ -4805,17 +4899,17 @@ test("project background preserves text on failure and explains missing selectio
   await expect(field).toHaveValue("Keep my context");
   await repositorySection(page, "Project context");
   await expect(generate).toBeEnabled();
-  await repositorySection(page, "AI connection");
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "No connection");
   await repositorySection(page, "Project context");
   await expect(generate).toBeDisabled();
   await expect(page.getByText("Choose an AI connection to generate context.")).toBeVisible();
-  await repositorySection(page, "AI connection");
-  await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No model");
+  await repositorySection(page, "AI defaults");
+  await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "No model");
   await repositorySection(page, "Project context");
   await expect(generate).toBeDisabled();
   await expect(page.getByText("Choose a model to generate context.")).toBeVisible();
-  await repositorySection(page, "AI connection");
+  await repositorySection(page, "AI defaults");
   await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
   await repositorySection(page, "Project context");
   await expect(generate).toBeEnabled();
@@ -4850,13 +4944,13 @@ for (const unlimited of [false, true]) {
     await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
-    await repositorySection(page, "Reviews");
+    await repositorySection(page, "Pull request reviews");
     if (unlimited) {
       await page.getByLabel("Unlimited analysis token budget", { exact: true }).check();
-      await page.getByLabel("Unlimited timeout (seconds)", { exact: true }).check();
+      await page.getByLabel("Unlimited time limit (seconds)", { exact: true }).check();
     } else {
       await page.getByLabel("Analysis token budget", { exact: true }).fill("450000");
-      await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
+      await page.getByLabel("Time limit (seconds)", { exact: true }).fill("1200");
     }
     await repositorySection(page, "Project context");
     await expect(page.getByText(/Generation uses these review limits:/)).toHaveCount(0);
@@ -4894,10 +4988,10 @@ test("project background explains missing output and displays its generation ref
 test("repository limits default to unlimited and preserve an explicit cap", async ({ page }, info) => {
   await mock(page);
   const limits = [
-    ["Maximum files", "max_files"], ["Timeout (seconds)", "timeout_seconds"],
+    ["Maximum reviewable files", "max_files"], ["Time limit (seconds)", "timeout_seconds"],
     ["Analysis token budget", "token_budget"], ["Assessment token budget", "assessment_token_budget"],
     ["Verification token budget", "verification_token_budget"],
-    ["Summary timeout (seconds)", "summary_timeout_seconds"], ["Summary token budget", "summary_token_budget"],
+    ["Summary time limit (seconds)", "summary_timeout_seconds"], ["Summary token budget", "summary_token_budget"],
   ] as const;
   const unlimited = Object.fromEntries(limits.map(([, key]) => [key, null]));
   let current = structuredClone(repo) as Schema["RepositoryOut"];
@@ -4916,18 +5010,18 @@ test("repository limits default to unlimited and preserve an explicit cap", asyn
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/unlimited-defaults-${info.project.name}.png`, fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   expect(current.settings).toMatchObject(unlimited);
   await page.goto("/repositories/22/settings?tab=limits");
-  await page.getByLabel("Unlimited maximum files", { exact: true }).uncheck();
-  await expect(page.getByLabel("Maximum files", { exact: true })).toHaveValue("40");
-  await page.getByLabel("Maximum files", { exact: true }).fill("75");
+  await page.getByLabel("Unlimited maximum reviewable files", { exact: true }).uncheck();
+  await expect(page.getByLabel("Maximum reviewable files", { exact: true })).toHaveValue("40");
+  await page.getByLabel("Maximum reviewable files", { exact: true }).fill("75");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
   expect(current.settings).toMatchObject({ ...unlimited, max_files: 75 });
   await page.goto("/repositories/22/settings?tab=limits");
-  await expect(page.getByLabel("Unlimited maximum files", { exact: true })).not.toBeChecked();
-  await expect(page.getByLabel("Maximum files", { exact: true })).toHaveValue("75");
+  await expect(page.getByLabel("Unlimited maximum reviewable files", { exact: true })).not.toBeChecked();
+  await expect(page.getByLabel("Maximum reviewable files", { exact: true })).toHaveValue("75");
 });
 
 test("review limits save and reopen independent unlimited choices", async ({ page }, info) => {
@@ -4941,13 +5035,13 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   });
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "Reviews");
-  const time = page.getByLabel("Timeout (seconds)", { exact: true });
+  await repositorySection(page, "Pull request reviews");
+  const time = page.getByLabel("Time limit (seconds)", { exact: true });
   const tokens = page.getByLabel("Analysis token budget", { exact: true });
-  const files = page.getByLabel("Maximum files", { exact: true });
-  const unlimitedTime = page.getByRole("checkbox", { name: "Unlimited timeout (seconds)", exact: true });
+  const files = page.getByLabel("Maximum reviewable files", { exact: true });
+  const unlimitedTime = page.getByRole("checkbox", { name: "Unlimited time limit (seconds)", exact: true });
   const unlimitedTokens = page.getByRole("checkbox", { name: "Unlimited analysis token budget", exact: true });
-  const unlimitedFiles = page.getByRole("checkbox", { name: "Unlimited maximum files", exact: true });
+  const unlimitedFiles = page.getByRole("checkbox", { name: "Unlimited maximum reviewable files", exact: true });
   await expect(time).toHaveValue("900");
   await expect(tokens).toHaveValue("200000");
   await expect(files).toHaveValue("40");
@@ -4961,7 +5055,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
       await expect(field).toHaveValue("");
       expect(await field.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
       await page.getByRole("button", { name: "Save", exact: true }).click();
-      await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
+      await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
       expect(current.settings).toMatchObject({ timeout_seconds: 900, token_budget: 200000, max_files: 40 });
       await unlimited.check();
       await unlimited.uncheck();
@@ -5001,7 +5095,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
   await time.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `../.impeccable/review/review-limits-${info.project.name}.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Switch to dark mode" }).click();
-  await expect(page.locator("body")).toHaveCSS("color", "rgb(232, 238, 233)");
+  await expect(page.locator("html")).toHaveClass(/\bdark\b/);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/review-limits-${info.project.name}-dark.png`, fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -5082,7 +5176,7 @@ test("current finding header waits for current evidence instead of showing the s
 
 for (const field of [
   { label: "Analysis token budget", key: "token_budget", valid: "6000", excessive: "5000001" },
-  { label: "Concurrency", key: "concurrency", valid: "4", excessive: "9" },
+  { label: "Parallel review tasks", key: "concurrency", valid: "4", excessive: "9" },
 ] as const) {
   test(`repository ${field.label} keeps invalid drafts out of saved settings`, async ({ page }) => {
     const requests = await mock(page);
@@ -5090,13 +5184,13 @@ for (const field of [
       ...connection, id: "personal", name: "My ChatGPT", kind: "chatgpt", owner_id: 7, protocol: "native",
     }] }));
     await page.goto("/repositories/22/settings?tab=connection");
-    await repositorySection(page, "Reviews");
+    await repositorySection(page, "Pull request reviews");
     const input = page.getByLabel(field.label, { exact: true });
     for (const invalid of ["", "0", field.excessive, "1e309"]) {
       await input.fill(invalid);
       await expect(input).toHaveValue(invalid === "1e309" ? "" : invalid);
       expect(await input.evaluate((element: HTMLInputElement) => element.validity.valid)).toBe(false);
-      await repositorySection(page, "Review behavior");
+      await repositorySection(page, "AI defaults");
       await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(input).toBeFocused();
       expect(requests).toEqual([]);
@@ -5105,11 +5199,11 @@ for (const field of [
     await input.pressSequentially(field.valid);
     await expect(input).toHaveValue(field.valid);
     await input.fill("0");
-    await repositorySection(page, "AI connection");
-    await repositorySection(page, "Reviews");
+    await repositorySection(page, "AI defaults");
+    await repositorySection(page, "Pull request reviews");
     await expect(input).toHaveValue("0");
     await input.fill(field.valid);
-    await repositorySection(page, "Review behavior");
+    await repositorySection(page, "Pull request reviews");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
       settings: { [field.key]: Number(field.valid) },
@@ -5216,10 +5310,10 @@ test("oversized review explains its outcome and links to editable limits through
   await page.screenshot({ path: `../.impeccable/review/file-limit-skipped-${info.project.name}.png`, fullPage: true });
   await page.goto("/pulls/pr");
   await page.getByRole("link", { name: "Adjust review settings" }).click();
-  const settings = page.getByRole("form", { name: "Repository configuration" });
+  const settings = page.getByRole("form", { name: "Repository settings" });
   await expect(settings).toBeVisible();
-  await expect(settings.getByLabel("Maximum files", { exact: true })).toBeVisible();
-  await expect(settings.getByRole("checkbox", { name: "Unlimited maximum files" })).toBeVisible();
+  await expect(settings.getByLabel("Maximum reviewable files", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("checkbox", { name: "Unlimited maximum reviewable files" })).toBeVisible();
   await repositorySection(page, "Project context");
   await settings.getByRole("textbox", { name: "Project context", exact: true }).fill("A settings change must preserve the selected section.");
   await expect(page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name: "Project context" })).toHaveAttribute("aria-current", "page");
@@ -6669,7 +6763,7 @@ test("automatic resolution is opt-in and available for manual reviews", async ({
   const requests = await mock(page);
   await page.goto("/repositories/22");
   await page.getByRole("button", { name: "Configure", exact: true }).click();
-  const automatic = page.getByRole("switch", { name: "Automatic reviews", exact: true });
+  const automatic = page.getByRole("switch", { name: "Automatically review new commits", exact: true });
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
   await expect(resolution).not.toBeChecked();
   await automatic.uncheck();
@@ -9099,10 +9193,10 @@ test("retired repository connections require explicit shared selection and use M
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, connection_id: "personal", connection_requires_setup: true, settings: { ...repo.settings } }] }));
   await page.goto("/repositories/22/settings?tab=connection");
   await expect(page.getByText("The saved subscription connection is retired.", { exact: false })).toBeVisible();
-  const picker = page.getByRole("combobox", { name: "AI connection", exact: true });
+  const picker = page.getByRole("combobox", { name: "Default AI connection", exact: true });
   await expect(picker).toHaveValue("Retired connection");
   await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
+  await expect(page.getByText("Pull request reviews use these settings by default.", { exact: false })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/retired-connection-${info.project.name}.png`, fullPage: true });
   await chooseOption(page, picker, "Team reviews");
@@ -9184,12 +9278,13 @@ test("Mortis is saved without an engine selector while custom review rules remai
   delete legacySettings.analysis_engine;
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: legacySettings }] }));
   await page.goto("/repositories/22/settings?tab=connection");
-  await expect(page.getByText("Mortis reviews this repository", { exact: false })).toBeVisible();
+  await expect(page.getByText("Pull request reviews use these settings by default.", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
-  await repositorySection(page, "Reviews");
+  await repositorySection(page, "Pull request reviews");
   await expect(page.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
   const rules = { rules: [{ path: "**/*.py", rule: "Preserve ownership checks" }] };
-  await page.getByRole("textbox", { name: "Review rules JSON", exact: true }).fill(JSON.stringify(rules));
+  await page.getByText("Custom review rules", { exact: true }).click();
+  await page.getByRole("textbox", { name: "Custom review rules (JSON)", exact: true }).fill(JSON.stringify(rules));
   await expect(page.getByRole("link", { name: "Rule file documentation" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: info.outputPath("mortis-only-settings.png"), fullPage: true });

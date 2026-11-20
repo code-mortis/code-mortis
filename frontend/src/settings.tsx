@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, Shield, SlidersHorizontal, Users } from "lucide-react";
+import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, Shield, Users } from "lucide-react";
 import {
   api,
   useAction,
@@ -132,7 +132,7 @@ const reviewSensitivities = [
   { value: "broad", label: "Broad", description: "Also minor bugs and rare cases." },
 ] as const;
 
-function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onChange }: {
+function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onChange, onInvalidDraft }: {
   id: string;
   label: string;
   hint: string;
@@ -141,6 +141,7 @@ function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onCha
   value: number | null;
   fallback?: number;
   onChange: (value: number | null) => void;
+  onInvalidDraft: (id: string, invalid: boolean) => void;
 }) {
   const limited = useRef(value ?? fallback ?? min);
   return <div className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
@@ -162,7 +163,9 @@ function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onCha
         defaultValue={value ?? ""}
         onChange={(event) => {
           const next = event.target.valueAsNumber;
-          if (!Number.isFinite(next) || !event.target.validity.valid) return;
+          const invalid = !Number.isFinite(next) || !event.target.validity.valid;
+          onInvalidDraft(id, invalid);
+          if (invalid) return;
           limited.current = next;
           onChange(next);
         }}
@@ -173,7 +176,10 @@ function ExecutionLimitField({ id, label, hint, min, max, value, fallback, onCha
           className="size-4 accent-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           aria-label={`Unlimited ${label.toLowerCase()}`}
           checked={value === null}
-          onChange={(event) => onChange(event.target.checked ? null : limited.current)}
+          onChange={(event) => {
+            onInvalidDraft(id, false);
+            onChange(event.target.checked ? null : limited.current);
+          }}
         />
         Unlimited
       </label>}
@@ -193,23 +199,35 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const generatedDraft = useRef(false);
   const [params, setParams] = useSearchParams();
   const sections = [
-    { value: "reviews", label: "Review behavior", icon: GitPullRequest },
-    { value: "connection", label: "AI connection", icon: Plug },
+    { value: "reviews", label: "Pull request reviews", icon: GitPullRequest },
+    { value: "scan-limits", label: "Security scans", icon: Shield },
+    { value: "connection", label: "AI defaults", icon: Plug },
     { value: "context", label: "Project context", icon: FolderGit2 },
     { value: "code-graph", label: "Code graph", icon: Network },
-    { value: "limits", label: "Reviews", icon: SlidersHorizontal },
-    { value: "scan-limits", label: "Security scan", icon: Shield },
   ];
-  const section = sections.some(({ value }) => value === params.get("tab")) ? params.get("tab")! : "reviews";
-  const invalidField = useRef<HTMLInputElement | null>(null);
+  const tab = params.get("tab");
+  const section = sections.find(({ value }) => value === tab)?.value ?? "reviews";
+  const reviewLimits = useRef<HTMLHeadingElement>(null);
+  const invalidField = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    invalidField.current?.focus();
+    if (invalidField.current) focusInvalidField(invalidField.current);
+    else if (tab === "limits") reviewLimits.current?.scrollIntoView();
     invalidField.current = null;
-  }, [section]);
+  }, [section, tab]);
   function sectionSearch(value: string) {
     const next = new URLSearchParams(params);
     next.set("tab", value);
     return next;
+  }
+  function focusInvalidField(field: HTMLElement) {
+    field.focus({ preventScroll: true });
+    field.scrollIntoView({ block: "center" });
+  }
+  function revealInvalidField(field: HTMLElement, target?: string) {
+    if (target && target !== section) {
+      invalidField.current = field;
+      setParams(sectionSearch(target), { state: location.state });
+    } else focusInvalidField(field);
   }
   const [enabled, setEnabled] = useState(repo.enabled);
   const [codeGraphEnabled, setCodeGraphEnabled] = useState(repo.code_graph_enabled ?? false);
@@ -255,6 +273,14 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const [rules, setRules] = useState(
     repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
   );
+  const initialRulesOpen = useRef(!!rules);
+  const rulesDisclosure = useRef<HTMLDetailsElement>(null);
+  const rulesInput = useRef<HTMLTextAreaElement>(null);
+  const saveBar = useRef<HTMLElement>(null);
+  const [invalidLimitDrafts, setInvalidLimitDrafts] = useState<ReadonlySet<string>>(() => new Set());
+  const draft = JSON.stringify({ enabled, codeGraphEnabled, graphDraft, connection, settings, scanSettings, rules });
+  const [savedDraft, setSavedDraft] = useState(draft);
+  const dirty = draft !== savedDraft || invalidLimitDrafts.size > 0;
   const [error, setError] = useState<unknown>();
   const sharedConnections = connections.data?.filter((item) => item.kind === "api") ?? [];
   const selectedConnection = sharedConnections.find((item) => item.id === connection);
@@ -264,10 +290,26 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   ) {
     setSettings({ ...settings, [key]: value });
   }
+  function trackInvalidLimitDraft(fieldId: string, invalid: boolean) {
+    setInvalidLimitDrafts((current) => {
+      if (current.has(fieldId) === invalid) return current;
+      const next = new Set(current);
+      if (invalid) next.add(fieldId);
+      else next.delete(fieldId);
+      return next;
+    });
+  }
   return (
     <form
-      aria-label="Repository configuration"
+      aria-label="Repository settings"
       className="space-y-6"
+      onFocus={(event) => {
+        const bar = saveBar.current;
+        if (bar && !bar.contains(event.target)
+          && event.target.getBoundingClientRect().bottom > bar.getBoundingClientRect().top) {
+          event.target.scrollIntoView({ block: "center" });
+        }
+      }}
       onInvalidCapture={(event) => {
         event.preventDefault();
         const invalid = event.currentTarget.querySelector<HTMLInputElement>(":invalid");
@@ -277,14 +319,20 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           : invalid;
         const target = invalid.closest<HTMLElement>("[data-settings-section]")?.dataset.settingsSection;
         setError(new Error(invalid.validationMessage));
-        if (target && target !== section) {
-          invalidField.current = field;
-          setParams(sectionSearch(target), { state: location.state });
-        } else field.focus();
+        revealInvalidField(field, target);
       }}
       onSubmit={async (e) => {
         e.preventDefault();
         setError(undefined);
+        let nextRules: unknown = null;
+        try {
+          if (rules.trim()) nextRules = parseObject(rules, "Rules");
+        } catch (e) {
+          setError(e);
+          if (rulesDisclosure.current) rulesDisclosure.current.open = true;
+          if (rulesInput.current) revealInvalidField(rulesInput.current, "reviews");
+          return;
+        }
         const scanSettingsChanged = scanSettings.token_budget !== savedScanSettings.current.token_budget
           || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
           || scanSettings.concurrency !== savedScanSettings.current.concurrency;
@@ -308,7 +356,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                 ...nextSettings,
                 ...(summaryChanged ? { project_summary } : {}),
                 concurrency: settings.concurrency,
-                rules: rules.trim() ? parseObject(rules, "Rules") : null,
+                rules: nextRules,
               },
             },
           });
@@ -320,98 +368,83 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
             navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state });
           }
           if (scanSettingsChanged) savedScanSettings.current = scanSettings;
-          toast.success("Repository configuration saved.");
+          setSavedDraft(draft);
+          if (nextRules === null && rulesDisclosure.current && rulesInput.current?.value === rules
+            && document.activeElement !== rulesInput.current) {
+            rulesDisclosure.current.open = false;
+          }
+          toast.success("Repository settings saved.");
         } catch (e) {
           setError(e);
         }
       }}
     >
-      <PageTitle title="Repository configuration" />
+      <PageTitle title="Repository settings" />
       <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
         <SettingsNavigation label="Repository settings sections" value={section}
           items={sections.map((item) => ({ ...item, to: `?${sectionSearch(item.value)}`, state: location.state }))} />
         <div className="min-w-0 max-w-2xl">
           <section hidden={section !== "reviews"} data-settings-section="reviews" aria-labelledby={`${id}-reviews`} className="space-y-6">
             <div>
-              <h2 id={`${id}-reviews`} className="text-xl font-semibold tracking-tight">Review behavior</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Choose when reviews run and how findings are handled.</p>
+              <h2 id={`${id}-reviews`} className="text-xl font-semibold tracking-tight">Pull request reviews</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Configure when reviews run, what they report, and their execution limits.</p>
+              <a href={`#${id}-review-limits`} className="mt-2 inline-block rounded-sm text-sm underline underline-offset-4"
+                onClick={(event) => {
+                  event.preventDefault();
+                  reviewLimits.current?.focus({ preventScroll: true });
+                  reviewLimits.current?.scrollIntoView();
+                }}>Jump to run limits</a>
             </div>
-            <div className="divide-y rounded-lg border bg-card">
-              <div className="flex items-start justify-between gap-4 p-5">
-                <div className="space-y-2">
-                  <label htmlFor={`${id}-enabled`} className="text-sm font-medium">Enable reviews</label>
-                  <p id={`${id}-enabled-hint`} className="text-xs leading-relaxed text-muted-foreground">Allow reviews for this repository using the selected AI connection.</p>
+            <section aria-labelledby={`${id}-review-triggers`} className="space-y-3">
+              <h3 id={`${id}-review-triggers`} className="text-base font-semibold">When reviews run</h3>
+              <div className="divide-y rounded-lg border bg-card">
+                <div className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
+                    <label htmlFor={`${id}-enabled`} className="text-sm font-medium">Enable pull request reviews</label>
+                    <p id={`${id}-enabled-hint`} className="text-xs leading-relaxed text-muted-foreground">Allow reviews for this repository using the selected AI connection.</p>
+                  </div>
+                  <Switch id={`${id}-enabled`} aria-describedby={`${id}-enabled-hint`} checked={enabled} onCheckedChange={setEnabled} className="mt-0.5 shrink-0" />
                 </div>
-                <Switch id={`${id}-enabled`} aria-describedby={`${id}-enabled-hint`} checked={enabled} onCheckedChange={setEnabled} className="mt-0.5 shrink-0" />
-              </div>
-              <div className="flex items-start justify-between gap-4 p-5">
-                <div className="space-y-2">
-                  <label htmlFor={`${id}-automatic`} className="text-sm font-medium">Automatic reviews</label>
-                  <p id={`${id}-automatic-hint`} className="text-xs leading-relaxed text-muted-foreground">Reviews new commits on open, non-draft pull requests. Forks require a manual start.</p>
+                <div className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
+                    <label htmlFor={`${id}-automatic`} className="text-sm font-medium">Automatically review new commits</label>
+                    <p id={`${id}-automatic-hint`} className="text-xs leading-relaxed text-muted-foreground">Reviews new commits on open, non-draft pull requests. Forks require a manual start.</p>
+                  </div>
+                  <Switch id={`${id}-automatic`} aria-describedby={`${id}-automatic-hint`} checked={settings.automatic} onCheckedChange={(value) => change("automatic", value)} className="mt-0.5 shrink-0" />
                 </div>
-                <Switch id={`${id}-automatic`} aria-describedby={`${id}-automatic-hint`} checked={settings.automatic} onCheckedChange={(value) => change("automatic", value)} className="mt-0.5 shrink-0" />
-              </div>
-              <div className="flex items-start justify-between gap-4 p-5">
-                <div className="space-y-2">
-                  <label htmlFor={`${id}-bots`} className="text-sm font-medium">Include bot pull requests</label>
-                  <p id={`${id}-bots-hint`} className="text-xs leading-relaxed text-muted-foreground">Import pull requests from bots such as Dependabot and apply your automatic review settings. Existing pull requests stay visible when this is off.</p>
+                <div className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
+                    <label htmlFor={`${id}-bots`} className="text-sm font-medium">Include bot pull requests</label>
+                    <p id={`${id}-bots-hint`} className="text-xs leading-relaxed text-muted-foreground">Import pull requests from bots such as Dependabot and apply your automatic review settings. Existing pull requests stay visible when this is off.</p>
+                  </div>
+                  <Switch id={`${id}-bots`} aria-describedby={`${id}-bots-hint`} checked={settings.include_bot_prs ?? false} onCheckedChange={(value) => change("include_bot_prs", value)} className="mt-0.5 shrink-0" />
                 </div>
-                <Switch id={`${id}-bots`} aria-describedby={`${id}-bots-hint`} checked={settings.include_bot_prs ?? false} onCheckedChange={(value) => change("include_bot_prs", value)} className="mt-0.5 shrink-0" />
               </div>
-              <div className="flex items-start justify-between gap-4 p-5">
-                <div className="space-y-2">
-                  <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
-                  <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Verifies earlier findings in manual and automatic reviews. Requires GitHub App Contents: Read and write. Uses the verification budget; uncertain findings stay open.</p>
+            </section>
+            <section aria-labelledby={`${id}-review-behavior`} className="space-y-3">
+              <h3 id={`${id}-review-behavior`} className="text-base font-semibold">Review behavior</h3>
+              <div className="space-y-2 rounded-lg border bg-card p-5">
+                <label htmlFor={`${id}-sensitivity`} className="text-sm font-medium">Finding sensitivity</label>
+                <input
+                  id={`${id}-sensitivity`}
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={1}
+                  value={sensitivityIndex}
+                  aria-valuetext={sensitivity.label}
+                  aria-describedby={`${id}-sensitivity-hint`}
+                  onChange={(event) => change("review_sensitivity", reviewSensitivities[Number(event.target.value)].value)}
+                  className="block h-11 w-full cursor-pointer rounded-sm accent-primary"
+                />
+                <div aria-hidden="true" className="grid grid-cols-3 gap-3 text-xs">
+                  {reviewSensitivities.map((item) => <span key={item.value}
+                    className={`text-center first:text-left last:text-right ${item.value === sensitivity.value ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                    {item.label}
+                  </span>)}
                 </div>
-                <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
+                <p id={`${id}-sensitivity-hint`} className="text-xs leading-relaxed text-muted-foreground">{sensitivity.description}</p>
               </div>
-              {([
-                ["summary_diagram_enabled", "Diagram", "Include a collapsed diagram in the PR overview, generated with the summary."],
-                ["ai_fix_prompts_enabled", "Prompt to fix with AI", "Include fix prompts in the PR overview and new finding comments."],
-              ] as const).map(([key, label, hint]) => <div key={key} className="flex items-start justify-between gap-4 p-5">
-                <div className="space-y-2">
-                  <label htmlFor={`${id}-${key}`} className="text-sm font-medium">{label}</label>
-                  <p id={`${id}-${key}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
-                </div>
-                <Switch id={`${id}-${key}`} aria-describedby={`${id}-${key}-hint`} checked={settings[key] ?? false} onCheckedChange={(value) => change(key, value)} className="mt-0.5 shrink-0" />
-              </div>)}
-            </div>
-            <div className="space-y-2 rounded-lg border bg-card p-5">
-              <label htmlFor={`${id}-sensitivity`} className="text-sm font-medium">Review sensitivity</label>
-              <input
-                id={`${id}-sensitivity`}
-                type="range"
-                min={0}
-                max={2}
-                step={1}
-                value={sensitivityIndex}
-                aria-valuetext={sensitivity.label}
-                aria-describedby={`${id}-sensitivity-hint`}
-                onChange={(event) => change("review_sensitivity", reviewSensitivities[Number(event.target.value)].value)}
-                className="block h-11 w-full cursor-pointer rounded-sm accent-primary"
-              />
-              <div aria-hidden="true" className="grid grid-cols-3 gap-3 text-xs">
-                {reviewSensitivities.map((item) => <span key={item.value}
-                  className={`text-center first:text-left last:text-right ${item.value === sensitivity.value ? "font-medium text-foreground" : "text-muted-foreground"}`}>
-                  {item.label}
-                </span>)}
-              </div>
-              <p id={`${id}-sensitivity-hint`} className="truncate text-xs leading-relaxed text-muted-foreground">{sensitivity.description}</p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Language">
-                {(id) => (
-                  <SearchSelect
-                    id={id}
-                    required
-                    value={settings.language}
-                    onChange={(value) => change("language", value)}
-                    options={languages.map((value) => ({ value, label: value }))}
-                    placeholder="Choose or enter a language"
-                    allowCustom
-                  />
-                )}
-              </Field>
               <Field label="Review effort">
                 {(id) => (
                   <SearchSelect
@@ -426,16 +459,136 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   />
                 )}
               </Field>
+              <div className="divide-y rounded-lg border bg-card">
+                <div className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
+                    <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
+                    <p id={`${id}-resolve-hint`} className="text-xs leading-relaxed text-muted-foreground">Verifies earlier findings in manual and automatic reviews. Requires GitHub App Contents: Read and write. Uses the verification budget; uncertain findings stay open.</p>
+                  </div>
+                  <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
+                </div>
+              </div>
+              <details ref={rulesDisclosure} open={initialRulesOpen.current} className="rounded-lg border bg-card">
+                <summary className="cursor-pointer rounded-lg p-5 text-sm font-medium">Custom review rules</summary>
+                <div className="space-y-3 px-5 pb-5">
+                  <label htmlFor={`${id}-rules-json`} className="sr-only">Custom review rules (JSON)</label>
+                  <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
+                    Leave blank to use rules from the trusted base revision.
+                  </p>
+                  <Textarea
+                    ref={rulesInput}
+                    id={`${id}-rules-json`}
+                    aria-describedby={`${id}-rules-hint`}
+                    rows={6}
+                    className="min-h-40 max-h-96 resize-y font-mono text-xs"
+                    value={rules}
+                    onChange={(e) => setRules(e.target.value)}
+                  />
+                </div>
+              </details>
+            </section>
+            <section aria-labelledby={`${id}-review-output`} className="space-y-3">
+              <h3 id={`${id}-review-output`} className="text-base font-semibold">GitHub output</h3>
+              <Field label="Review language">
+                {(id) => (
+                  <SearchSelect
+                    id={id}
+                    required
+                    value={settings.language}
+                    onChange={(value) => change("language", value)}
+                    options={languages.map((value) => ({ value, label: value }))}
+                    placeholder="Choose or enter a language"
+                    allowCustom
+                  />
+                )}
+              </Field>
+              <div className="divide-y rounded-lg border bg-card">
+                {([
+                  ["summary_diagram_enabled", "Include a diagram in the PR overview", "Include a collapsed diagram in the PR overview, generated with the summary."],
+                  ["ai_fix_prompts_enabled", "Include AI fix prompts", "Include fix prompts in the PR overview and new finding comments."],
+                ] as const).map(([key, label, hint]) => <div key={key} className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
+                    <label htmlFor={`${id}-${key}`} className="text-sm font-medium">{label}</label>
+                    <p id={`${id}-${key}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>
+                  </div>
+                  <Switch id={`${id}-${key}`} aria-describedby={`${id}-${key}-hint`} checked={settings[key] ?? false} onCheckedChange={(value) => change(key, value)} className="mt-0.5 shrink-0" />
+                </div>)}
+              </div>
+            </section>
+            <section aria-labelledby={`${id}-review-limits`} className="space-y-3">
+              <h3 ref={reviewLimits} id={`${id}-review-limits`} tabIndex={-1} className="scroll-mt-32 rounded-sm text-base font-semibold sm:scroll-mt-18">Run limits</h3>
+              {([
+                { key: "execution", title: "Execution", fields: [
+                  { key: "max_files", label: "Maximum reviewable files", min: 1, max: undefined, fallback: 40,
+                    hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
+                  { key: "timeout_seconds", label: "Time limit (seconds)", min: 60, max: 3600, fallback: 900,
+                    hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
+                ] },
+                { key: "budgets", title: "Token budgets", fields: [
+                  { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000, fallback: 200000,
+                    hint: "Budget for Mortis analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
+                  { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000, fallback: 200000,
+                    hint: "Independent budget for validating proposed findings, including correction attempts." },
+                  { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000, fallback: 200000,
+                    hint: "Independent budget for checking whether earlier findings were fixed." },
+                ] },
+                { key: "summary", title: "PR summary", fields: [
+                  { key: "summary_timeout_seconds", label: "Summary time limit (seconds)", min: 60, max: 3600, fallback: 180,
+                    hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
+                  { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000, fallback: 60000,
+                    hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
+                ] },
+              ] as const).map((group) => (
+                <section key={group.key} aria-labelledby={`${id}-${group.key}`} className="space-y-3">
+                  <h4 id={`${id}-${group.key}`} className="text-sm font-semibold">{group.title}</h4>
+                  <div className="divide-y rounded-lg border bg-card">
+                    {group.fields.map(({ key, ...field }) => <ExecutionLimitField key={key} id={`${id}-${key}`}
+                      {...field} value={settings[key]} onChange={(value) => change(key, value)} onInvalidDraft={trackInvalidLimitDraft} />)}
+                    {group.key === "execution" && <ExecutionLimitField id={`${id}-concurrency`} label="Parallel review tasks"
+                      hint="Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
+                      min={1} max={8} value={settings.concurrency}
+                      onChange={(value) => { if (value !== null) change("concurrency", value); }} onInvalidDraft={trackInvalidLimitDraft} />}
+                  </div>
+                </section>
+              ))}
+            </section>
+          </section>
+          <section hidden={section !== "scan-limits"} data-settings-section="scan-limits" aria-labelledby={`${id}-scan-limits`} className="space-y-6">
+            <div>
+              <h2 id={`${id}-scan-limits`} className="text-xl font-semibold tracking-tight">Security scans</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Set execution limits for new security scans of this repository.</p>
             </div>
+            <section aria-labelledby={`${id}-scan-execution`} className="space-y-3">
+              <h3 id={`${id}-scan-execution`} className="text-base font-semibold">Run limits</h3>
+              <div className="divide-y rounded-lg border bg-card">
+                <ExecutionLimitField id={`${id}-scan-timeout`} label="Scan time limit (seconds)"
+                  hint="Time available for the complete scan. Unlimited removes the execution deadline."
+                  min={60} max={3600} fallback={900} value={scanSettings.timeout_seconds}
+                  onChange={(timeout_seconds) => setScanSettings((current) => ({ ...current, timeout_seconds }))} onInvalidDraft={trackInvalidLimitDraft} />
+                <ExecutionLimitField id={`${id}-scan-concurrency`} label="Parallel scan tasks"
+                  hint="Maximum number of scan tasks running in parallel. All tasks share the scan budget."
+                  min={1} max={8} value={scanSettings.concurrency}
+                  onChange={(concurrency) => { if (concurrency !== null) setScanSettings((current) => ({ ...current, concurrency })); }} onInvalidDraft={trackInvalidLimitDraft} />
+                <ExecutionLimitField id={`${id}-scan-token-budget`} label="Total scan token budget"
+                  hint="Total budget shared by scan analysis, assessment, verification, and correction attempts."
+                  min={1000} max={5000000} fallback={200000} value={scanSettings.token_budget}
+                  onChange={(token_budget) => setScanSettings((current) => ({ ...current, token_budget }))} onInvalidDraft={trackInvalidLimitDraft} />
+              </div>
+            </section>
+            <section aria-labelledby={`${id}-scan-policy`} className="space-y-3">
+              <h3 id={`${id}-scan-policy`} className="text-base font-semibold">What scans check</h3>
+              <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
+                Mortis analyzes source code and assesses findings. Trivy uses built-in rules to check for exposed secrets, vulnerable dependencies, and infrastructure misconfigurations.
+              </p>
+            </section>
           </section>
           <section hidden={section !== "connection"} data-settings-section="connection" aria-labelledby={`${id}-connection`} className="space-y-6">
             <div>
-              <h2 id={`${id}-connection`} className="text-xl font-semibold tracking-tight">Connection and model</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Choose the connection and model used to review this repository.</p>
+              <h2 id={`${id}-connection`} className="text-xl font-semibold tracking-tight">AI defaults</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Pull request reviews use these settings by default. They’re also prefilled when starting a security scan, where you can choose a different connection or model.</p>
             </div>
             {repo.connection_requires_setup && <p role="status" className="rounded-md border p-4 text-sm">The saved subscription connection is retired. Select a shared API connection to resume reviews. Historical runs remain available.</p>}
-            <p className="text-sm text-muted-foreground">Mortis reviews this repository using the selected shared API connection.</p>
-            <Field label="AI connection">
+            <Field label="Default AI connection">
               {(id) => (
                 <SearchSelect
                   id={id}
@@ -471,6 +624,23 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               <h2 id={`${id}-context`} className="text-xl font-semibold tracking-tight">Project context</h2>
               <p className="mt-1 text-sm text-muted-foreground">Give reviewers context and choose which files to exclude.</p>
             </div>
+            <BackgroundField
+              repositoryId={repo.id}
+              connectionId={connection}
+              model={settings.model}
+              defaultModel={selectedConnection?.model ?? ""}
+              tokenBudget={settings.token_budget}
+              timeoutSeconds={settings.timeout_seconds}
+              value={{ background: settings.background, project_summary: settings.project_summary }}
+              onChange={(value, generated) => {
+                if (generated) generatedDraft.current = true;
+                setSettings((current) => ({ ...current, ...value }));
+              }}
+              initialJobId={contextGeneration?.jobId}
+              initialGenerationId={contextGeneration?.generationId}
+              initialSummaryDraft={contextGeneration?.mode === "summary_draft"}
+              initialContextChanged={!!contextGeneration && contextGeneration.inputs !== savedBackgroundInputs(repo)}
+            />
             <Field
               label="Additional file exclusions"
               hint="Comma-separated glob patterns, such as fixtures/**. These add to the mandatory policy for reviews, context, and code graph indexing. Inclusion overrides are not allowed."
@@ -497,23 +667,6 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                 <p>Markdown, MDX, text documentation, source, and configuration files remain eligible. Security scans use their own coverage policy.</p>
               </div>
             </details>
-            <BackgroundField
-              repositoryId={repo.id}
-              connectionId={connection}
-              model={settings.model}
-              defaultModel={selectedConnection?.model ?? ""}
-              tokenBudget={settings.token_budget}
-              timeoutSeconds={settings.timeout_seconds}
-              value={{ background: settings.background, project_summary: settings.project_summary }}
-              onChange={(value, generated) => {
-                if (generated) generatedDraft.current = true;
-                setSettings((current) => ({ ...current, ...value }));
-              }}
-              initialJobId={contextGeneration?.jobId}
-              initialGenerationId={contextGeneration?.generationId}
-              initialSummaryDraft={contextGeneration?.mode === "summary_draft"}
-              initialContextChanged={!!contextGeneration && contextGeneration.inputs !== savedBackgroundInputs(repo)}
-            />
           </section>
           <section hidden={section !== "code-graph"} data-settings-section="code-graph" aria-labelledby={`${id}-code-graph`} className="space-y-6">
             <div>
@@ -524,7 +677,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               visible={section === "code-graph"} onChange={setCodeGraphEnabled}
               dirty={codeGraphEnabled !== (repo.code_graph_enabled ?? false) || settings.exclusions !== repo.settings.exclusions
                 || Object.entries(graphLimits).some(([key, value]) => value !== savedGraphLimits[key as keyof typeof savedGraphLimits])} />
-            <div className="space-y-4">
+            <section aria-labelledby={`${id}-indexing-limits`} className="space-y-4">
+              <h3 id={`${id}-indexing-limits`} className="text-base font-semibold">Indexing limits</h3>
               <p className="text-sm text-muted-foreground">Limits apply to eligible source after mandatory and additional exclusions and language filtering. Unsupported formats retain metadata for coverage and source navigation; their bodies are not parsed.</p>
               {([
                 { key: "max_files", label: "Maximum indexed files", max: 5000, min: 1, step: 1, hint: "Default: 1,000. Maximum: 5,000 files." },
@@ -537,97 +691,16 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   onChange={(event) => { setError(undefined); setGraphDraft({ ...graphDraft, [field.key]: event.target.value }); }} />}
               </Field>)}
               <p className="text-xs text-muted-foreground">Saving changes schedules a fresh index when enabled. Paused indexing stays paused until you retry.</p>
-            </div>
-          </section>
-          <section hidden={section !== "limits"} data-settings-section="limits" aria-labelledby={`${id}-limits`} className="space-y-6">
-            <div>
-              <h2 id={`${id}-limits`} className="text-xl font-semibold tracking-tight">Review limits &amp; rules</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Control review size and execution, and optionally customize review rules.</p>
-            </div>
-            {([
-              { key: "execution", title: "Review execution", fields: [
-                { key: "max_files", label: "Maximum files", min: 1, max: undefined, fallback: 40,
-                  hint: "Skips the entire review when reviewable files exceed this limit. Excluded files do not count." },
-                { key: "timeout_seconds", label: "Timeout (seconds)", min: 60, max: 3600, fallback: 900,
-                  hint: "Applies to reviews and background generation. Unlimited removes the deadline. Provider and connection timeouts still apply." },
-              ] },
-              { key: "budgets", title: "Token budgets", fields: [
-                { key: "token_budget", label: "Analysis token budget", min: 1000, max: 5000000, fallback: 200000,
-                  hint: "Budget for Mortis analysis. Also supplies the initial background generation limit. Provider and account limits still apply." },
-                { key: "assessment_token_budget", label: "Assessment token budget", min: 1000, max: 5000000, fallback: 200000,
-                  hint: "Independent budget for validating proposed findings, including correction attempts." },
-                { key: "verification_token_budget", label: "Verification token budget", min: 1000, max: 5000000, fallback: 200000,
-                  hint: "Independent budget for checking whether earlier findings were fixed." },
-              ] },
-              { key: "summary", title: "PR summary", fields: [
-                { key: "summary_timeout_seconds", label: "Summary timeout (seconds)", min: 60, max: 3600, fallback: 180,
-                  hint: "Separate time allowance for the PR summary, including when the file limit skips detailed review." },
-                { key: "summary_token_budget", label: "Summary token budget", min: 1000, max: 5000000, fallback: 60000,
-                  hint: "Adds input and output token usage beyond the review budget. Provider accounting applies; this is not a guaranteed spending cap." },
-              ] },
-            ] as const).map((group) => (
-              <section key={group.key} aria-labelledby={`${id}-${group.key}`} className="space-y-3">
-                <h3 id={`${id}-${group.key}`} className="text-base font-semibold">{group.title}</h3>
-                <div className="divide-y rounded-lg border bg-card">
-                  {group.fields.map(({ key, ...field }) => <ExecutionLimitField key={key} id={`${id}-${key}`}
-                    {...field} value={settings[key]} onChange={(value) => change(key, value)} />)}
-                  {group.key === "execution" && <ExecutionLimitField id={`${id}-concurrency`} label="Concurrency"
-                    hint="Maximum number of review tasks running in parallel. Lower values reduce simultaneous requests to your AI provider."
-                    min={1} max={8} value={settings.concurrency}
-                    onChange={(value) => { if (value !== null) change("concurrency", value); }} />}
-                </div>
-              </section>
-            ))}
-            <section aria-labelledby={`${id}-rules`} className="space-y-3">
-              <h3 id={`${id}-rules`} className="text-base font-semibold">Review rules</h3>
-              <div className="space-y-4 rounded-lg border bg-card p-5">
-                <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
-                  Optional rule-file object. Empty uses rules from the trusted base revision.
-                </p>
-                <Textarea
-                  aria-label="Review rules JSON"
-                  aria-describedby={`${id}-rules-hint`}
-                  rows={6}
-                  className="min-h-40 max-h-96 resize-y font-mono text-xs"
-                  value={rules}
-                  onChange={(e) => setRules(e.target.value)}
-                />
-              </div>
             </section>
           </section>
-          <section hidden={section !== "scan-limits"} data-settings-section="scan-limits" aria-labelledby={`${id}-scan-limits`} className="space-y-6">
-            <div>
-              <h2 id={`${id}-scan-limits`} className="text-xl font-semibold tracking-tight">Scan limits &amp; rules</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Set execution limits for new security scans of this repository.</p>
-            </div>
-            <section aria-labelledby={`${id}-scan-execution`} className="space-y-3">
-              <h3 id={`${id}-scan-execution`} className="text-base font-semibold">Scan execution</h3>
-              <div className="divide-y rounded-lg border bg-card">
-                <ExecutionLimitField id={`${id}-scan-token-budget`} label="Scan token budget"
-                  hint="Total budget shared by scan analysis, assessment, verification, and correction attempts."
-                  min={1000} max={5000000} fallback={200000} value={scanSettings.token_budget}
-                  onChange={(token_budget) => setScanSettings((current) => ({ ...current, token_budget }))} />
-                <ExecutionLimitField id={`${id}-scan-timeout`} label="Scan timeout (seconds)"
-                  hint="Time available for the complete scan. Unlimited removes the execution deadline."
-                  min={60} max={3600} fallback={900} value={scanSettings.timeout_seconds}
-                  onChange={(timeout_seconds) => setScanSettings((current) => ({ ...current, timeout_seconds }))} />
-                <ExecutionLimitField id={`${id}-scan-concurrency`} label="Scan concurrency"
-                  hint="Maximum number of scan tasks running in parallel. All tasks share the scan budget."
-                  min={1} max={8} value={scanSettings.concurrency}
-                  onChange={(concurrency) => { if (concurrency !== null) setScanSettings((current) => ({ ...current, concurrency })); }} />
-              </div>
-            </section>
-            <section aria-labelledby={`${id}-scan-policy`} className="space-y-3">
-              <h3 id={`${id}-scan-policy`} className="text-base font-semibold">Scan policy</h3>
-              <p className="rounded-lg border bg-card p-5 text-sm text-muted-foreground">
-                Mortis analyzes source code and assesses findings. Trivy uses built-in rules to check for exposed secrets, vulnerable dependencies, and infrastructure misconfigurations.
-              </p>
-            </section>
-          </section>
-          <footer className="mt-8 space-y-3 py-5">
-            <ErrorNotice error={connections.error} />
-            <ErrorNotice error={error} />
+          <footer ref={saveBar} className="sticky bottom-0 z-10 mt-8 space-y-3 bg-background py-4">
+            {!!(connections.error || error) && <div role="region" aria-label="Settings errors" tabIndex={0}
+              className="max-h-[25dvh] space-y-3 overflow-y-auto rounded-md">
+              <ErrorNotice error={connections.error} />
+              <ErrorNotice error={error} />
+            </div>}
             <div className="flex flex-wrap items-center justify-end gap-2">
+              <p role="status" className="mr-auto text-sm text-muted-foreground empty:sr-only">{dirty ? "Unsaved changes" : ""}</p>
               <Button type="submit" disabled={action.isPending}>
                 {action.isPending ? "Saving…" : "Save"}
               </Button>

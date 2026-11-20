@@ -53,12 +53,13 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
     crumbs.push({ label: repo.full_name.split("/").at(-1) || repo.full_name, to: repositoryPath + "/overview", state: returnState });
     if (overviewRoute || analyticsRoute) {
       crumbs.push({ label: analyticsRoute ? "Analytics" : "Overview", to: path });
+    } else if (repositorySettingsRoute && admin) {
+      crumbs.push({ label: "Repository settings", to: path });
     } else if (securityPath) {
       crumbs.push({ label: "Security", to: `/security/repositories/${repo.id}` });
       if (securityScanRoute) crumbs.push({ label: security?.scan?.head_sha ? `Scan · ${security.scan.head_sha.slice(0, 7)}` : "Security scan", to: path });
     } else {
       crumbs.push({ label: "Pull requests", to: returnPath, state: returnState });
-      if (repositorySettingsRoute && admin) crumbs.push({ label: "Configure", to: path });
       if (pull) crumbs.push({ label: `#${pull.number}`, to: `/pulls/${pull.id}`, state: returnState });
       if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
     }
