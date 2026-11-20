@@ -13,7 +13,7 @@ const running: Schema["ActivityItem"] = {
   href: "/security/scans/active", status: "running", stages: ["Assessment"], finished_at: null, unread: false,
 };
 const reviewHref = "/runs/new-review";
-const reviewTitle = "Add queue visibility";
+const reviewTitle = "Add activity inbox and generation status to the workspace";
 type ReviewStatus = "queued" | "running" | "completed";
 
 async function mockActivity(page: Page) {
@@ -59,7 +59,7 @@ async function mockActivity(page: Page) {
       if (state.failActivity) return route.fulfill({ status: 503, json: { detail: "Activity unavailable." } });
       state.cursor = url.searchParams.get("running_cursor") ?? "";
       const review: Schema["ActivityItem"] | null = state.reviewStatus ? {
-        kind: "review", id: "new-review", repository: "acme/payments", title: `#54 ${reviewTitle}`,
+        kind: "review", id: "new-review", repository: "acme/payments-platform-integrations-and-infrastructure", title: `#54 ${reviewTitle}`,
         href: reviewHref, status: state.reviewStatus, stages: state.reviewStatus === "running" ? ["Analysis"] : [],
         finished_at: state.reviewStatus === "completed" ? completedAt : null, unread: state.reviewStatus === "completed",
       } : null;
@@ -93,6 +93,14 @@ test("notification inbox keeps recent read updates, opens and dismisses by keybo
   await trigger.press("Enter");
   const inbox = page.getByRole("dialog", { name: "Notifications" });
   await expect(inbox.getByRole("tab", { name: "In progress 1" })).toBeFocused();
+  const panel = inbox.getByRole("tabpanel", { name: "In progress 1" });
+  const row = panel.getByRole("link");
+  expect(await row.boundingBox()).toEqual(await panel.boundingBox());
+  if (info.project.name === "desktop") {
+    await row.hover({ position: { x: 1, y: 1 } });
+    await expect(row).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await page.screenshot({ path: info.outputPath("notification-hover.png") });
+  }
   await expect(inbox.getByText("Assessment", { exact: true })).toHaveCSS("animation-name", "none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(inbox.getByText("Assessment", { exact: true })).toHaveCSS("animation-duration", "3.4s");
@@ -143,6 +151,15 @@ for (const [surface, url] of [["workspace Inbox", "/"], ["repository PR list", "
     const inbox = page.getByRole("dialog", { name: "Notifications" });
     const review = inbox.getByRole("link", { name: new RegExp(reviewTitle) });
     await expect(inbox.getByRole("tab", { name: "In progress 1" })).toBeFocused();
+    const title = review.getByText(`#54 ${reviewTitle}`, { exact: true });
+    await expect(title).toHaveCSS("white-space", "nowrap");
+    await expect(title).toHaveCSS("text-overflow", "ellipsis");
+    await expect(title).toHaveAttribute("title", `#54 ${reviewTitle}`);
+    const subtitleText = "Review · acme/payments-platform-integrations-and-infrastructure";
+    const subtitle = review.getByText(subtitleText, { exact: true });
+    await expect(subtitle).toHaveCSS("white-space", "nowrap");
+    await expect(subtitle).toHaveCSS("text-overflow", "ellipsis");
+    await expect(subtitle).toHaveAttribute("title", subtitleText);
     await expect(review.getByText("Queued", { exact: true })).toBeVisible();
     await expect(review).toHaveAttribute("href", reviewHref);
     await page.screenshot({ path: info.outputPath("queued-review.png") });

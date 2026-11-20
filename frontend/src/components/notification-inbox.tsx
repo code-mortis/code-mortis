@@ -40,14 +40,15 @@ function ActivityRow({ item, onOpen }: { item: Activity; onOpen: () => void }) {
   const running = item.status === "running";
   const status = item.kind === "review" ? reviewStatusLabel(item.status) : statusLabels[item.status] ?? item.status;
   const stages = running ? item.stages.join(" · ") : "";
+  const subtitle = item.title === kind ? item.repository : `${kind} · ${item.repository}`;
   return <li>
     <Link to={item.href} state={preserveState ? location.state : undefined} onClick={(event) => {
       if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) onOpen();
-    }} className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2.5 py-2.5 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+    }} className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5.5 py-2.5 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
       <span className="flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground"><Icon className="size-4" aria-hidden="true" /></span>
       <span className="grid min-w-0 gap-0.5">
-        <span className="break-words text-sm font-medium leading-snug">{item.title}</span>
-        <span className="break-words text-xs text-muted-foreground">{item.title === kind ? item.repository : `${kind} · ${item.repository}`}</span>
+        <span className="truncate text-sm font-medium leading-snug" title={item.title}>{item.title}</span>
+        <span className="truncate text-xs text-muted-foreground" title={subtitle}>{subtitle}</span>
         <span className="flex flex-wrap items-center gap-x-1 text-xs">
           <span className={cn(running ? "activity-stage" : ["done", "completed"].includes(item.status)
             ? "text-primary" : item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
@@ -155,9 +156,9 @@ export function NotificationInbox({ userId }: { userId: number }) {
           <Tabs.Trigger ref={runningTab} value="running" className={tabStyle}>In progress <span className="tabular-nums">{inProgress}</span></Tabs.Trigger>
           <Tabs.Trigger value="updates" className={tabStyle}>Updates <span className="tabular-nums">{unread}</span></Tabs.Trigger>
         </Tabs.List>
-        {(["running", "updates"] as const).map((view) => <Tabs.Content value={view} key={view} className="min-h-0 overflow-y-auto overscroll-contain px-3 py-1">
+        {(["running", "updates"] as const).map((view) => <Tabs.Content value={view} key={view} className="min-h-0 overflow-y-auto overscroll-contain">
           {view === tab && <>
-            {(feed.error || pageQuery.error || markAll.error) && <div role="status" className="flex items-center justify-between gap-2 px-1 py-1 text-xs text-muted-foreground">
+            {(feed.error || pageQuery.error || markAll.error) && <div role="status" className="flex items-center justify-between gap-2 px-4 py-2 text-xs text-muted-foreground">
               <span>{markAll.error ? "Couldn’t mark results as read." : "Couldn’t refresh notifications."}</span>
               <Button variant="ghost" size="sm" disabled={markAll.isPending || pageQuery.isFetching} onClick={() => {
                 if (markAll.error && markAll.variables) markAll.mutate(markAll.variables);
@@ -165,10 +166,10 @@ export function NotificationInbox({ userId }: { userId: number }) {
                 else void pageQuery.refetch();
               }}>Retry</Button>
             </div>}
-            {pageQuery.isPending ? <p role="status" className="px-2 py-4 text-sm text-muted-foreground">Loading notifications…</p>
+            {pageQuery.isPending ? <p role="status" className="px-5 py-5 text-sm text-muted-foreground">Loading notifications…</p>
               : rows.length ? <ul className="divide-y">{rows.map((row) => <ActivityRow key={`${row.kind}:${row.id}`} item={row} onOpen={() => setOpen(false)} />)}</ul>
-                : !pageQuery.error && <p className="px-2 py-4 text-sm text-muted-foreground">{view === "running" ? "No jobs in progress." : "No updates yet."}</p>}
-            {(cursor || next) && <div className="flex justify-between border-t py-1">
+                : !pageQuery.error && <p className="px-5 py-5 text-sm text-muted-foreground">{view === "running" ? "No jobs in progress." : "No updates yet."}</p>}
+            {(cursor || next) && <div className="flex justify-between border-t px-3 py-2">
               {cursor && <Button size="sm" variant="ghost" onClick={() => setPages((old) => old.slice(0, -1))}>Previous</Button>}
               {next && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setPages((old) => [...old, next])}>Next</Button>}
             </div>}
