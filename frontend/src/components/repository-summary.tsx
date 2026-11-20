@@ -51,32 +51,38 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
     <div className="space-y-2">
       {dialog}
       <ErrorNotice error={error} />
-      {needsSetup ? <Button asChild variant="outline" size="sm">
-        <Link to={`${settings}?tab=connection`}>Configure AI connection</Link>
-      </Button> : <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => {
-        if (!generationId) generationInputs.current = savedBackgroundInputs(repository);
-        const attemptId = mode === "context" ? generationId ?? crypto.randomUUID() : undefined;
-        setGenerationId(attemptId);
-        setJobId(undefined);
-        start.mutate({ mode, generation_id: attemptId }, {
-          onSuccess(job) {
-            if (attemptId) {
-              setContextGeneration({ jobId: job.id, generationId: attemptId, inputs: generationInputs.current });
-            } else {
-              setJobId(job.id);
-            }
-          },
-          onError(error) {
-            if (!isBackgroundConnectionError(error)) setGenerationId(undefined);
-            if (error instanceof ApiError && error.status === 409) {
-              void cache.invalidateQueries({ queryKey: ["/repositories"] });
-            }
-          },
-        });
-      }}>
-        {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
-        {pending ? "Generating…" : error ? "Retry generation" : mode === "summary" ? "Generate summary" : "Generate context"}
-      </Button>}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed p-5">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-foreground">No repository summary yet</h2>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">Give readers a quick overview of what this repository does.</p>
+        </div>
+        {needsSetup ? <Button asChild variant="outline" size="sm">
+          <Link to={`${settings}?tab=connection`}>Configure AI connection</Link>
+        </Button> : <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => {
+          if (!generationId) generationInputs.current = savedBackgroundInputs(repository);
+          const attemptId = mode === "context" ? generationId ?? crypto.randomUUID() : undefined;
+          setGenerationId(attemptId);
+          setJobId(undefined);
+          start.mutate({ mode, generation_id: attemptId }, {
+            onSuccess(job) {
+              if (attemptId) {
+                setContextGeneration({ jobId: job.id, generationId: attemptId, inputs: generationInputs.current });
+              } else {
+                setJobId(job.id);
+              }
+            },
+            onError(error) {
+              if (!isBackgroundConnectionError(error)) setGenerationId(undefined);
+              if (error instanceof ApiError && error.status === 409) {
+                void cache.invalidateQueries({ queryKey: ["/repositories"] });
+              }
+            },
+          });
+        }}>
+          {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
+          {pending ? "Generating…" : error ? "Retry generation" : mode === "summary" ? "Generate summary" : "Generate context"}
+        </Button>}
+      </div>
       <span role="status" className="sr-only">{pending ? `Generating project ${mode}.` : ""}</span>
     </div>
   );

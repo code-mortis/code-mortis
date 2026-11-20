@@ -4347,6 +4347,8 @@ test("repository summary generation retries and displays the saved paragraph on 
     await route.fulfill({ json: { id: "summary-job-2", status: "done", project_summary: projectSummary } });
   });
   await page.goto("/repositories/22/overview");
+  await expect(page.getByRole("heading", { name: "No repository summary yet" })).toBeVisible();
+  await noOverflow(page);
   await page.getByRole("button", { name: "Generate summary", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("The provider timed out.");
   await page.getByRole("button", { name: "Retry generation", exact: true }).click();
@@ -4354,6 +4356,7 @@ test("repository summary generation retries and displays the saved paragraph on 
   await expect(page.getByText(paymentsSummary, { exact: true })).toHaveCount(0);
   finish();
   await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No repository summary yet" })).toHaveCount(0);
   expect(starts).toBe(2);
   await expect(page).toHaveURL("/repositories/22/overview");
 });
