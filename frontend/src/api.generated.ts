@@ -294,6 +294,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/background/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Background */
+        post: operations["cancel_background_api_v1_repositories__repository_id__background_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/background/{job_id}": {
         parameters: {
             query?: never;
@@ -2320,6 +2337,14 @@ export interface components {
             published_comments: number;
             progress?: components["schemas"]["AssessmentProgress"] | null;
         };
+        /** BackgroundCancelInput */
+        BackgroundCancelInput: {
+            /**
+             * Generation Id
+             * Format: uuid4
+             */
+            generation_id: string;
+        };
         /** BackgroundInput */
         BackgroundInput: {
             /**
@@ -2336,6 +2361,8 @@ export interface components {
              */
             model: string;
             limits?: components["schemas"]["RunLimits"] | null;
+            /** Generation Id */
+            generation_id?: string | null;
         };
         /** BackgroundJobOut */
         BackgroundJobOut: {
@@ -2345,7 +2372,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running" | "done" | "failed";
+            status: "queued" | "running" | "done" | "failed" | "cancelled";
             /** Background */
             background?: string | null;
             /** Project Summary */
@@ -5430,6 +5457,41 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackgroundJobOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_background_api_v1_repositories__repository_id__background_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackgroundCancelInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

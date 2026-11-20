@@ -3,8 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, type Repository } from "../api";
-import { savedBackgroundInputs, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
+import { isBackgroundConnectionError, savedBackgroundInputs, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Markdown } from "./common";
+import { useContextGenerationGuard } from "./context-generation-guard";
 import { Button } from "./ui/button";
 
 export function RepositorySummary({ repository, admin }: { repository: Repository; admin: boolean }) {
@@ -19,16 +20,26 @@ export function RepositorySummary({ repository, admin }: { repository: Repositor
 
 function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   const [jobId, setJobId] = useState<string>();
+  const [generationId, setGenerationId] = useState<string>();
+  const generationInputs = useRef("");
+  const [contextGeneration, setContextGeneration] = useState<{ jobId: string; generationId: string; inputs: string }>();
+  const { dialog, blocked, handOff } = useContextGenerationGuard(repository.id, generationId);
   const navigate = useNavigate();
   const cache = useQueryClient();
   const start = useStartBackground(repository.id);
   const result = useBackgroundStatus(repository.id, jobId);
-  const mode = repository.settings.background?.trim() ? "summary" : "context";
+  const mode = !generationId && repository.settings.background?.trim() ? "summary" : "context";
   const settings = `/repositories/${repository.id}/settings`;
   const success = result.data?.status === "done" && !!result.data.project_summary;
   useEffect(() => {
     if (success) void cache.invalidateQueries({ queryKey: ["/repositories"] });
   }, [cache, success]);
+  useEffect(() => {
+    if (contextGeneration && !blocked) {
+      handOff();
+      navigate(`${settings}?tab=context`, { state: { contextGeneration } });
+    }
+  }, [contextGeneration, blocked, handOff, navigate, settings]);
 
   const error = start.error ?? result.error ?? (result.data?.status === "failed"
     ? new Error(result.data.error || "Summary generation failed. Try again.")
@@ -38,21 +49,25 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
     || (start.error instanceof ApiError && start.error.status === 422);
   return (
     <div className="space-y-2">
+      {dialog}
       <ErrorNotice error={error} />
       {needsSetup ? <Button asChild variant="outline" size="sm">
         <Link to={`${settings}?tab=connection`}>Configure AI connection</Link>
       </Button> : <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => {
-        const inputs = savedBackgroundInputs(repository);
+        if (!generationId) generationInputs.current = savedBackgroundInputs(repository);
+        const attemptId = mode === "context" ? generationId ?? crypto.randomUUID() : undefined;
+        setGenerationId(attemptId);
         setJobId(undefined);
-        start.mutate({ mode }, {
+        start.mutate({ mode, generation_id: attemptId }, {
           onSuccess(job) {
-            if (mode === "context") {
-              navigate(`${settings}?tab=context`, { state: { contextGeneration: { jobId: job.id, inputs } } });
+            if (attemptId) {
+              setContextGeneration({ jobId: job.id, generationId: attemptId, inputs: generationInputs.current });
             } else {
               setJobId(job.id);
             }
           },
           onError(error) {
+            if (!isBackgroundConnectionError(error)) setGenerationId(undefined);
             if (error instanceof ApiError && error.status === 409) {
               void cache.invalidateQueries({ queryKey: ["/repositories"] });
             }

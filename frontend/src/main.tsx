@@ -1,12 +1,13 @@
 import "./sentry";
 import { reactErrorHandler } from "@sentry/react";
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BrowserRouter,
+  createBrowserRouter,
   NavLink,
   Navigate,
   Route,
+  RouterProvider,
   Routes,
   useNavigate,
   useLocation,
@@ -222,6 +223,7 @@ function App() {
   const action = useAction();
   const navigate = useNavigate();
   const route = useLocation();
+  const logoutRequest = useRef<string>(undefined);
   const [mode, setMode] = useState<ColorMode>(initialAppearance.mode);
   const [colorTheme, setColorTheme] = useState<ThemeId>(initialAppearance.theme);
   const [dark, setDark] = useState(initialDark);
@@ -243,6 +245,16 @@ function App() {
   useEffect(() => {
     setCsrf(session.data?.csrf ?? "");
   }, [session.data]);
+  const signOut = action.mutateAsync;
+  useEffect(() => {
+    if (!session.data || route.state?.signOut !== true || logoutRequest.current === route.key) return;
+    logoutRequest.current = route.key;
+    void signOut({ path: "/auth/logout" }).then(() => {
+      setCsrf("");
+      cache.clear();
+      window.location.replace("/");
+    }).catch(() => {});
+  }, [session.data, route.state, route.key, signOut]);
   if (setup.isPending || (setup.data?.configured && session.isPending))
     return (
       <header className="relative flex min-h-14 items-center border-b bg-background px-4 sm:px-8">
@@ -288,13 +300,6 @@ function App() {
         </Button>
       </div>
     );
-  async function logout() {
-    await action.mutateAsync({ path: "/auth/logout" });
-    setCsrf("");
-    cache.clear();
-    navigate("/");
-    window.location.reload();
-  }
   return (
     <WorkspaceNavigationProvider>
     <SidebarProvider className="flex-col">
@@ -302,7 +307,7 @@ function App() {
         event.preventDefault();
         document.getElementById("main-content")?.focus();
       }} className="sr-only z-50 rounded-md bg-background px-4 py-3 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Skip to content</a>
-      <AppHeader user={session.data} onLogout={logout} signingOut={action.isPending} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
+      <AppHeader user={session.data} onLogout={() => { void navigate("/", { state: { signOut: true } }); }} signingOut={action.isPending} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
       <div className="flex min-w-0 flex-1">
       <AppSidebar admin={session.data.role === "admin"} />
       <div className="min-w-0 flex-1">
@@ -393,6 +398,8 @@ class ErrorBoundary extends React.Component<
     );
   }
 }
+const router = createBrowserRouter([{ path: "*", element: <ErrorBoundary><App /></ErrorBoundary> }]);
+
 createRoot(document.getElementById("root")!, {
   onUncaughtError: reactErrorHandler(),
   onCaughtError: reactErrorHandler(),
@@ -402,9 +409,7 @@ createRoot(document.getElementById("root")!, {
     <ErrorBoundary>
       <QueryClientProvider client={cache}>
         <WorkspaceProgressProvider>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
+          <RouterProvider router={router} />
         </WorkspaceProgressProvider>
       </QueryClientProvider>
     </ErrorBoundary>

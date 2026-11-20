@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Sparkles } from "lucide-react";
-import { useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
+import { isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
+import { useContextGenerationGuard } from "./context-generation-guard";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
@@ -11,7 +12,7 @@ const BACKGROUND_MAX_LENGTH = 20_000;
 const SUMMARY_MAX_LENGTH = 600;
 const STALE_MESSAGE = "Your selections or context changed. Generate again to use the current values.";
 
-export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange, initialJobId, initialContextChanged }: {
+export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange, initialJobId, initialGenerationId, initialContextChanged }: {
   repositoryId: number;
   connectionId: string;
   model: string;
@@ -21,9 +22,17 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   value: ContextDraft;
   onChange: (value: ContextDraft) => void;
   initialJobId?: string;
+  initialGenerationId?: string;
   initialContextChanged: boolean;
 }) {
   const [jobId, setJobId] = useState(initialJobId);
+  const [generationId, setGenerationId] = useState(initialGenerationId);
+  const cancelledId = useRef<string>(undefined);
+  const { dialog } = useContextGenerationGuard(repositoryId, generationId, (id) => {
+    cancelledId.current = id;
+    setGenerationId(undefined);
+    setJobId(undefined);
+  });
   const [error, setError] = useState<unknown>();
   const [message, setMessage] = useState("");
   const [failedJob, setFailedJob] = useState<string>();
@@ -53,28 +62,32 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
 
   const start = useStartBackground(repositoryId);
   const result = useBackgroundStatus(repositoryId, jobId);
+  const lostStatus = !!result.error && isBackgroundConnectionError(result.error);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId || lostStatus) return;
     const failed = result.error || result.data?.status === "failed";
-    if (!failed && result.data?.status !== "done") return;
+    if (!failed && result.data?.status !== "done" && result.data?.status !== "cancelled") return;
     if (request.current.revision !== revision.current) {
       setMessage(STALE_MESSAGE);
       setError(undefined);
       setFailedJob(undefined);
+    } else if (result.data?.status === "cancelled") {
+      setMessage("");
     } else if (failed) {
       setError(result.error ?? new Error(result.data?.error || "Context generation failed. Try again."));
       setFailedJob(jobId);
       setMessage("");
     } else if (result.data?.background) {
       setUndo(request.current.previous);
-      onChange({ background: result.data.background, project_summary: result.data.project_summary ?? null });
+      onChange({ background: result.data.background, project_summary: result.data.project_summary ?? value.project_summary });
       setMessage("Context generated. Review it, then save.");
     } else {
       setError(new Error("The model returned no context. Try again."));
     }
     setJobId(undefined);
-  }, [jobId, result.data, result.error, onChange]);
+    setGenerationId(undefined);
+  }, [jobId, result.data, result.error, onChange, value.project_summary, lostStatus]);
 
   const pending = start.isPending || !!jobId;
   let missing = "";
@@ -85,6 +98,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   }
   return (
     <div className="space-y-6">
+      {dialog}
       <div className="flex flex-col gap-2">
         <Field
           label="Project context"
@@ -98,31 +112,39 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
                   setMessage("Previous context restored. Save to keep it.");
                 }}>Undo</Button>
               )}
-              <Button type="button" variant="outline" size="sm" disabled={pending || !!missing} onClick={async () => {
-                request.current = { revision: revision.current, previous: value };
+              <Button type="button" variant="outline" size="sm" disabled={lostStatus ? result.isFetching : pending || !!missing} onClick={async () => {
+                if (lostStatus) {
+                  void result.refetch();
+                  return;
+                }
+                const attemptId = generationId ?? crypto.randomUUID();
+                setGenerationId(attemptId);
+                if (!generationId) request.current = { revision: revision.current, previous: value };
                 setError(undefined);
                 setFailedJob(undefined);
                 setMessage("");
                 try {
                   const created = await start.mutateAsync({
-                    connection_id: connectionId, model, limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
+                    generation_id: attemptId, connection_id: connectionId, model,
+                    limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
                   });
-                  if (mounted.current) setJobId(created.id);
+                  if (mounted.current && cancelledId.current !== attemptId) setJobId(created.id);
                 } catch (error) {
-                  if (mounted.current) {
+                  if (mounted.current && cancelledId.current !== attemptId) {
+                    if (!isBackgroundConnectionError(error)) setGenerationId(undefined);
                     if (request.current.revision !== revision.current) setMessage(STALE_MESSAGE);
                     else setError(error);
                   }
                 }
               }}>
                 {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <Sparkles className="size-4" aria-hidden="true" />}
-                {pending ? "Generating…" : "Generate context"}
+                {lostStatus ? "Check status" : pending ? "Generating…" : "Generate context"}
               </Button>
             </div>
           }
         >
           {(id) => <Textarea id={id} rows={4} className="min-h-48 max-h-96 resize-y overflow-y-auto" maxLength={BACKGROUND_MAX_LENGTH} value={value.background} onChange={(event) => {
-            onChange({ background: event.target.value, project_summary: null });
+            onChange({ background: event.target.value });
             setUndo(undefined);
             setMessage("");
             setError(undefined);
@@ -132,21 +154,19 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
         <p role="status" aria-label="Context generation status" className="text-xs leading-relaxed text-muted-foreground empty:sr-only">
           {pending ? "Generating project context. Changing the context, connection, model, or limits will discard this result." : message}
         </p>
-        <ErrorNotice error={error} />
+        <ErrorNotice error={lostStatus ? result.error : error} />
         {failedJob && <p className="break-all text-xs text-muted-foreground">Generation reference: {failedJob}</p>}
       </div>
-      {value.project_summary != null && <Field label="Repository summary" hint="Use Markdown for formatting. Save to update Overview.">
-        {(id) => <Textarea id={id} rows={4} required maxLength={SUMMARY_MAX_LENGTH}
+      <Field label="Repository summary" hint="Use Markdown for formatting. Save to update Overview.">
+        {(id) => <Textarea id={id} rows={4} maxLength={SUMMARY_MAX_LENGTH}
           value={value.project_summary ?? ""} onChange={(event) => {
-            const summary = event.target.value;
-            event.target.setCustomValidity(summary.trim() ? "" : "Enter a repository summary.");
-            onChange({ background: value.background, project_summary: summary });
+            onChange({ background: value.background, project_summary: event.target.value });
             setUndo(undefined);
             setMessage("");
             setError(undefined);
             setFailedJob(undefined);
           }} />}
-      </Field>}
+      </Field>
     </div>
   );
 }

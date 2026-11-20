@@ -189,7 +189,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const id = useId();
   const location = useLocation();
   const navigate = useNavigate();
-  const contextGeneration = location.state?.contextGeneration as { jobId: string; inputs: string } | undefined;
+  const contextGeneration = location.state?.contextGeneration as { jobId: string; generationId: string; inputs: string } | undefined;
   const [params, setParams] = useSearchParams();
   const sections = [
     { value: "reviews", label: "Review behavior", icon: GitPullRequest },
@@ -230,7 +230,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   }, [graphLimits.max_file_bytes, graphLimits.max_source_bytes]);
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const savedBackground = useRef(repo.settings.background ?? "");
-  const savedProjectSummary = useRef(repo.settings.project_summary);
+  const savedProjectSummary = useRef(repo.settings.project_summary ?? null);
   const [settings, setSettings] = useState({
     ...repo.settings,
     analysis_engine: "mortis" as const,
@@ -291,7 +291,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           const { project_summary: summaryDraft, ...nextSettings } = settings;
           const project_summary = summaryDraft?.trim() || null;
           const contextChanged = savedBackground.current !== settings.background;
-          const summaryChanged = !!project_summary && (contextChanged || savedProjectSummary.current !== project_summary);
+          const summaryChanged = savedProjectSummary.current !== project_summary;
           await action.mutateAsync({
             path: `/repositories/${repo.id}`,
             method: "PUT",
@@ -310,7 +310,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               },
             },
           });
-          if (contextChanged || summaryChanged) savedProjectSummary.current = project_summary;
+          if (summaryChanged) savedProjectSummary.current = project_summary;
           savedBackground.current = settings.background;
           if (contextGeneration && (contextChanged || summaryChanged)) {
             const state = { ...location.state };
@@ -505,6 +505,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               value={{ background: settings.background, project_summary: settings.project_summary }}
               onChange={(value) => setSettings((current) => ({ ...current, ...value }))}
               initialJobId={contextGeneration?.jobId}
+              initialGenerationId={contextGeneration?.generationId}
               initialContextChanged={!!contextGeneration && contextGeneration.inputs !== savedBackgroundInputs(repo)}
             />
           </section>

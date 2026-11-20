@@ -3,6 +3,10 @@ import { api, ApiError, type Repository, type Schema } from "../api";
 
 type BackgroundJob = Schema["BackgroundJobOut"];
 
+export function isBackgroundConnectionError(error: unknown) {
+  return !(error instanceof ApiError) || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500;
+}
+
 export function savedBackgroundInputs(repository: Repository) {
   const { background, model, token_budget, timeout_seconds } = repository.settings;
   return JSON.stringify([repository.id, repository.connection_id, model, token_budget ?? null, timeout_seconds ?? null, background]);
@@ -21,9 +25,8 @@ export function useBackgroundStatus(repositoryId: number, jobId?: string) {
     queryKey: [path],
     queryFn: () => api<BackgroundJob>(path),
     enabled: !!jobId,
-    retry: (count, error) => count < 3 && (!(error instanceof ApiError)
-      || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500),
+    retry: (count, error) => count < 3 && isBackgroundConnectionError(error),
     retryDelay: 1000,
-    refetchInterval: (query) => query.state.error || ["done", "failed"].includes(query.state.data?.status ?? "") ? false : 1000,
+    refetchInterval: (query) => query.state.error || ["done", "failed", "cancelled"].includes(query.state.data?.status ?? "") ? false : 1000,
   });
 }

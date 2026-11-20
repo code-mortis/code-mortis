@@ -1,6 +1,7 @@
 import json
 import subprocess
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -43,6 +44,57 @@ def start(client, **body):
 
 def status(client, identity):
     return client.get(f"/api/v1/repositories/22/background/{identity}")
+
+
+@pytest.mark.parametrize("cancel_before_start", [False, True])
+def test_cancel_context_generation_prevents_provider_calls(generation, client, cancel_before_start):
+    request = {"generation_id": str(uuid4())}
+    endpoint = "/api/v1/repositories/22/background/cancel"
+    identity = None if cancel_before_start else start(client, **request)
+    cancelled = client.post(endpoint, json=request)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert start(client, **request) == cancelled.json()["id"]
+    if identity:
+        assert cancelled.json()["id"] == identity
+    identity = cancelled.json()["id"]
+    jobs.execute_job(identity)
+    assert status(client, identity).json() == {
+        "id": identity, "status": "cancelled", "background": None, "project_summary": None, "error": None,
+    }
+    assert client.post(endpoint, json=request).json() == cancelled.json()
+    assert generation == []
+
+
+def test_context_cancellation_requires_repository_admin_and_csrf(generation, client, monkeypatch):
+    request = {"generation_id": str(uuid4())}
+    endpoint = "/api/v1/repositories/22/background/cancel"
+    identity = start(client, **request)
+    assert client.post(endpoint, json=request, headers={"X-CSRF-Token": "invalid"}).status_code == 403
+    with transaction() as db:
+        db.get(Membership, 7).role = "member"
+    assert client.post(endpoint, json=request).status_code == 403
+    with transaction() as db:
+        db.get(Membership, 7).role = "admin"
+    monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: {"id": 23})
+    assert client.post(endpoint, json=request).status_code == 403
+    with transaction() as db:
+        assert db.get(Job, identity).status == "queued"
+
+
+def test_cancellation_only_affects_its_request_and_preserves_completed_drafts(generation, client):
+    first = {"generation_id": str(uuid4())}
+    second = {"generation_id": str(uuid4())}
+    endpoint = "/api/v1/repositories/22/background/cancel"
+    finished = start(client, **first)
+    pending = start(client, **second)
+    assert finished != pending
+    assert start(client, **first) == finished
+    jobs.execute_job(finished)
+    assert client.post(endpoint, json=first).json() == status(client, finished).json()
+    assert status(client, finished).json()["project_summary"] == PARAGRAPH
+    assert status(client, pending).json()["status"] == "queued"
+    assert len(generation) == 1
 
 
 @pytest.mark.parametrize("override,expected", [("", "test-model"), (" custom-model ", "custom-model")])
@@ -177,7 +229,7 @@ def test_overview_context_remains_draft_and_save_respects_saved_context(generati
     assert saved.status_code == 200 and saved.json()["settings"]["project_summary"] == PARAGRAPH
 
 
-def test_settings_save_preserves_summary_unless_context_changes(generation, client):
+def test_settings_save_preserves_summary_when_context_changes_or_is_cleared(generation, client):
     with transaction() as db:
         db.get(Repository, 22).settings = {"background": "Saved context", "project_summary": PARAGRAPH}
     body = {"enabled": False, "expected_background": "Saved context", "settings": {"automatic": False}}
@@ -187,7 +239,23 @@ def test_settings_save_preserves_summary_unless_context_changes(generation, clie
     assert saved.json()["settings"]["project_summary"] == PARAGRAPH
     body["settings"]["background"] = "Edited context"
     changed = client.put("/api/v1/repositories/22", json=body)
-    assert changed.status_code == 200 and changed.json()["settings"]["project_summary"] is None
+    assert changed.status_code == 200
+    assert changed.json()["settings"]["project_summary"] == PARAGRAPH
+    body["expected_background"] = "Edited context"
+    body["settings"]["background"] = ""
+    cleared = client.put("/api/v1/repositories/22", json=body)
+    assert cleared.status_code == 200
+    assert cleared.json()["settings"]["background"] == ""
+    assert cleared.json()["settings"]["project_summary"] == PARAGRAPH
+    body["expected_background"] = ""
+    body["settings"]["project_summary"] = "Updated summary."
+    edited = client.put("/api/v1/repositories/22", json=body)
+    assert edited.status_code == 200
+    assert edited.json()["settings"]["project_summary"] == "Updated summary."
+    body["settings"]["project_summary"] = None
+    removed = client.put("/api/v1/repositories/22", json=body)
+    assert removed.status_code == 200
+    assert removed.json()["settings"]["project_summary"] is None
 
 
 @pytest.mark.parametrize("body", [{"connection_id": "missing"}, {"model": "x" * 151}])

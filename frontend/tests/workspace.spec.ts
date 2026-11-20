@@ -4375,7 +4375,7 @@ test("repository summary and context started from Overview require a Settings sa
   let finish!: () => void;
   const finished = new Promise<void>((resolve) => { finish = resolve; });
   await page.route("**/api/v1/repositories/22/background", (route) => {
-    expect(route.request().postDataJSON()).toEqual({ mode: "context" });
+    expect(route.request().postDataJSON()).toEqual({ mode: "context", generation_id: expect.any(String) });
     jobStarts++;
     return route.fulfill({ status: 202, json: { id: "context-from-overview", status: "queued" } });
   });
@@ -4406,17 +4406,16 @@ test("repository summary and context started from Overview require a Settings sa
   expect(jobStarts).toBe(1);
 });
 
-test("repository summary can be edited directly and updates Overview on Save", async ({ page }) => {
+test("repository summary can be entered without context and updates Overview on Save", async ({ page }) => {
   const requests = await mock(page);
-  const context = "Payment workers deliver callbacks.";
-  let savedSettings = { ...repo.settings, background: context, project_summary: paymentsSummary };
+  let savedSettings = { ...repo.settings, project_summary: null as string | null };
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
   const edit = "Helps merchants **accept payments**.";
   let saves = 0;
   await page.route("**/api/v1/repositories/22", (route) => {
     expect(route.request().method()).toBe("PUT");
     const body = route.request().postDataJSON();
-    expect(body.settings).toMatchObject({ background: context, project_summary: edit });
+    expect(body.settings).toMatchObject({ background: "", project_summary: edit });
     savedSettings = body.settings;
     saves++;
     return route.fulfill({ json: { ...repo, settings: savedSettings } });
@@ -4424,22 +4423,114 @@ test("repository summary can be edited directly and updates Overview on Save", a
   await page.goto("/repositories/22/settings?tab=context");
   const editor = page.getByRole("textbox", { name: "Repository summary", exact: true });
   await expect(editor).toBeVisible();
-  await expect(editor).toHaveValue(paymentsSummary);
+  await expect(editor).toHaveValue("");
   await expect(editor).toHaveAttribute("maxlength", "600");
-  await editor.fill("   ");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(editor).toBeFocused();
-  expect(saves).toBe(0);
   await editor.fill(edit);
   const rendered = page.getByText("Helps merchants accept payments.", { exact: true });
   await expect(rendered).toHaveCount(0);
-  expect(savedSettings.project_summary).toBe(paymentsSummary);
+  expect(savedSettings.project_summary).toBeNull();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
   await page.goto("/repositories/22/overview");
   await expect(rendered.locator("strong")).toHaveText("accept payments");
   expect(saves).toBe(1);
   expect(requests.filter((request) => request.path.endsWith("/background"))).toHaveLength(0);
+});
+
+test("repository summary survives clearing and saving project context", async ({ page }) => {
+  await mock(page);
+  let savedSettings = { ...repo.settings, background: "Saved context.", project_summary: paymentsSummary };
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
+  await page.route("**/api/v1/repositories/22", (route) => {
+    expect(route.request().method()).toBe("PUT");
+    const body = route.request().postDataJSON();
+    expect(body.settings.background).toBe("");
+    expect(body.settings).not.toHaveProperty("project_summary");
+    savedSettings = { ...savedSettings, ...body.settings };
+    return route.fulfill({ json: { ...repo, settings: savedSettings } });
+  });
+  await page.goto("/repositories/22/settings?tab=context");
+  const context = page.getByRole("textbox", { name: "Project context", exact: true });
+  const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
+  await expect(summary).toHaveValue(paymentsSummary);
+  await context.clear();
+  await expect(summary).toHaveValue(paymentsSummary);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await page.reload();
+  await expect(context).toHaveValue("");
+  await expect(summary).toHaveValue(paymentsSummary);
+  await page.goto("/repositories/22/overview");
+  await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+});
+
+for (const target of ["Overview", "AI connection"]) {
+  test(`project background stays running unless leaving for ${target} is confirmed`, async ({ page }) => {
+    await mock(page, { background: { id: "active-context", status: "running" } });
+    const ids: string[] = [];
+    await page.route("**/api/v1/repositories/22/background/cancel", (route) => {
+      ids.push(route.request().postDataJSON().generation_id);
+      return route.fulfill({ json: { id: "active-context", status: "cancelled" } });
+    });
+    await page.goto("/repositories/22/settings?tab=context");
+    const started = page.waitForRequest((request) => request.url().endsWith("/22/background"));
+    await page.getByRole("button", { name: "Generate context", exact: true }).click();
+    const generationId = (await started).postDataJSON().generation_id;
+    expect(generationId).toMatch(/^[\da-f-]{36}$/);
+    const dialog = page.getByRole("dialog", { name: "Leave and cancel generation?" });
+    const destination = target === "Overview"
+      ? page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: target, exact: true })
+      : page.getByRole("navigation", { name: "Repository settings sections" }).getByRole("link", { name: target, exact: true });
+    if (target === "Overview") await openNavigation(page);
+    await destination.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Stay", exact: true }).click();
+    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+    expect(ids).toEqual([]);
+    if (target === "Overview" && !(await destination.isVisible())) await openNavigation(page);
+    await destination.click();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    if (target === "Overview") {
+      await expect(page).toHaveURL("/repositories/22/overview");
+    } else {
+      await expect(page).toHaveURL(/tab=connection$/);
+      await repositorySection(page, "Project context");
+      await expect(page.getByRole("button", { name: "Generate context", exact: true })).toBeEnabled();
+    }
+    expect(ids).toEqual([generationId]);
+  });
+}
+
+test("project background cancels when the browser reload is confirmed", async ({ page }) => {
+  await mock(page, { background: { id: "reload-context", status: "running" } });
+  // Requests kept alive by the browser can outlive Playwright's page routing.
+  await page.addInitScript(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = (url, init) => {
+      if (String(url).endsWith("/22/background/cancel")) {
+        sessionStorage.setItem("tested-context-cancellation", JSON.stringify(init));
+        return Promise.resolve(new Response("{}"));
+      }
+      return fetch(url, init);
+    };
+  });
+  await page.goto("/repositories/22/settings?tab=context");
+  const started = page.waitForRequest((request) => request.url().endsWith("/22/background"));
+  await page.getByRole("button", { name: "Generate context", exact: true }).click();
+  const generationId = (await started).postDataJSON().generation_id;
+  await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.reload({ timeout: 1500 }).catch(() => {});
+  expect(await page.evaluate(() => sessionStorage.getItem("tested-context-cancellation"))).toBeNull();
+  page.once("dialog", (dialog) => {
+    expect(dialog.type()).toBe("beforeunload");
+    return dialog.accept();
+  });
+  await page.reload();
+  const request = await page.evaluate(() => JSON.parse(sessionStorage.getItem("tested-context-cancellation")!));
+  expect(request).toMatchObject({ method: "POST", keepalive: true, headers: { "X-CSRF-Token": "csrf-from-session" } });
+  expect(JSON.parse(request.body)).toEqual({ generation_id: generationId });
+  await expect(page.getByRole("button", { name: "Generate context", exact: true })).toBeEnabled();
 });
 
 test("project background generates an editable draft with unsaved selections and Undo", async ({ page }, info) => {
@@ -4464,7 +4555,7 @@ test("project background generates an editable draft with unsaved selections and
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Changing the context, connection, model, or limits will discard this result.");
   await repositorySection(page, "Project context");
   await expect(field).toHaveAttribute("maxlength", "20000");
-  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
+  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { generation_id: expect.any(String), connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
   background.background = Array.from({ length: 40 }, (_, index) => `Module ${index + 1}: A payment service built with TypeScript. Workers deliver webhooks and handle retries.`).join("\n\n");
   Object.assign(background, { project_summary: paymentsSummary.replace("accept payments", "**accept payments**") });
   background.status = "done";
@@ -4488,7 +4579,7 @@ test("project background generates an editable draft with unsaved selections and
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await repositorySection(page, "Project context");
   await expect(field).toHaveValue("Existing context");
-  await expect(summary).toHaveCount(0);
+  await expect(summary).toHaveValue("");
   await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
   await repositorySection(page, "Project context");
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Previous context restored.");
@@ -4500,15 +4591,15 @@ test("project background generates an editable draft with unsaved selections and
   await repositorySection(page, "Project context");
   await expect(field).toHaveValue(background.background);
   await field.fill("Edited generated context");
-  await expect(summary).toHaveCount(0);
+  await expect(summary).toHaveValue(background.project_summary!);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect(requests.at(-1)).toMatchObject({ path: "/repositories/22", method: "PUT", body: {
-    connection_id: "second", settings: { model: "next-model", background: "Edited generated context" },
+    connection_id: "second", settings: { model: "next-model", background: "Edited generated context", project_summary: background.project_summary },
   } });
 });
 
 for (const outcome of ["done", "failed"] as const) {
-  for (const change of ["background", "model", "connection", "token budget", "timeout"]) {
+  for (const change of ["background", "summary"]) {
     test(`project background discards a late ${outcome} result after changing ${change}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
@@ -4519,27 +4610,19 @@ for (const outcome of ["done", "failed"] as const) {
       await field.fill("Original context");
       await repositorySection(page, "Project context");
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
-      if (change === "background") await field.fill("Keep this edit");
-      if (change === "model") await repositorySection(page, "AI connection");
-      if (change === "model") await chooseOption(page, page.getByLabel("Model override (optional)"), "next-model");
-      if (change === "connection") await repositorySection(page, "AI connection");
-      if (change === "connection") await chooseOption(page, page.getByLabel("AI connection", { exact: true }), "No connection");
-      if (change === "token budget" || change === "timeout") {
-        await repositorySection(page, "Reviews");
-        await page.getByLabel(change === "timeout" ? "Timeout (seconds)" : "Analysis token budget", { exact: true })
-          .fill(change === "timeout" ? "1200" : "450000");
-      }
+      const editedField = change === "background" ? field : page.getByRole("textbox", { name: "Repository summary", exact: true });
+      await editedField.fill("Keep this edit");
       background.background = "Stale generated context";
       background.error = "Failure from the old selections";
       background.status = outcome;
       await repositorySection(page, "Project context");
       await expect(page.getByRole("status", { name: "Context generation status" }).filter({ hasText: "Your selections or context changed." })).toBeVisible();
       await repositorySection(page, "Project context");
-      await expect(field).toHaveValue(change === "background" ? "Keep this edit" : "Original context");
+      await expect(editedField).toHaveValue("Keep this edit");
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expect(page.getByText(/Generation reference:/)).toHaveCount(0);
       expect(requests).toHaveLength(1);
-      expect(requests[0].body).toEqual({ connection_id: "connection", model: "", limits: { token_budget: 200000, timeout_seconds: 900 } });
+      expect(requests[0].body).toEqual({ generation_id: expect.any(String), connection_id: "connection", model: "", limits: { token_budget: 200000, timeout_seconds: 900 } });
     });
   }
 }

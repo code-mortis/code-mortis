@@ -8,12 +8,14 @@ import time
 from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import and_, or_, select
 
 from code_mortis.core import file_policy, source
 from code_mortis.core.analysis import (
     EXECUTION_LIMITS,
+    cancel_tasks_in_transaction,
     fingerprint,
     job_live,
     new_engine_snapshot,
@@ -95,7 +97,37 @@ def authorize(db, repo, actor, connection, *, check_repository=True):
         return github.authorize_repo(db, actor, repo.full_name, write=True)
 
 
-def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None):
+def request_job_id(repo, actor, generation_id):
+    return str(uuid5(NAMESPACE_URL, f"code-mortis:project-background:{repo.id}:{actor.id}:{generation_id}"))
+
+
+def requested_job(db, repo, actor, generation_id, *, lock=False):
+    job = db.get(Job, request_job_id(repo, actor, generation_id), with_for_update=lock)
+    if job and (job.kind != "generate_background" or job.payload.get("repository_id") != repo.id
+                or job.payload.get("actor_id") != actor.id or job.payload.get("generation_id") != str(generation_id)):
+        raise ValueError("This context generation request is unavailable.")
+    return job
+
+
+def cancel_request(db, repo, actor, generation_id):
+    # Both start and cancel hold the repository lock, including before a job exists.
+    job = requested_job(db, repo, actor, generation_id, lock=True)
+    if not job:
+        job = Job(id=request_job_id(repo, actor, generation_id), kind="generate_background", status="cancelled",
+                  payload={"repository_id": repo.id, "actor_id": actor.id, "generation_id": str(generation_id)})
+        db.add(job)
+    elif job.status in {"queued", "running"}:
+        if background_result_saved(job.payload):
+            job.status = "done"
+        else:
+            cancel_tasks_in_transaction(db, job.id)
+            job.status = "cancelled"
+        job.error, job.lease_until, job.dispatched_at = None, None, None
+    db.flush()
+    return job
+
+
+def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None, generation_id=None):
     from code_mortis.api_tokens import provenance as pat
     from code_mortis.mcp import provenance as mcp
 
@@ -117,6 +149,9 @@ def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None):
         payload["mode"] = mode
         if mode in {"context", "summary"}:
             payload["context_fingerprint"] = fingerprint(repo.settings.get("background", ""))
+    if generation_id is not None:
+        payload["generation_id"] = str(generation_id)
+    elif mode is not None:
         bound = mcp.bind_payload(payload)
         bound = {**bound, **{key: bound.get(key) for key in (mcp.PROVENANCE_KEY, pat.PROVENANCE_KEY)}}
         for active in db.scalars(select(Job).where(
@@ -125,10 +160,13 @@ def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None):
                 and_(Job.status == "running", Job.lease_until > now())),
             Job.payload["repository_id"].as_string() == str(repo.id),
             Job.payload["actor_id"].as_string() == str(actor.id),
+            Job.payload["generation_id"].as_string().is_(None),
         ).order_by(Job.available_at, Job.id)):
             if all(active.payload.get(key) == value for key, value in bound.items()):
                 return active
     job = enqueue_job(db, "generate_background", {**payload, "expires_at": at + 600})
+    if generation_id is not None:
+        job.id = request_job_id(repo, actor, generation_id)
     db.flush()
     return job
 
@@ -285,6 +323,8 @@ def perform(job_id, attempt):
 
     with transaction() as db:
         job = db.get(Job, job_id)
+        if not job_live(job, attempt, now()):
+            raise ReviewStopped("Background generation stopped.")
         if background_result_saved(job.payload):
             return
         if job.payload.get("inference_started"):
@@ -423,7 +463,7 @@ def perform(job_id, attempt):
     if stopped():
         raise ReviewStopped("Background generation stopped.")
     with transaction() as db:
-        repo = db.get(Repository, payload["repository_id"], with_for_update=True) if overview else None
+        repo = db.get(Repository, payload["repository_id"], with_for_update={"key_share": True}) if overview else None
         job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if not job_live(job, attempt, now()):
             raise ReviewStopped("Background generation lost its execution claim.")

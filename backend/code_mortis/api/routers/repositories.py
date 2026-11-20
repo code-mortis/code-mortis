@@ -27,6 +27,7 @@ from code_mortis.reviews.service import enqueue
 from code_mortis.schemas.analytics import RepositoryActivity, RepositoryActivityDay, RepositoryActivityFilters
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
+    BackgroundCancelInput,
     BackgroundInput,
     BackgroundJobOut,
     InboxOut,
@@ -96,9 +97,7 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         raise HTTPException(409, "Project context changed while you were editing. Reload settings and try again.")
     if "background" not in body.settings.model_fields_set:
         effective_settings["background"] = saved_background
-    if not effective_settings["background"].strip():
-        effective_settings["project_summary"] = None
-    elif body.settings.project_summary is None and effective_settings["background"] == saved_background:
+    if "project_summary" not in body.settings.model_fields_set:
         effective_settings["project_summary"] = repo.settings.get("project_summary")
     if effective_settings["project_summary"] is None:
         effective_settings.pop("project_summary")
@@ -181,7 +180,11 @@ def generate_background(repository_id: int, body: BackgroundInput, db: DB, user:
     repo, remote = repo_access(db, user, repository_id, write=True)
     if type(remote.get("id")) is not int or remote["id"] != repo.id:
         raise HTTPException(403, "GitHub repository identity changed.")
-    db.refresh(repo, with_for_update=True)
+    db.refresh(repo, with_for_update={"key_share": True})
+    if body.generation_id is not None:
+        prior = background.requested_job(db, repo, user, body.generation_id)
+        if prior:
+            return background.job_out(prior)
     connection_id, model, limits = body.connection_id, body.model, body.limits
     if body.mode != "draft":
         saved = repo.settings.get("background", "").strip()
@@ -190,7 +193,18 @@ def generate_background(repository_id: int, body: BackgroundInput, db: DB, user:
         connection_id, model, limits = repo.connection_id, repo.settings.get("model", ""), None
     connection = db.get(Connection, connection_id) if connection_id else None
     background.authorize(db, repo, user, connection, check_repository=False)
-    return background.job_out(background.enqueue(db, repo, user, connection, model, limits, mode=body.mode))
+    return background.job_out(background.enqueue(db, repo, user, connection, model, limits,
+                                                 mode=body.mode, generation_id=body.generation_id))
+
+
+@router.post("/repositories/{repository_id}/background/cancel", response_model=BackgroundJobOut)
+def cancel_background(repository_id: int, body: BackgroundCancelInput, db: DB, user: SESSION_ADMIN):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    # Serialize with starts while allowing the worker's analysis plan foreign-key check.
+    db.refresh(repo, with_for_update={"key_share": True})
+    return background.job_out(background.cancel_request(db, repo, user, body.generation_id))
 
 
 @router.get("/repositories/{repository_id}/background/{job_id}", response_model=BackgroundJobOut)

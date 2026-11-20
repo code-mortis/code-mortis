@@ -99,6 +99,7 @@ SESSION_ONLY_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/retry"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/cancel"),
     ("POST", "/api/v1/repositories/{repository_id}/background"),
+    ("POST", "/api/v1/repositories/{repository_id}/background/cancel"),
     ("GET", "/api/v1/repositories/{repository_id}/background/{job_id}"),
     ("GET", "/api/v1/settings"),
     ("GET", "/api/v1/installations"),

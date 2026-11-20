@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
@@ -198,6 +198,11 @@ class BackgroundInput(StrictModel):
     connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     limits: RunLimits | None = None
+    generation_id: UUID4 | None = None
+
+
+class BackgroundCancelInput(StrictModel):
+    generation_id: UUID4
 
 
 class BackgroundResult(StrictModel):
@@ -221,7 +226,7 @@ class ProjectSummaryResult(StrictModel):
 
 class BackgroundJobOut(StrictModel):
     id: str
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
     background: str | None = None
     project_summary: str | None = None
     error: str | None = None

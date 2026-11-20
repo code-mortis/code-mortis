@@ -3,6 +3,7 @@
 import copy
 import json
 from datetime import timedelta
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -278,3 +279,43 @@ def test_repository_summary_uses_saved_context_with_durable_usage(seed, github_s
             assert result["status"] == "done"
             assert repo.settings["background"] == saved
             assert repo.settings["project_summary"] == result["project_summary"] == f"{paragraph} [redacted]"
+
+
+def test_context_cancellation_fences_a_running_provider_call(seed, github_stub, client, monkeypatch):
+    request = {"generation_id": str(uuid4())}
+    endpoint = "/api/v1/repositories/22/background"
+    monkeypatch.setattr(background, "context", lambda *args, **kwargs: {
+        "sha": "a" * 40, "sources": {"README.md": {"text": "A review service", "truncated": False}},
+    })
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    with transaction() as db:
+        db.get(Repository, 22).settings = {
+            "background": "Existing context.", "project_summary": "Existing summary.", "token_budget": 60_000,
+        }
+    started = client.post(endpoint, json={**request, "connection_id": "connection"})
+    assert started.status_code == 202, started.text
+    identity = started.json()["id"]
+    calls = []
+
+    def handler(_):
+        calls.append(client.post(f"{endpoint}/cancel", json=request).json())
+        return httpx.Response(200, json=wire_result("openai", content=json.dumps({
+            "background": "Late context.", "project_summary": "Late summary.",
+        })))
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    jobs.execute_job(identity)
+    result = client.get(f"{endpoint}/{identity}").json()
+    assert calls == [result]
+    assert result["status"] == "cancelled"
+    assert result["background"] is None and result["project_summary"] is None
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        assert repo.settings["background"] == "Existing context."
+        assert repo.settings["project_summary"] == "Existing summary."
+        plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == identity))
+        attempt = db.scalar(select(AnalysisAttempt))
+        assert attempt.usage_state == "unknown"
+        assert db.scalar(select(AnalysisTask)).status == "cancelled"
+        assert db.get(AnalysisBudget, (plan.id, "summary")).charged_tokens == attempt.reserved_tokens > 0
