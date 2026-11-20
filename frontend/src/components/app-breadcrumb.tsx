@@ -95,7 +95,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
   const ancestors = crumbs.slice(0, -1);
 
   if (path === "/") return null;
-  return <div className="mb-6 flex min-w-0 items-center gap-2">
+  return <div className={`mb-6 flex min-w-0 items-center gap-2 ${repository ? "lg:min-h-9" : ""}`}>
     {repository && <SidebarToggle />}
     <Breadcrumb aria-label="Breadcrumb" className="min-w-0 flex-1">
       <BreadcrumbList className="flex-nowrap">

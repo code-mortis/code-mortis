@@ -989,9 +989,21 @@ test("home has only Inbox while organization and repository pickers open scoped 
   await openNavigation(page);
   await expect(nav.getByRole("link", { name: "Pull requests", exact: true })).toHaveAttribute("aria-current", "page");
   if (info.project.name === "desktop") {
-    await page.getByRole("button", { name: "Hide sidebar" }).click();
-    await expect(page.locator('[data-slot="sidebar-container"]')).toHaveAttribute("inert", "");
-    await page.getByRole("button", { name: "Show sidebar" }).press("Enter");
+    const sidebar = page.locator('[data-slot="sidebar-container"]');
+    const hide = page.getByRole("button", { name: "Hide sidebar" });
+    const show = page.getByRole("button", { name: "Show sidebar" });
+    await expect(hide).toHaveAttribute("aria-expanded", "true");
+    const panel = (await sidebar.boundingBox())!;
+    const trigger = (await hide.boundingBox())!;
+    const breadcrumb = (await page.getByRole("navigation", { name: "Breadcrumb" }).boundingBox())!;
+    expect(trigger.x - panel.x - panel.width).toBeGreaterThanOrEqual(0);
+    expect(trigger.x - panel.x - panel.width).toBeLessThan(8);
+    expect(trigger.x + trigger.width).toBeLessThan(breadcrumb.x);
+    await hide.click();
+    await expect(sidebar).toHaveAttribute("inert", "");
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await expect.poll(async () => (await show.boundingBox())?.x).toBeLessThan(8);
+    await show.press("Enter");
     await nav.getByRole("link", { name: "Pull requests", exact: true }).focus();
     await page.keyboard.press("Control+b");
     await expect(page.getByRole("button", { name: "Show sidebar" })).toBeFocused();
