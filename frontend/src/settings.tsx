@@ -373,7 +373,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
             && document.activeElement !== rulesInput.current) {
             rulesDisclosure.current.open = false;
           }
-          toast.success("Repository settings saved.");
+          toast.success("Repository settings saved.", { position: "top-right" });
         } catch (e) {
           setError(e);
         }
