@@ -275,7 +275,7 @@ def execute(connection, credentials, context, *, instructions, schema, validator
                     if status not in {"pending", "running"}:
                         raise InferenceOutputError("The saved request failed or its consumption is uncertain", {"tokens": amount})
                     required = llm.reservation(connection, request) + (
-                        1 if output_cap is not None else max(1, request.max_output_tokens)
+                        1 if workflow_budget and output_cap is not None else max(1, request.max_output_tokens)
                         if workflow_budget else request.max_output_tokens)
                     if status == "pending" and token_budget is not None and required > token_budget:
                         raise budget_error("The request exceeds the remaining workflow allowance", {"tokens": 0})

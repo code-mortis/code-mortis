@@ -4665,11 +4665,12 @@ test("repository summary and context started from Overview require a Settings sa
   expect(jobStarts).toBe(1);
 });
 
-for (const dismiss of ["Stay", "Escape"]) {
-  test(`an Overview context launch respects ${dismiss} and keeps the draft available`, async ({ page }) => {
+for (const [dismiss, status] of [["Stay", "done"], ["Escape", "done"], ["Stay", "failed"]] as const) {
+  test(`an Overview context launch respects ${dismiss} when the job is ${status}`, async ({ page }) => {
     const draft = "Payment workers dispatch callbacks.";
     const background: Schema["BackgroundJobOut"] = {
-      id: "deferred-context", status: "done", mode: "context", background: draft, project_summary: paymentsSummary,
+      id: "deferred-context", status, mode: "context", background: status === "done" ? draft : null,
+      project_summary: dismiss === "Stay" ? null : paymentsSummary,
     };
     const requests = await mock(page, { background });
     let finish!: () => void;
@@ -4688,15 +4689,21 @@ for (const dismiss of ["Stay", "Escape"]) {
     const launched = page.waitForResponse((response) => response.url().endsWith("/22/background"));
     finish();
     await (await launched).finished();
+    const polled = page.waitForResponse((response) => response.url().endsWith("/22/background/deferred-context"));
     if (dismiss === "Stay") await dialog.getByRole("button", { name: "Stay", exact: true }).click();
     else await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
-    const openContext = page.getByRole("button", { name: "Open project context" });
-    await expect(openContext).toBeEnabled();
+    await (await polled).finished();
+    await expect(page.getByText("Generating project context.", { exact: true })).toHaveCount(0);
     await expect(page).toHaveURL("/repositories/22/overview");
-    await openContext.click();
-    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
-    await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(draft);
+    if (status === "done") {
+      await page.getByRole("button", { name: "Open project context" }).click();
+      await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+      await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(draft);
+    } else {
+      await expect(page.getByRole("alert")).toContainText("Project context generation failed.");
+      await expect(page.getByRole("button", { name: "Retry generation" })).toBeEnabled();
+    }
     expect(requests.filter(({ path }) => path.endsWith("/background/cancel"))).toHaveLength(0);
   });
 }
@@ -4832,6 +4839,24 @@ test("notification reads a standalone PR summary separately from its parent revi
   await page.clock.runFor(11000);
   expect(polls).toBe(2);
 });
+
+for (const status of [404, 503]) {
+  test(`PR summary activity handles a ${status} polling error`, async ({ page }) => {
+    await mock(page);
+    await page.clock.install();
+    let polls = 0;
+    await page.route("**/api/v1/runs/run/summary/attempts/summary", (route) => {
+      if (++polls === 1) return route.fulfill({ status, json: { detail: "Could not load the summary attempt" } });
+      return route.fulfill({ json: { id: "summary", status: "done", finished_at: null } });
+    });
+    await page.goto("/runs/run?summaryJob=summary");
+    const summary = page.getByRole("region", { name: "PR summary generation" });
+    await expect(summary.getByRole("alert")).toContainText("Could not load the summary attempt");
+    await page.clock.runFor(11000);
+    if (status === 404) expect(polls).toBe(1);
+    else await expect(summary).toContainText(/completed/i);
+  });
+}
 
 test("notification links preserve an active context draft and prompt before leaving for another job", async ({ page }) => {
   const requests = await mock(page, { background: { id: "active-context", status: "running" } });

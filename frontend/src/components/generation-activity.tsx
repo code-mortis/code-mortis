@@ -1,5 +1,6 @@
-import { useApi, type Schema } from "../api";
-import { backgroundFinished, useBackgroundStatus } from "../hooks/use-background-generation";
+import { useQuery } from "@tanstack/react-query";
+import { api, type Schema } from "../api";
+import { backgroundFinished, isBackgroundConnectionError, useBackgroundStatus } from "../hooks/use-background-generation";
 import { useActivityRead } from "../hooks/use-activity-read";
 import { Button } from "./ui/button";
 import { ErrorNotice, Loading, Status } from "./common";
@@ -25,10 +26,14 @@ export function GenerationActivity({ repositoryId, jobId }: {
 }
 
 export function PullSummaryActivity({ runId, jobId }: { runId: string; jobId: string }) {
-  const summary = useApi<Schema["SummaryAttemptOut"]>(
-    `/runs/${encodeURIComponent(runId)}/summary/attempts/${encodeURIComponent(jobId)}`,
-    (data) => data?.finished_at || backgroundFinished(data?.status) ? false : 5000,
-  );
+  const path = `/runs/${encodeURIComponent(runId)}/summary/attempts/${encodeURIComponent(jobId)}`;
+  const summary = useQuery({
+    queryKey: [path],
+    queryFn: () => api<Schema["SummaryAttemptOut"]>(path),
+    retry: false,
+    refetchInterval: ({ state: { data, error } }) =>
+      data?.finished_at || backgroundFinished(data?.status) || (error && !isBackgroundConnectionError(error)) ? false : 5000,
+  });
   useActivityRead("pr_summary", summary.data?.id, summary.data?.finished_at, summary.isSuccess ? summary.dataUpdatedAt : 0);
   return <section aria-label="PR summary generation" className="my-4 space-y-2 rounded-md border p-4">
     <h2 className="text-sm font-medium">PR summary generation</h2>

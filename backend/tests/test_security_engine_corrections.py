@@ -11,8 +11,9 @@ from test_mortis_security import scan_workflow as scan_workflow
 from test_mortis_security import selected_result
 from test_repository_security import saved_finding, saved_scan
 
-from code_mortis.core import file_policy
+from code_mortis.core import file_policy, workflow_inference
 from code_mortis.core.db import transaction
+from code_mortis.core.errors import InferenceOutputError
 from code_mortis.core.security import digest
 from code_mortis.integrations import llm
 from code_mortis.models import AnalysisBudget, AnalysisPlan, SecurityFinding, SecurityScan
@@ -282,6 +283,30 @@ def test_scan_phase_caps_charge_evidence_rounds_and_enforce_provider_output_cap(
             assert budgets == {"security": 350, "assessment": 250, "verification": 50}
 
 
+def test_legacy_scan_allowance_reserves_the_configured_output_cap(scan_workflow, monkeypatch):
+    scan_id = scan_workflow["scan_id"]
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        config = {key: value for key, value in scan.config.items() if key != "execution_limits"}
+        config["connection"] = {key: value for key, value in config["connection"].items() if key != "execution_limits"}
+        config["limits"] = {**config["limits"], "max_output_tokens": 600}
+        claim = scan_workflow["claim"]
+        scan.config, scan.status, scan.progress = config, "running", {**scan.progress, "execution": claim}
+
+    def reservation(connection, request):
+        assert request.max_output_tokens == 600
+        return 500
+
+    monkeypatch.setattr(llm, "reservation", reservation)
+    monkeypatch.setattr(llm, "execute_task", lambda *args, **kwargs: pytest.fail("A request exceeding the allowance reached admission"))
+    with pytest.raises(InferenceOutputError, match="remaining workflow allowance") as caught:
+        workflow_inference.execute(config["connection"], {"api_key": "provider-secret", "extra_headers": {}}, {},
+            instructions="Inspect supplied evidence.", schema={"type": "object", "properties": {}},
+            validator=lambda raw, supplied: raw, claim=claim, stage="security", task_key="analysis:app.py",
+            scan_id=scan_id, token_budget=1000)
+    assert caught.value.usage == {"tokens": 0}
+
+
 def test_ai_exclusions_deny_retained_evidence_and_excluded_supporting_paths(tmp_path):
     ai_policy = file_policy.policy({"exclusions": "fixtures/**"})
     item = engine.Snapshot(tmp_path, "a" * 40, {}, lambda: False, ai_policy=ai_policy)
@@ -306,15 +331,23 @@ def test_ai_exclusions_deny_retained_evidence_and_excluded_supporting_paths(tmp_
     assert not engine.payload.reusable_source_context({"source_packing": True, "context_paths": [blocked]}, ai_policy)
 
 
-def test_ai_exclusions_keep_only_revalidated_historical_evidence_in_model_context(tmp_path):
+@pytest.mark.parametrize("unavailable", [KeyError, TimeoutError])
+def test_ai_exclusions_keep_only_revalidated_historical_evidence_in_model_context(tmp_path, unavailable):
     item = engine.Snapshot(tmp_path, "a" * 40, {}, lambda: False,
                            ai_policy=file_policy.policy({"exclusions": "fixtures/**"}))
     item.inventory = {"app.py": {}}
-    item.read = lambda path, sha=None: "allowed evidence" if sha == "b" * 40 else "current source"
+    def read(path, sha=None):
+        if path == "unavailable.py":
+            raise unavailable("Source cannot be revalidated")
+        return "allowed evidence" if sha == "b" * 40 else "current source"
+
+    item.read = read
     cite = {"path": "app.py", "revision": "current", "start_line": 1, "end_line": 1, "quote": "allowed evidence"}
     finding = {"id": "older", "path": "app.py", "kind": "code", "title": "Uncited historical prose",
                "evidence": {"source_sha": "b" * 40, "explanation": "Content from fixtures/hidden.py", "evidence": [cite]}}
     invalid = {**finding, "id": "invalid", "evidence": {**finding["evidence"], "evidence": [{**cite, "quote": "wrong"}]}}
+    unreadable = {**finding, "id": "unreadable", "evidence": {**finding["evidence"],
+        "evidence": [{**cite, "path": "unavailable.py"}]}}
 
     def infer(supplied, **kwargs):
         assert supplied["history"] == [{"id": "history_1", "path": "app.py", "kind": "code",
@@ -322,6 +355,17 @@ def test_ai_exclusions_keep_only_revalidated_historical_evidence_in_model_contex
         return kwargs["validator"](selected_result("assessment"), supplied), {"tokens": 7}
 
     _, usage = engine.ask(item, {"kind": "api"}, {}, "assessment", {
-        "sources": {"current": {"app.py": "current source"}}, "history": [finding, invalid],
+        "sources": {"current": {"app.py": "current source"}}, "history": [finding, invalid, unreadable],
     }, None, None, lambda: False, "test", infer=infer)
     assert usage == {"tokens": 7}
+
+
+def test_historical_evidence_does_not_swallow_scan_deadline(tmp_path):
+    def deadline():
+        raise TimeoutError("Scan time limit reached")
+
+    item = engine.Snapshot(tmp_path, "a" * 40, {}, deadline)
+    item.read = lambda path, sha=None: item.stopped()
+    citation = {"path": "app.py", "revision": "current", "start_line": 1, "end_line": 1, "quote": "saved evidence"}
+    with pytest.raises(TimeoutError, match="Scan time limit reached"):
+        engine.historical_evidence(item, {"evidence": {"source_sha": "b" * 40, "evidence": [citation]}})

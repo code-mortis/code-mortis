@@ -375,7 +375,11 @@ def historical_evidence(item, finding):
             return None
         sources = {path: item.source(path, sha) for path in {citation["path"] for citation in citations}}
         validate_citations(citations, {"current": sources})
-    except (ValueError, TypeError):
+    except TimeoutError:
+        # A source read can time out independently of the scan.
+        engine_stopped(item.stopped)
+        return None
+    except (ValueError, KeyError, TypeError):
         return None
     return {**{key: finding[key] for key in ("id", "state", "kind", "severity", "path") if key in finding},
             "evidence": {"source_sha": sha, "evidence": citations}}

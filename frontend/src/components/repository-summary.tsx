@@ -39,7 +39,8 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   const cache = useQueryClient();
   const start = useStartBackground(repository.id);
   const result = useBackgroundStatus(repository.id, activeJobId);
-  const summaryJob = jobId && result.data?.mode !== "context" ? result.data : undefined;
+  const isContextJob = !!deferredContext || result.data?.mode === "context" || generationRequest.current?.mode === "context";
+  const summaryJob = jobId && !isContextJob ? result.data : undefined;
   useActivityRead("repository_summary", summaryJob?.id, summaryJob?.finished_at, result.isSuccess ? result.dataUpdatedAt : 0);
   const savedSummary = repository.settings.project_summary;
   const mode = (generationId && generationRequest.current?.mode)
@@ -63,7 +64,7 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
     if (!job || !backgroundFinished(job.status) || completedJobId.current === job.id) return;
     completedJobId.current = job.id;
     setGenerationId(undefined);
-    if (job.status !== "done" || !job.project_summary || generationRequest.current?.mode === "context") return;
+    if (job.status !== "done" || !job.project_summary || isContextJob) return;
 
     setJobId(undefined);
     void cache.invalidateQueries({ queryKey: ["/repositories"] }).then(() => {
@@ -72,7 +73,7 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
       if (job.mode === "summary_refresh" && saved === job.project_summary) toast.success("Repository summary updated.");
     });
     void cache.invalidateQueries({ queryKey: activityQueryKey });
-  }, [cache, finished, jobId, repository.id, result.data, statusDenied, summaryJobKey]);
+  }, [cache, finished, isContextJob, jobId, repository.id, result.data, statusDenied, summaryJobKey]);
   useEffect(() => {
     if (contextGeneration && !blocked && !stayOnOverview) {
       openContext(contextGeneration);
@@ -80,8 +81,8 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   }, [contextGeneration, blocked, openContext, stayOnOverview]);
 
   const error = start.error ?? result.error ?? (result.data?.status === "failed"
-    ? new Error(result.data.error || "Summary generation failed. Try again.")
-    : result.data?.status === "done" && !result.data.project_summary ? new Error("The model returned no summary. Try again.") : null);
+    ? new Error(result.data.error || (isContextJob ? "Project context generation failed. Try again." : "Summary generation failed. Try again."))
+    : result.data?.status === "done" && !isContextJob && !result.data.project_summary ? new Error("The model returned no summary. Try again.") : null);
   const lostStatus = !!activeJobId && !!result.error && isBackgroundConnectionError(result.error) && !finished;
   const pending = !error && (start.isPending || ((!!activeJobId || !!contextGeneration) && !finished));
   const readyContext = !error && result.data?.status !== "cancelled" ? deferredContext : undefined;
