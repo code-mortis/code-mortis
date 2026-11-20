@@ -4293,7 +4293,7 @@ const paymentsSummary = "This project helps businesses accept payments and keeps
 
 test("repository summary appears above activity for members", async ({ page }) => {
   await mock(page, { role: "member" });
-  let projectSummary: string | null = paymentsSummary;
+  let projectSummary: string | null = paymentsSummary.replace("accept payments", "**accept payments**");
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
     ...repo, settings: { ...repo.settings, project_summary: projectSummary },
   }] }));
@@ -4301,7 +4301,9 @@ test("repository summary appears above activity for members", async ({ page }) =
   const summary = page.getByText(paymentsSummary, { exact: true });
   const activity = page.getByRole("region", { name: "Repository activity" });
   await expect(summary).toBeVisible();
+  await expect(summary.locator("strong")).toHaveText("accept payments");
   await expect(activity).toBeVisible();
+  expect((await summary.boundingBox())!.width).toBeCloseTo((await activity.boundingBox())!.width);
   expect((await summary.boundingBox())!.y + (await summary.boundingBox())!.height).toBeLessThan((await activity.boundingBox())!.y);
   await noOverflow(page);
   projectSummary = null;
@@ -4389,7 +4391,7 @@ test("repository summary and context started from Overview require a Settings sa
   expect(savedSettings.project_summary).toBeNull();
   finish();
   await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(draft);
-  await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Repository summary", exact: true })).toHaveValue(paymentsSummary);
   expect(savedSettings.background).toBe("");
   expect(savedSettings.project_summary).toBeNull();
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -4402,6 +4404,42 @@ test("repository summary and context started from Overview require a Settings sa
   await page.goto("/repositories/22/overview");
   await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
   expect(jobStarts).toBe(1);
+});
+
+test("repository summary can be edited directly and updates Overview on Save", async ({ page }) => {
+  const requests = await mock(page);
+  const context = "Payment workers deliver callbacks.";
+  let savedSettings = { ...repo.settings, background: context, project_summary: paymentsSummary };
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
+  const edit = "Helps merchants **accept payments**.";
+  let saves = 0;
+  await page.route("**/api/v1/repositories/22", (route) => {
+    expect(route.request().method()).toBe("PUT");
+    const body = route.request().postDataJSON();
+    expect(body.settings).toMatchObject({ background: context, project_summary: edit });
+    savedSettings = body.settings;
+    saves++;
+    return route.fulfill({ json: { ...repo, settings: savedSettings } });
+  });
+  await page.goto("/repositories/22/settings?tab=context");
+  const editor = page.getByRole("textbox", { name: "Repository summary", exact: true });
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue(paymentsSummary);
+  await expect(editor).toHaveAttribute("maxlength", "600");
+  await editor.fill("   ");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(editor).toBeFocused();
+  expect(saves).toBe(0);
+  await editor.fill(edit);
+  const rendered = page.getByText("Helps merchants accept payments.", { exact: true });
+  await expect(rendered).toHaveCount(0);
+  expect(savedSettings.project_summary).toBe(paymentsSummary);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+  await page.goto("/repositories/22/overview");
+  await expect(rendered.locator("strong")).toHaveText("accept payments");
+  expect(saves).toBe(1);
+  expect(requests.filter((request) => request.path.endsWith("/background"))).toHaveLength(0);
 });
 
 test("project background generates an editable draft with unsaved selections and Undo", async ({ page }, info) => {
@@ -4428,11 +4466,12 @@ test("project background generates an editable draft with unsaved selections and
   await expect(field).toHaveAttribute("maxlength", "20000");
   expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
   background.background = Array.from({ length: 40 }, (_, index) => `Module ${index + 1}: A payment service built with TypeScript. Workers deliver webhooks and handle retries.`).join("\n\n");
-  Object.assign(background, { project_summary: paymentsSummary });
+  Object.assign(background, { project_summary: paymentsSummary.replace("accept payments", "**accept payments**") });
   background.status = "done";
   await repositorySection(page, "Project context");
   await expect(field).toHaveValue(background.background);
-  await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+  const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
+  await expect(summary).toHaveValue(background.project_summary!);
   await expect(page.getByRole("status", { name: "Context generation status" }).filter({ hasText: "Context generated." })).toBeVisible();
   const editor = await field.evaluate((element: HTMLTextAreaElement) => ({ height: element.clientHeight, contentHeight: element.scrollHeight }));
   expect(editor.height).toBeLessThanOrEqual(384);
@@ -4449,7 +4488,7 @@ test("project background generates an editable draft with unsaved selections and
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await repositorySection(page, "Project context");
   await expect(field).toHaveValue("Existing context");
-  await expect(page.getByText(paymentsSummary, { exact: true })).toHaveCount(0);
+  await expect(summary).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
   await repositorySection(page, "Project context");
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Previous context restored.");
@@ -4461,7 +4500,7 @@ test("project background generates an editable draft with unsaved selections and
   await repositorySection(page, "Project context");
   await expect(field).toHaveValue(background.background);
   await field.fill("Edited generated context");
-  await expect(page.getByText(paymentsSummary, { exact: true })).toHaveCount(0);
+  await expect(summary).toHaveCount(0);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect(requests.at(-1)).toMatchObject({ path: "/repositories/22", method: "PUT", body: {
     connection_id: "second", settings: { model: "next-model", background: "Edited generated context" },
@@ -4665,9 +4704,7 @@ for (const unlimited of [false, true]) {
       await page.getByLabel("Timeout (seconds)", { exact: true }).fill("1200");
     }
     await repositorySection(page, "Project context");
-    await expect(page.getByText(/Generation uses these review limits:/)).toContainText(
-      unlimited ? "unlimited tokens, no overall timeout" : "450,000 tokens, 1,200-second timeout",
-    );
+    await expect(page.getByText(/Generation uses these review limits:/)).toHaveCount(0);
     await repositorySection(page, "Project context");
     await page.getByRole("button", { name: "Generate context", exact: true }).click();
     await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();

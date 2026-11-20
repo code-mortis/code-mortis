@@ -288,7 +288,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
           || scanSettings.concurrency !== savedScanSettings.current.concurrency;
         try {
-          const { project_summary, ...nextSettings } = settings;
+          const { project_summary: summaryDraft, ...nextSettings } = settings;
+          const project_summary = summaryDraft?.trim() || null;
           const contextChanged = savedBackground.current !== settings.background;
           const summaryChanged = !!project_summary && (contextChanged || savedProjectSummary.current !== project_summary);
           await action.mutateAsync({

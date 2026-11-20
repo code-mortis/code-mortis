@@ -54,9 +54,10 @@ INSTRUCTIONS = (
     "credentials or reproduce secrets. Return only the requested fields."
 )
 SUMMARY_INSTRUCTIONS = (
-    "Write a short plain-text paragraph in English under 600 characters explaining what the project does "
-    "and who it serves when supported by the supplied evidence. Use everyday language; omit headings, "
-    "lists, implementation details, unsupported claims and secrets."
+    "Write one short Markdown paragraph in English under 600 characters explaining what the project does "
+    "and who it serves when supported by the supplied evidence. Use everyday language. Use **bold** or "
+    "*italics* sparingly when they clarify the text, and link only to URLs present in the evidence. "
+    "Omit headings, lists, HTML, implementation details, unsupported claims and secrets."
 )
 STALE_CONTEXT = "The saved project context changed. Refresh the repository and try again."
 INTERRUPTED = "Background generation was interrupted; usage may have been consumed. Generate again to retry."

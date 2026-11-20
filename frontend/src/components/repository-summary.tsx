@@ -4,7 +4,7 @@ import { LoaderCircle, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, type Repository } from "../api";
 import { savedBackgroundInputs, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
-import { ErrorNotice } from "./common";
+import { ErrorNotice, Markdown } from "./common";
 import { Button } from "./ui/button";
 
 export function RepositorySummary({ repository, admin }: { repository: Repository; admin: boolean }) {
@@ -12,7 +12,7 @@ export function RepositorySummary({ repository, admin }: { repository: Repositor
   const initiallySaved = useRef(!!summary);
   return <>
     <span role="status" className="sr-only">{summary && !initiallySaved.current ? "Repository summary saved." : ""}</span>
-    {summary ? <p className="max-w-prose break-words">{summary}</p>
+    {summary ? <Markdown>{summary}</Markdown>
       : admin ? <GenerateRepositorySummary repository={repository} /> : null}
   </>;
 }

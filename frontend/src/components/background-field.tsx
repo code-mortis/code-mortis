@@ -8,6 +8,7 @@ import { Textarea } from "./ui/textarea";
 type ContextDraft = { background: string; project_summary?: string | null };
 // Keep aligned with BackgroundResult and RepoSettings.background in the API schema.
 const BACKGROUND_MAX_LENGTH = 20_000;
+const SUMMARY_MAX_LENGTH = 600;
 const STALE_MESSAGE = "Your selections or context changed. Generate again to use the current values.";
 
 export function BackgroundField({ repositoryId, connectionId, model, defaultModel, tokenBudget, timeoutSeconds, value, onChange, initialJobId, initialContextChanged }: {
@@ -29,7 +30,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   const [undo, setUndo] = useState<ContextDraft>();
   const revision = useRef(0);
   const request = useRef({ revision: initialContextChanged ? -1 : 0, previous: value });
-  const selection = JSON.stringify([repositoryId, connectionId, model, tokenBudget, timeoutSeconds, value.background]);
+  const selection = JSON.stringify([repositoryId, connectionId, model, tokenBudget, timeoutSeconds, value.background, value.project_summary]);
   const previousSelection = useRef(selection);
   const previousDefaultModel = useRef(defaultModel);
   const mounted = useRef(true);
@@ -82,66 +83,70 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   } else if (!(model.trim() || defaultModel.trim())) {
     missing = "Choose a model to generate context.";
   }
-  const tokenLimit = tokenBudget === null ? "unlimited tokens" : `${tokenBudget.toLocaleString()} tokens`;
-  const timeLimit = timeoutSeconds === null ? "no overall timeout" : `${timeoutSeconds.toLocaleString()}-second timeout`;
   return (
-    <div className="space-y-2">
-      <Field
-        label="Project context"
-        hint={missing || "Context that helps reviewers understand the codebase. Generates from the default branch using the selected connection and model."}
-        action={
-          <div className="flex items-center gap-2">
-            {undo !== undefined && (
-              <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => {
-                onChange(undo);
-                setUndo(undefined);
-                setMessage("Previous context restored. Save to keep it.");
-              }}>Undo</Button>
-            )}
-            <Button type="button" variant="outline" size="sm" disabled={pending || !!missing} onClick={async () => {
-              request.current = { revision: revision.current, previous: value };
-              setError(undefined);
-              setFailedJob(undefined);
-              setMessage("");
-              try {
-                const created = await start.mutateAsync({
-                  connection_id: connectionId, model, limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
-                });
-                if (mounted.current) setJobId(created.id);
-              } catch (error) {
-                if (mounted.current) {
-                  if (request.current.revision !== revision.current) setMessage(STALE_MESSAGE);
-                  else setError(error);
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2">
+        <Field
+          label="Project context"
+          hint={missing || "Context that helps reviewers understand the codebase. Generates from the default branch using the selected connection and model."}
+          action={
+            <div className="flex items-center gap-2">
+              {undo !== undefined && (
+                <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={() => {
+                  onChange(undo);
+                  setUndo(undefined);
+                  setMessage("Previous context restored. Save to keep it.");
+                }}>Undo</Button>
+              )}
+              <Button type="button" variant="outline" size="sm" disabled={pending || !!missing} onClick={async () => {
+                request.current = { revision: revision.current, previous: value };
+                setError(undefined);
+                setFailedJob(undefined);
+                setMessage("");
+                try {
+                  const created = await start.mutateAsync({
+                    connection_id: connectionId, model, limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
+                  });
+                  if (mounted.current) setJobId(created.id);
+                } catch (error) {
+                  if (mounted.current) {
+                    if (request.current.revision !== revision.current) setMessage(STALE_MESSAGE);
+                    else setError(error);
+                  }
                 }
-              }
-            }}>
-              {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <Sparkles className="size-4" aria-hidden="true" />}
-              {pending ? "Generating…" : "Generate context"}
-            </Button>
-          </div>
-        }
-      >
-        {(id) => <Textarea id={id} rows={4} className="min-h-48 max-h-96 resize-y overflow-y-auto" maxLength={BACKGROUND_MAX_LENGTH} value={value.background} onChange={(event) => {
-          onChange({ background: event.target.value, project_summary: null });
-          setUndo(undefined);
-          setMessage("");
-          setError(undefined);
-          setFailedJob(undefined);
-        }} />}
-      </Field>
-      {value.project_summary && <div className="space-y-1">
-        <h3 className="text-sm font-medium">Repository summary</h3>
-        <p className="max-w-prose break-words text-sm leading-relaxed text-muted-foreground">{value.project_summary}</p>
-      </div>}
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        Generation uses these review limits: {tokenLimit}, {timeLimit}.
-        {" Provider limits still apply."}
-      </p>
-      <p role="status" aria-label="Context generation status" className="text-xs leading-relaxed text-muted-foreground">
-        {pending ? "Generating project context. Changing the context, connection, model, or limits will discard this result." : message}
-      </p>
-      <ErrorNotice error={error} />
-      {failedJob && <p className="break-all text-xs text-muted-foreground">Generation reference: {failedJob}</p>}
+              }}>
+                {pending ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden="true" /> : <Sparkles className="size-4" aria-hidden="true" />}
+                {pending ? "Generating…" : "Generate context"}
+              </Button>
+            </div>
+          }
+        >
+          {(id) => <Textarea id={id} rows={4} className="min-h-48 max-h-96 resize-y overflow-y-auto" maxLength={BACKGROUND_MAX_LENGTH} value={value.background} onChange={(event) => {
+            onChange({ background: event.target.value, project_summary: null });
+            setUndo(undefined);
+            setMessage("");
+            setError(undefined);
+            setFailedJob(undefined);
+          }} />}
+        </Field>
+        <p role="status" aria-label="Context generation status" className="text-xs leading-relaxed text-muted-foreground empty:sr-only">
+          {pending ? "Generating project context. Changing the context, connection, model, or limits will discard this result." : message}
+        </p>
+        <ErrorNotice error={error} />
+        {failedJob && <p className="break-all text-xs text-muted-foreground">Generation reference: {failedJob}</p>}
+      </div>
+      {value.project_summary != null && <Field label="Repository summary" hint="Use Markdown for formatting. Save to update Overview.">
+        {(id) => <Textarea id={id} rows={4} required maxLength={SUMMARY_MAX_LENGTH}
+          value={value.project_summary ?? ""} onChange={(event) => {
+            const summary = event.target.value;
+            event.target.setCustomValidity(summary.trim() ? "" : "Enter a repository summary.");
+            onChange({ background: value.background, project_summary: summary });
+            setUndo(undefined);
+            setMessage("");
+            setError(undefined);
+            setFailedJob(undefined);
+          }} />}
+      </Field>}
     </div>
   );
 }
