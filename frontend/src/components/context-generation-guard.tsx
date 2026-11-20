@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "react-router-dom";
 import { api } from "../api";
@@ -18,11 +18,11 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
   const path = `/repositories/${repositoryId}/background/cancel`;
   const cache = useQueryClient();
   const cancel = useMutation({
-    mutationFn: (id: string) => api(path, "POST", { generation_id: id }),
+    mutationFn: (id: string) => api(path, "POST", { generation_id: id }, undefined, AbortSignal.timeout(10000)),
     onSuccess: () => { void cache.invalidateQueries({ queryKey: activityQueryKey }); },
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!generationId) return;
     const warn = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -58,11 +58,16 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
         onEscapeKeyDown={(event) => { if (cancel.isPending) event.preventDefault(); }}
       >
         <DialogHeader>
-          <DialogTitle>Leave and cancel generation?</DialogTitle>
-          <DialogDescription>{summaryOnly ? "The repository summary" : "Project context"} is being generated. Leaving this page cancels the job.</DialogDescription>
+          <DialogTitle>{generationId ? "Leave and cancel generation?" : "Leave this page?"}</DialogTitle>
+          <DialogDescription>{generationId
+            ? <>{summaryOnly ? "The repository summary" : "Project context"} is being generated. Leaving this page cancels the job.</>
+            : "Generation has ended."}</DialogDescription>
         </DialogHeader>
         <ErrorNotice error={cancel.error} />
         <DialogFooter>
+          {generationId && cancel.isError && <Button type="button" variant="ghost" onClick={() => blocker.proceed()}>
+            Leave without cancelling
+          </Button>}
           <Button type="button" variant="outline" disabled={cancel.isPending} onClick={() => {
             cancel.reset();
             blocker.reset();
@@ -77,7 +82,7 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
               }
             }
             blocker.proceed();
-          }}>{cancel.isPending ? "Cancelling…" : "Cancel"}</Button>
+          }}>{cancel.isPending ? "Cancelling…" : generationId ? "Cancel" : "Leave"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

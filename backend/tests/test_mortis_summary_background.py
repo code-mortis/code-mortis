@@ -282,7 +282,8 @@ def test_repository_summary_uses_saved_context_with_durable_usage(seed, github_s
 
 
 @pytest.mark.parametrize("saved_context", [None, "Saved evidence from repository settings."])
-def test_regenerate_only_drafts_summary_until_settings_save(seed, github_stub, client, monkeypatch, saved_context):
+@pytest.mark.parametrize("mode", ["summary_draft", "summary_refresh"])
+def test_regenerate_publishes_only_for_explicit_refresh(seed, github_stub, client, monkeypatch, saved_context, mode):
     settings = {"project_summary": "Published summary.", "token_budget": 60_000}
     if saved_context:
         settings["background"] = saved_context
@@ -305,9 +306,11 @@ def test_regenerate_only_drafts_summary_until_settings_save(seed, github_stub, c
     monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
     endpoint = "/api/v1/repositories/22/background"
-    started = client.post(endpoint, json={"mode": "summary_draft", "generation_id": str(uuid4())})
+    started = client.post(endpoint, json={"mode": mode, "generation_id": str(uuid4())})
     assert started.status_code == 202, started.text
     identity = started.json()["id"]
+    with transaction() as db:
+        assert db.get(Repository, 22).settings == settings
     jobs.execute_job(identity)
     result = client.get(f"{endpoint}/{identity}").json()
     assert result["status"] == "done", result
@@ -318,8 +321,11 @@ def test_regenerate_only_drafts_summary_until_settings_save(seed, github_stub, c
     with transaction() as db:
         plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == identity))
         assert plan.snapshot["revisions"] == ({"context": fingerprint(saved_context)} if saved_context else {"head": "a" * 40})
-        assert db.get(Repository, 22).settings == settings
         repo = db.get(Repository, 22)
+        if mode == "summary_refresh":
+            assert repo.settings == {**settings, "project_summary": paragraph}
+            return
+        assert repo.settings == settings
         repo.settings = {**repo.settings, "project_summary": "Newer edit."}
 
     body = {"enabled": False, "expected_background": saved_context or "",
@@ -333,7 +339,8 @@ def test_regenerate_only_drafts_summary_until_settings_save(seed, github_stub, c
     assert saved.json()["settings"]["background"] == (saved_context or "")
 
 
-def test_context_cancellation_fences_a_running_provider_call(seed, github_stub, client, monkeypatch):
+@pytest.mark.parametrize("mode", ["draft", "summary_refresh"])
+def test_background_cancellation_fences_a_running_provider_call(seed, github_stub, client, monkeypatch, mode):
     request = {"generation_id": str(uuid4())}
     endpoint = "/api/v1/repositories/22/background"
     monkeypatch.setattr(background, "context", lambda *args, **kwargs: {
@@ -345,16 +352,17 @@ def test_context_cancellation_fences_a_running_provider_call(seed, github_stub, 
         db.get(Repository, 22).settings = {
             "background": "Existing context.", "project_summary": "Existing summary.", "token_budget": 60_000,
         }
-    started = client.post(endpoint, json={**request, "connection_id": "connection"})
+    started = client.post(endpoint, json={**request, "mode": mode, "connection_id": "connection"})
     assert started.status_code == 202, started.text
     identity = started.json()["id"]
     calls = []
 
     def handler(_):
         calls.append(client.post(f"{endpoint}/cancel", json=request).json())
-        return httpx.Response(200, json=wire_result("openai", content=json.dumps({
-            "background": "Late context.", "project_summary": "Late summary.",
-        })))
+        output = {"project_summary": "Late summary."}
+        if mode == "draft":
+            output["background"] = "Late context."
+        return httpx.Response(200, json=wire_result("openai", content=json.dumps(output)))
 
     monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
     jobs.execute_job(identity)

@@ -11,6 +11,7 @@ import {
   Routes,
   useNavigate,
   useLocation,
+  useParams,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Github } from "lucide-react";
@@ -35,7 +36,6 @@ import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider
 import { AppBreadcrumb } from "./components/app-breadcrumb";
 import { RepositoryActivity } from "./components/repository-activity";
 import { RepositorySummary } from "./components/repository-summary";
-import { GenerationActivity } from "./components/generation-activity";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
@@ -43,6 +43,7 @@ import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
 import { McpAuthorizePage, McpApprovalPage } from "./mcp";
 import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
+import { isBackgroundConnectionError } from "./hooks/use-background-generation";
 import "./index.css";
 
 const Analytics = lazy(() => import("./analytics"));
@@ -58,22 +59,26 @@ function NavigationError() {
 
 function RepositoryOverview({ analytics = false, admin = false }: { analytics?: boolean; admin?: boolean }) {
   const route = useLocation();
+  const { repositoryId } = useParams();
   const params = new URLSearchParams(route.search);
-  const generation = params.get("generation");
-  const { directory, repository } = useWorkspaceNavigation();
+  const { directory, repository: listedRepository } = useWorkspaceNavigation();
+  const repository = listedRepository ?? (!analytics && directory.error && isBackgroundConnectionError(directory.error)
+    ? directory.data?.find((row) => String(row.id) === repositoryId)
+    : undefined);
+  const directoryError = directory.error && <div className="space-y-3">
+    <ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button>
+  </div>;
   if (directory.isPending) return <Loading />;
-  if (directory.error) return <div className="space-y-3"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
+  if (directory.error && !repository) return directoryError;
   if (!repository) return <Empty title="Repository unavailable">Choose a repository from the navigation.</Empty>;
   if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
     return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
   }
   if (!analytics) return <>
+    {directoryError && <div className="mb-4">{directoryError}</div>}
     <PageTitle title="Overview">
       {(admin || repository.settings.project_summary) && <RepositorySummary key={repository.id} repository={repository} admin={admin} />}
     </PageTitle>
-    {admin && generation && <div className="mb-6">
-      <GenerationActivity repositoryId={repository.id} jobId={generation} summary />
-    </div>}
     <RepositoryActivity key={repository.id} repositoryId={repository.id} />
   </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;

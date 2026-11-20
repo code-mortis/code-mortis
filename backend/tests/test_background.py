@@ -262,20 +262,27 @@ def test_settings_save_preserves_summary_when_context_changes_or_is_cleared(gene
     assert removed.json()["settings"]["project_summary"] is None
 
 
-def test_regenerate_discards_stale_summary_job(generation, client):
+@pytest.mark.parametrize("field", ["project_summary", "background"])
+def test_summary_refresh_discards_result_when_saved_inputs_change(generation, client, monkeypatch, field):
     with transaction() as db:
         db.get(Repository, 22).settings = {"project_summary": "Published summary.", "background": "Saved context."}
-    identity = start(client, mode="summary_draft", generation_id=str(uuid4()))
-    with transaction() as db:
-        repo = db.get(Repository, 22)
-        repo.settings = {**repo.settings, "project_summary": "Newer edit."}
+
+    def generate(*args, **kwargs):
+        with transaction() as db:
+            repo = db.get(Repository, 22)
+            repo.settings = {**repo.settings, field: "Newer edit."}
+        return {"project_summary": PARAGRAPH}, {"tokens": 10}
+
+    monkeypatch.setattr(workflow_inference, "execute", generate)
+    identity = start(client, mode="summary_refresh", generation_id=str(uuid4()))
     jobs.execute_job(identity)
     result = status(client, identity).json()
     assert result["status"] == "failed"
     assert result["project_summary"] is None
-    assert generation == []
     with transaction() as db:
-        assert db.get(Repository, 22).settings["project_summary"] == "Newer edit."
+        settings = db.get(Repository, 22).settings
+        assert settings[field] == "Newer edit."
+        assert settings["project_summary"] == ("Newer edit." if field == "project_summary" else "Published summary.")
 
 
 @pytest.mark.parametrize("body", [{"connection_id": "missing"}, {"model": "x" * 151}])

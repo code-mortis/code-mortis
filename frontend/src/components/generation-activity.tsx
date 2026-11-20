@@ -4,12 +4,12 @@ import { useActivityRead } from "../hooks/use-activity-read";
 import { Button } from "./ui/button";
 import { ErrorNotice, Loading, Status } from "./common";
 
-export function GenerationActivity({ repositoryId, jobId, summary = false }: {
-  repositoryId: number; jobId: string; summary?: boolean;
+export function GenerationActivity({ repositoryId, jobId }: {
+  repositoryId: number; jobId: string;
 }) {
   const result = useBackgroundStatus(repositoryId, jobId);
   const mode = result.data?.mode;
-  const isSummary = mode ? mode === "summary" || mode === "summary_draft" : summary;
+  const isSummary = mode === "summary" || mode === "summary_draft" || mode === "summary_refresh";
   useActivityRead(isSummary ? "repository_summary" : "context", result.data?.id, result.data?.finished_at,
     result.isSuccess ? result.dataUpdatedAt : 0);
   const title = isSummary ? "Repository summary generation" : "Project context generation";

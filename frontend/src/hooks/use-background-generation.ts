@@ -4,6 +4,10 @@ import { activityQueryKey } from "./use-activity-read";
 
 type BackgroundJob = Schema["BackgroundJobOut"];
 
+export function backgroundFinished(status: BackgroundJob["status"] | undefined) {
+  return status === "done" || status === "failed" || status === "cancelled";
+}
+
 export type BackgroundHandoff = { jobId: string; generationId: string; mode: "context" | "summary_draft"; inputs: string };
 
 export function isBackgroundConnectionError(error: unknown) {
@@ -33,6 +37,10 @@ export function useBackgroundStatus(repositoryId: number, jobId?: string) {
     enabled: !!jobId,
     retry: (count, error) => count < 3 && isBackgroundConnectionError(error),
     retryDelay: 1000,
-    refetchInterval: (query) => query.state.error || ["done", "failed", "cancelled"].includes(query.state.data?.status ?? "") ? false : 1000,
+    refetchInterval: (query) => {
+      if (backgroundFinished(query.state.data?.status)) return false;
+      const error = query.state.error;
+      return error ? isBackgroundConnectionError(error) ? 4000 : false : 1000;
+    },
   });
 }

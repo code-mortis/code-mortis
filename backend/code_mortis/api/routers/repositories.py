@@ -192,7 +192,7 @@ def generate_background(repository_id: int, body: BackgroundInput, db: DB, user:
     if body.mode != "draft":
         saved = repo.settings.get("background", "").strip()
         has_summary = bool(repo.settings.get("project_summary"))
-        if body.mode == "summary_draft":
+        if body.mode in {"summary_draft", "summary_refresh"}:
             if not has_summary:
                 raise HTTPException(409, "The saved repository summary changed. Refresh the repository and try again.")
         elif has_summary or bool(saved) != (body.mode == "summary"):

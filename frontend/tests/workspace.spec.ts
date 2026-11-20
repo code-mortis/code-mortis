@@ -4422,12 +4422,14 @@ test("repository summary offers AI connection setup when no connection is saved"
   expect(requests).toHaveLength(0);
 });
 
-test("repository summary Edit opens Project context with the saved text", async ({ page }) => {
+test("repository summary notification opens Overview without a generation card, and Edit opens Settings", async ({ page }) => {
   const requests = await mock(page);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
     ...repo, settings: { ...repo.settings, project_summary: paymentsSummary },
   }] }));
-  await page.goto("/repositories/22/overview");
+  await page.goto("/repositories/22/overview?generation=completed-summary");
+  await expect(page.getByRole("region", { name: "Repository activity" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Repository summary generation" })).toHaveCount(0);
   const edit = page.getByRole("link", { name: /^Edit(?: (?:repository )?summary)?$/ });
   await expect(edit).toHaveAttribute("href", "/repositories/22/settings?tab=context");
   const summary = page.getByText(paymentsSummary, { exact: true });
@@ -4441,50 +4443,66 @@ test("repository summary Edit opens Project context with the saved text", async 
 });
 
 for (const context of ["Technical context about payment processing.", ""]) {
-  test(`repository summary Regenerate keeps the saved text until Save ${context ? "with" : "without"} context`, async ({ page }) => {
-    await mock(page);
+  test(`repository summary Regenerate saves in Overview ${context ? "with" : "without"} context`, async ({ page }) => {
+    const requests = await mock(page);
+    await page.clock.install();
     const replacement = "This repository helps merchants **accept payments** and receive updates.";
     let savedSettings = { ...repo.settings, background: context, project_summary: paymentsSummary };
-    await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
+    let directoryUnavailable = false;
+    await page.route("**/api/v1/repositories", (route) => route.fulfill(directoryUnavailable
+      ? { status: 503, json: { detail: "Repository directory temporarily unavailable." } }
+      : { json: [{ ...repo, settings: savedSettings }] }));
     let starts = 0;
     await page.route("**/api/v1/repositories/22/background", (route) => {
-      expect(route.request().postDataJSON()).toEqual({ mode: "summary_draft", generation_id: expect.any(String) });
+      expect(route.request().postDataJSON()).toEqual({ mode: "summary_refresh", generation_id: expect.any(String) });
       starts++;
-      return route.fulfill({ status: 202, json: { id: "replacement-draft", status: "queued" } });
+      return route.fulfill({ status: 202, json: { id: "replacement-summary", status: "queued" } });
     });
-    let finish!: () => void;
-    const finished = new Promise<void>((resolve) => { finish = resolve; });
-    await page.route("**/api/v1/repositories/22/background/replacement-draft", async (route) => {
-      await finished;
-      await route.fulfill({ json: { id: "replacement-draft", status: "done", background: null, project_summary: replacement } });
-    });
-    await page.route("**/api/v1/repositories/22", (route) => {
-      expect(route.request().method()).toBe("PUT");
-      const body = route.request().postDataJSON();
-      expect(body.expected_project_summary).toBe(paymentsSummary);
-      expect(body.settings).toMatchObject({ background: context, project_summary: replacement });
-      savedSettings = body.settings;
-      return route.fulfill({ json: { ...repo, settings: savedSettings } });
+    let finished = false;
+    await page.route("**/api/v1/repositories/22/background/replacement-summary", (route) => {
+      return route.fulfill({ json: { id: "replacement-summary", mode: "summary_refresh",
+        status: finished ? "done" : "running", project_summary: finished ? replacement : null } });
     });
     await page.goto("/repositories/22/overview");
-    await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+    const oldSummary = page.getByText(paymentsSummary, { exact: true });
+    await expect(oldSummary).toBeVisible();
     await page.getByRole("button", { name: "Regenerate", exact: true }).click();
-    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
-    const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
-    const background = page.getByRole("textbox", { name: "Project context", exact: true });
-    await expect(page.getByRole("status", { name: "Summary generation status" })).toContainText("Generating repository summary");
-    await expect(summary).toHaveValue(paymentsSummary);
-    await expect(background).toHaveValue(context);
-    finish();
-    await expect(summary).toHaveValue(replacement);
-    await expect(background).toHaveValue(context);
-    await expect(page.getByRole("status", { name: "Summary generation status" })).toContainText("Summary generated");
-    expect(savedSettings.project_summary).toBe(paymentsSummary);
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
-    await page.goto("/repositories/22/overview");
+    await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+    await expect(page).toHaveURL("/repositories/22/overview");
+    await expect(oldSummary).toBeVisible();
+    await expect(page.getByText("Repository summary updated.", { exact: true })).toHaveCount(0);
+    if (context) {
+      directoryUnavailable = true;
+      await page.clock.fastForward(6000);
+      await expect(page.getByRole("alert")).toContainText("Repository directory temporarily unavailable.");
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+      directoryUnavailable = false;
+    } else {
+      const dialogs: string[] = [];
+      page.on("dialog", (dialog) => { dialogs.push(dialog.type()); return dialog.accept(); });
+      await page.getByRole("link", { name: "Edit", exact: true }).click();
+      await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+      await page.goBack();
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+      await page.goto("/repositories/22/settings?tab=context");
+      await page.goto("/repositories/22/overview");
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+      expect(dialogs).toEqual([]);
+      expect(requests.filter(({ path }) => path.endsWith("/background/cancel"))).toHaveLength(0);
+    }
+    savedSettings = { ...savedSettings, project_summary: replacement };
+    finished = true;
+    await page.clock.fastForward(2000);
+    await expect(page.locator("[data-sonner-toast]")).toContainText("Repository summary updated.");
     await expect(page.getByText("This repository helps merchants accept payments and receive updates.", { exact: true }).locator("strong")).toHaveText("accept payments");
+    await expect(oldSummary).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toBeEnabled();
+    await expect(page).toHaveURL("/repositories/22/overview");
     expect(starts).toBe(1);
+    expect(requests.filter(({ method }) => method === "PUT")).toHaveLength(0);
+    expect(savedSettings.background).toBe(context);
   });
 }
 
@@ -4496,7 +4514,7 @@ test("repository summary generation retries and displays the saved paragraph on 
     ...repo, settings: { ...repo.settings, background: "Technical context about payment processing.", project_summary: projectSummary },
   }] }));
   await page.route("**/api/v1/repositories/22/background", (route) => {
-    expect(route.request().postDataJSON()).toEqual({ mode: "summary" });
+    expect(route.request().postDataJSON()).toEqual({ mode: "summary", generation_id: expect.any(String) });
     return route.fulfill({ status: 202, json: { id: `summary-job-${++starts}`, status: "queued" } });
   });
   await page.route("**/api/v1/repositories/22/background/summary-job-1", (route) => route.fulfill({

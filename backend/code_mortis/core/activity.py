@@ -172,10 +172,11 @@ def candidates(db, user, as_of, target=None, snapshot=None):
         phase=case((SecurityScan.status == "running", SecurityScan.progress["phase"].as_string())),
     )).select_from(SecurityScan).join(Repository).where(Repository.id.in_(repo_ids))
     mode = Job.payload["mode"].as_string()
+    repository_summary = mode.in_(("summary", "summary_draft", "summary_refresh"))
     background = select(*columns(
-        case((mode.in_(("summary", "summary_draft")), "repository_summary"), else_="context"),
+        case((repository_summary, "repository_summary"), else_="context"),
         Job.id, Job.status, Job.available_at, Job.finished_at, Job.activity_xid,
-        case((mode.in_(("summary", "summary_draft")), "Repository summary"), else_="Project context"), mode=mode,
+        case((repository_summary, "Repository summary"), else_="Project context"), mode=mode,
     )).select_from(Job).join(Repository, cast(Repository.id, Job.id.type) == Job.payload["repository_id"].as_string()).where(
         Job.kind == "generate_background", Job.payload["actor_id"].as_string() == str(user.id),
         func.json_typeof(Job.payload["actor_id"]) == "number",
@@ -239,7 +240,7 @@ def item(row):
         href = f"/security/scans/{identity}"
     else:
         repository = f"/repositories/{row.repository_id}"
-        href = (f"{repository}/overview?{urlencode({'generation': row.id})}" if row.mode == "summary"
+        href = (f"{repository}/overview?{urlencode({'generation': row.id})}" if row.mode in {"summary", "summary_refresh"}
                 else f"{repository}/settings?{urlencode({'tab': 'context', 'generation': row.id})}")
     return ActivityItem(
         kind=row.kind, id=row.id, repository=row.repository, title=title, href=href,

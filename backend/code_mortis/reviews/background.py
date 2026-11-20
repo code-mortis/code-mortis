@@ -147,9 +147,9 @@ def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None, gener
     at = now().timestamp()
     if mode is not None:
         payload["mode"] = mode
-        if mode in {"context", "summary", "summary_draft"}:
+        if mode in {"context", "summary", "summary_draft", "summary_refresh"}:
             payload["context_fingerprint"] = fingerprint(repo.settings.get("background", ""))
-        if mode == "summary_draft":
+        if mode in {"summary_draft", "summary_refresh"}:
             payload["summary_fingerprint"] = fingerprint(repo.settings.get("project_summary"))
     if generation_id is not None:
         payload["generation_id"] = str(generation_id)
@@ -289,7 +289,7 @@ def current_background(repo, payload):
     summary = repo.settings.get("project_summary")
     if fingerprint(saved) != payload["context_fingerprint"]:
         raise ValueError(STALE_CONTEXT)
-    if payload.get("mode") == "summary_draft":
+    if payload.get("mode") in {"summary_draft", "summary_refresh"}:
         if fingerprint(summary) != payload["summary_fingerprint"]:
             raise ValueError("The saved repository summary changed. Refresh the repository and try again.")
     elif summary:
@@ -355,12 +355,12 @@ def perform(job_id, attempt):
         connection = db.get(Connection, payload["connection_id"])
         remote = authorize(db, repo, actor, connection)
         mode = payload.get("mode")
-        overview = mode in {"context", "summary", "summary_draft"}
-        summary_only = mode in {"summary", "summary_draft"}
+        summary_only = mode in {"summary", "summary_draft", "summary_refresh"}
+        overview = summary_only or mode == "context"
         if mode and (type(remote.get("id")) is not int or remote["id"] != repo.id):
             raise ValueError("GitHub repository identity changed.")
         saved = current_background(repo, payload) if overview else ""
-        use_saved_context = mode == "summary" or (mode == "summary_draft" and bool(saved.strip()))
+        use_saved_context = mode == "summary" or (summary_only and bool(saved.strip()))
         snapshot = payload["connection"]
         workflow = payload.get("execution_limits") == EXECUTION_LIMITS
         current = connection_snapshot(connection, workflow=workflow)
@@ -480,6 +480,6 @@ def perform(job_id, attempt):
             authorize(db, repo, db.get(User, payload["actor_id"]), db.get(Connection, payload["connection_id"]),
                       check_repository=False)
             current_background(repo, payload)
-        if mode == "summary":
+        if mode in {"summary", "summary_refresh"}:
             repo.settings = {**repo.settings, "project_summary": result["project_summary"]}
         job.payload = {**job.payload, **result}

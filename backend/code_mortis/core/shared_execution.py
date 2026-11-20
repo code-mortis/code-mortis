@@ -19,7 +19,7 @@ def require_shared(connection):
 
 def background_result_saved(payload) -> bool:
     mode = payload.get("mode")
-    if mode in {"summary", "summary_draft"}:
+    if mode in {"summary", "summary_draft", "summary_refresh"}:
         return bool(payload.get("project_summary"))
     return bool(payload.get("background") and (not mode or payload.get("project_summary")))
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Sparkles } from "lucide-react";
-import { isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
+import { backgroundFinished, isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
 import { useContextGenerationGuard } from "./context-generation-guard";
 import { useActivityRead } from "../hooks/use-activity-read";
@@ -31,11 +31,6 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   const [generationId, setGenerationId] = useState(initialGenerationId);
   const [summaryDraft, setSummaryDraft] = useState(initialSummaryDraft);
   const cancelledId = useRef<string>(undefined);
-  const { dialog } = useContextGenerationGuard(repositoryId, generationId, (id) => {
-    cancelledId.current = id;
-    setGenerationId(undefined);
-    setJobId(undefined);
-  }, summaryDraft);
   const [error, setError] = useState<unknown>();
   const [message, setMessage] = useState("");
   const [failedJob, setFailedJob] = useState<string>();
@@ -65,9 +60,16 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
 
   const start = useStartBackground(repositoryId);
   const result = useBackgroundStatus(repositoryId, jobId);
+  const finished = backgroundFinished(result.data?.status);
+  const activeGeneration = finished ? undefined : generationId;
+  const { dialog } = useContextGenerationGuard(repositoryId, activeGeneration, (id) => {
+    cancelledId.current = id;
+    setGenerationId(undefined);
+    setJobId(undefined);
+  }, summaryDraft);
   useActivityRead(summaryDraft ? "repository_summary" : "context", result.data?.id, result.data?.finished_at,
     result.isSuccess ? result.dataUpdatedAt : 0);
-  const lostStatus = !!result.error && isBackgroundConnectionError(result.error);
+  const lostStatus = !finished && !!result.error && isBackgroundConnectionError(result.error);
 
   useEffect(() => {
     if (!jobId || lostStatus) return;

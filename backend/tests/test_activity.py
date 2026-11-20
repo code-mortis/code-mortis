@@ -99,6 +99,7 @@ def test_terminal_generation_tracks_all_modes_and_ignores_cancellation_fence(see
     with transaction() as db:
         db.add_all([background("draft"), background("overview", mode="summary"),
                     background("summary-draft", mode="summary_draft"),
+                    background("summary-refresh", mode="summary_refresh"),
                     background("cancel-fence", "cancelled", expires_at=False),
                     Job(id="unrelated", kind="webhook", status="done", payload={}),
                     review("summary-target", finished_at=now()),
@@ -108,6 +109,7 @@ def test_terminal_generation_tracks_all_modes_and_ignores_cancellation_fence(see
     cutoff = snapshot["as_of"]
     with transaction() as db:
         for identity, status in (("draft", "cancelled"), ("overview", "done"), ("summary-draft", "failed"),
+                                 ("summary-refresh", "done"),
                                  ("summary-attempt", "done")):
             db.get(Job, identity).status = status
         db.flush()
@@ -124,17 +126,19 @@ def test_terminal_generation_tracks_all_modes_and_ignores_cancellation_fence(see
         "mode": "all", "as_of": cutoff, "snapshot": snapshot["snapshot"],
     }).status_code == 204
     feed = client.get("/api/v1/activity").json()
-    assert feed["unread_count"] == 4
+    assert feed["unread_count"] == 5
     rows = {row["id"]: row for row in feed["updates"]}
     assert rows["overview"]["href"] == "/repositories/22/overview?generation=overview"
     assert rows["summary-draft"]["href"] == "/repositories/22/settings?tab=context&generation=summary-draft"
+    assert rows["summary-refresh"]["kind"] == "repository_summary"
+    assert rows["summary-refresh"]["href"] == "/repositories/22/overview?generation=summary-refresh"
     assert rows["draft"]["status"] == "cancelled"
 
     for kind in ("draft", "overview"):
         assert client.post("/api/v1/activity/read", json={
             "mode": "one", "kind": rows[kind]["kind"], "id": kind, "finished_at": cutoff,
         }).status_code == 204
-    assert client.get("/api/v1/activity").json()["unread_count"] == 4
+    assert client.get("/api/v1/activity").json()["unread_count"] == 5
 
     monkeypatch.setattr(github, "authorize_repo", lambda *args, **kwargs: {"id": 22, "permissions": {"pull": True}})
     assert {row["id"] for row in client.get("/api/v1/activity").json()["updates"]} == {
