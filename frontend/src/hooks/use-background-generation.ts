@@ -1,5 +1,6 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type Repository, type Schema } from "../api";
+import { activityQueryKey } from "./use-activity-read";
 
 type BackgroundJob = Schema["BackgroundJobOut"];
 
@@ -16,14 +17,16 @@ export function savedBackgroundInputs(repository: Repository) {
 }
 
 export function useStartBackground(repositoryId: number) {
+  const cache = useQueryClient();
   return useMutation({
+    onSuccess: () => { void cache.invalidateQueries({ queryKey: activityQueryKey }); },
     mutationFn: (body: Partial<Schema["BackgroundInput"]>) =>
       api<BackgroundJob>(`/repositories/${repositoryId}/background`, "POST", body),
   });
 }
 
 export function useBackgroundStatus(repositoryId: number, jobId?: string) {
-  const path = `/repositories/${repositoryId}/background/${jobId ?? ""}`;
+  const path = `/repositories/${repositoryId}/background/${encodeURIComponent(jobId ?? "")}`;
   return useQuery({
     queryKey: [path],
     queryFn: () => api<BackgroundJob>(path),

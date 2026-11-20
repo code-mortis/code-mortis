@@ -207,6 +207,18 @@
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+.activity-stage {
+  color: var(--primary);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .activity-stage {
+    animation: activity-stage-pulse 3.4s ease-in-out infinite;
+  }
+}
+@keyframes activity-stage-pulse {
+  50% { color: var(--foreground); }
+}
+
 @keyframes stage-sweep {
   0% { transform: translateX(-100%); opacity: 0; }
   15%, 75% { opacity: 0.8; }

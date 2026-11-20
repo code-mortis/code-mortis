@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    FetchedValue,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -45,6 +46,15 @@ class User(Base):
     access_token: Mapped[str] = mapped_column(Text, default="")
     refresh_token: Mapped[str] = mapped_column(Text, default="")
     token_expires: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activity_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+
+class ActivityReadReceipt(Base):
+    __tablename__ = "activity_reads"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
 
 
 class Membership(Base):
@@ -290,7 +300,11 @@ class ReviewRun(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    activity_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=FetchedValue(), server_onupdate=FetchedValue(),
+    )
+    activity_xid: Mapped[str | None] = mapped_column(Text)
     report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     stages: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -429,7 +443,11 @@ class WebhookDelivery(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_dispatch", "status", "available_at"),)
+    __table_args__ = (
+        Index("ix_jobs_dispatch", "status", "available_at"),
+        Index("ix_jobs_activity", "kind", "status", "finished_at",
+              postgresql_where=text("kind IN ('generate_background', 'generate_summary')")),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     kind: Mapped[str] = mapped_column(String(30))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
@@ -439,6 +457,11 @@ class Job(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    # The migration's trigger stamps tracked generation transitions from every worker and cancellation path.
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=FetchedValue(), server_onupdate=FetchedValue(),
+    )
+    activity_xid: Mapped[str | None] = mapped_column(Text)
 
 
 class AnalysisPlan(Base):
@@ -543,7 +566,8 @@ class SecurityScan(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    activity_xid: Mapped[str | None] = mapped_column(Text)
 
 
 Index("uq_security_active_repository", SecurityScan.repository_id, unique=True,

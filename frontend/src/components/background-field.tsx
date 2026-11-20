@@ -3,6 +3,7 @@ import { LoaderCircle, Sparkles } from "lucide-react";
 import { isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
 import { useContextGenerationGuard } from "./context-generation-guard";
+import { useActivityRead } from "../hooks/use-activity-read";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
@@ -64,6 +65,8 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
 
   const start = useStartBackground(repositoryId);
   const result = useBackgroundStatus(repositoryId, jobId);
+  useActivityRead(summaryDraft ? "repository_summary" : "context", result.data?.id, result.data?.finished_at,
+    result.isSuccess ? result.dataUpdatedAt : 0);
   const lostStatus = !!result.error && isBackgroundConnectionError(result.error);
 
   useEffect(() => {

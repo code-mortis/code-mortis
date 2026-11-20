@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { useRunPages, useRunResource } from "./hooks/use-run-resource";
+import { useActivityRead } from "./hooks/use-activity-read";
+import { PullSummaryActivity } from "./components/generation-activity";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { getInboxReturn, INBOX_MAX_PAGES } from "./lib/inbox-filters";
 import {
@@ -796,6 +798,10 @@ export function RunDetail({ user }: { user: Schema["UserOut"] }) {
     refetchInterval: 5000, staleTime: 0, retry: false,
     placeholderData: (previous) => previous?.run.id === id ? previous : undefined,
   });
+  const run = query.data?.run;
+  const finishedAt = run?.activity_finished_at === undefined ? run?.finished_at : run.activity_finished_at;
+  const openingReview = query.isSuccess && !query.isPlaceholderData && !params.get("summaryJob");
+  useActivityRead("review", run?.id, finishedAt, openingReview ? query.dataUpdatedAt : 0);
   if (query.isPending) return <Loading />;
   if (!query.data || (query.error && [401, 403].includes(query.error.status))) return <ErrorNotice error={query.error} />;
   return <RunWorkspace key={id} detail={query.data} user={user} error={query.error} tick={query.dataUpdatedAt} />;
@@ -846,6 +852,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useUrlTab("tab", ["findings", "resolved", "assessment", "coverage", "details", "activity"], "findings");
   const activityEvents = runActivityEvents(run);
+  const summaryJob = params.get("summaryJob");
   const findingId = params.get("finding");
   const [findingSeed, setFindingSeed] = useState<{ item: Schema["OccurrenceOut"]; tab: string } | null>(null);
   const savedFinding = findingSeed?.tab === tab && findingSeed.item.finding_id === findingId ? findingSeed.item
@@ -929,6 +936,7 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
     {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used a retired engine. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <div className="mb-6 min-w-0">
+      {summaryJob && <PullSummaryActivity runId={run.id} jobId={summaryJob} />}
       <PageTitle className="mb-0" title="Review run" titleMeta={<Status value={run.status} />} actions={can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}

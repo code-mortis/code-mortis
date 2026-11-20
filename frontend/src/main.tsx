@@ -35,6 +35,7 @@ import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider
 import { AppBreadcrumb } from "./components/app-breadcrumb";
 import { RepositoryActivity } from "./components/repository-activity";
 import { RepositorySummary } from "./components/repository-summary";
+import { GenerationActivity } from "./components/generation-activity";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
@@ -58,6 +59,7 @@ function NavigationError() {
 function RepositoryOverview({ analytics = false, admin = false }: { analytics?: boolean; admin?: boolean }) {
   const route = useLocation();
   const params = new URLSearchParams(route.search);
+  const generation = params.get("generation");
   const { directory, repository } = useWorkspaceNavigation();
   if (directory.isPending) return <Loading />;
   if (directory.error) return <div className="space-y-3"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
@@ -69,6 +71,9 @@ function RepositoryOverview({ analytics = false, admin = false }: { analytics?: 
     <PageTitle title="Overview">
       {(admin || repository.settings.project_summary) && <RepositorySummary key={repository.id} repository={repository} admin={admin} />}
     </PageTitle>
+    {admin && generation && <div className="mb-6">
+      <GenerationActivity repositoryId={repository.id} jobId={generation} summary />
+    </div>}
     <RepositoryActivity key={repository.id} repositoryId={repository.id} />
   </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;

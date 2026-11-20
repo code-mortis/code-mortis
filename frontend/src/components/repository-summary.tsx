@@ -6,6 +6,7 @@ import { ApiError, type Repository } from "../api";
 import { isBackgroundConnectionError, savedBackgroundInputs, useBackgroundStatus, useStartBackground, type BackgroundHandoff } from "../hooks/use-background-generation";
 import { ErrorNotice, Markdown } from "./common";
 import { useContextGenerationGuard } from "./context-generation-guard";
+import { useActivityRead } from "../hooks/use-activity-read";
 import { Button } from "./ui/button";
 
 export function RepositorySummary({ repository, admin }: { repository: Repository; admin: boolean }) {
@@ -26,6 +27,7 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   const cache = useQueryClient();
   const start = useStartBackground(repository.id);
   const result = useBackgroundStatus(repository.id, jobId);
+  useActivityRead("repository_summary", result.data?.id, result.data?.finished_at, result.isSuccess ? result.dataUpdatedAt : 0);
   const savedSummary = repository.settings.project_summary;
   const mode = (generationId && generationRequest.current?.mode)
     || (savedSummary ? "summary_draft" : repository.settings.background?.trim() ? "summary" : "context");

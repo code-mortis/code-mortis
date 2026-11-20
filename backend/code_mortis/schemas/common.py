@@ -228,6 +228,8 @@ class ProjectSummaryResult(StrictModel):
 class BackgroundJobOut(StrictModel):
     id: str
     status: Literal["queued", "running", "done", "failed", "cancelled"]
+    finished_at: datetime | None = None
+    mode: Literal["draft", "context", "summary", "summary_draft"] | None = None
     background: str | None = None
     project_summary: str | None = None
     error: str | None = None
@@ -440,6 +442,7 @@ class RunOut(ORMModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    activity_finished_at: datetime | None = None
     error: str | None
     publication_error: str | None
     config: dict[str, Any]

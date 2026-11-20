@@ -136,6 +136,7 @@ async function mock(page: Page, options: { partial?: boolean; secret?: boolean; 
     const url = new URL(route.request().url());
     const path = url.pathname.replace("/api/v1", "");
     const method = route.request().method();
+    if (path === "/activity/read") return route.fulfill({ status: 204 });
     let json: unknown = {};
     if (method !== "GET") {
       const body = route.request().postDataJSON() ?? {};
@@ -2061,6 +2062,15 @@ test("security history and details show recorded durations and live elapsed time
   await page.clock.fastForward(5000);
   await expect(page.locator("main header")).toContainText("Duration: 18s");
   expect(writes).toHaveLength(0);
+});
+
+test("notification reads on a direct scan visit use the exact completion revision", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/activity/read", (route) => route.fulfill({ status: 204 }));
+  const receipt = page.waitForRequest((request) => request.url().endsWith("/api/v1/activity/read"));
+  await page.goto("/security/scans/scan");
+  await expect(page.getByRole("heading", { name: "Security scan" })).toBeVisible();
+  expect((await receipt).postDataJSON()).toEqual({ mode: "one", kind: "scan", id: scan.id, finished_at: scan.finished_at });
 });
 
 test("security finding sheets and history retain focus and fit dark narrow layouts", async ({ page }, info) => {

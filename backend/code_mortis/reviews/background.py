@@ -175,7 +175,7 @@ def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None, gener
 
 def job_out(job):
     return BackgroundJobOut(
-        id=job.id, status=job.status,
+        id=job.id, status=job.status, finished_at=job.finished_at, mode=job.payload.get("mode"),
         background=job.payload.get("background") if job.status == "done" else None,
         project_summary=job.payload.get("project_summary") if job.status == "done" else None,
         error=job.error,

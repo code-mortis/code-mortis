@@ -13,6 +13,7 @@ import {
 import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
+import { GenerationActivity } from "./components/generation-activity";
 import { savedBackgroundInputs, type BackgroundHandoff } from "./hooks/use-background-generation";
 import { CodeGraphSettings } from "./components/code-graph-settings";
 import { SettingsNavigation } from "./components/settings-navigation";
@@ -207,6 +208,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   ];
   const tab = params.get("tab");
   const section = sections.find(({ value }) => value === tab)?.value ?? "reviews";
+  const generation = params.get("generation");
   const reviewLimits = useRef<HTMLHeadingElement>(null);
   const invalidField = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -631,6 +633,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               <h2 id={`${id}-context`} className="text-xl font-semibold tracking-tight">Project context</h2>
               <p className="mt-1 text-sm text-muted-foreground">Give reviewers context and choose which files to exclude.</p>
             </div>
+            {section === "context" && generation && <GenerationActivity repositoryId={repo.id} jobId={generation} />}
             <BackgroundField
               repositoryId={repo.id}
               connectionId={connection}

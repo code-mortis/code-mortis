@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
+import { useActivityRead } from "./hooks/use-activity-read";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
@@ -487,6 +488,7 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
 export function SecurityScan({ user }: { user: User }) {
   const { id } = useParams();
   const query = useApi<Schema["SecurityScanDetail"]>(`/security/scans/${id}`, true);
+  useActivityRead("scan", query.data?.scan.id, query.data?.scan.finished_at, query.isSuccess ? query.dataUpdatedAt : 0);
   const action = useAction();
   const [retrying, setRetrying] = useState<"retry" | "new">();
   useLegacyFindingTabs(true);

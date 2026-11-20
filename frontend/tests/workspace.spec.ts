@@ -491,6 +491,7 @@ async function mock(
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/v1", "");
     const method = request.method();
+    if (path === "/activity/read") return route.fulfill({ status: 204 });
     const currentRun = { ...run, ...options.run };
     const observations: Schema["OccurrenceOut"][] = options.occurrences ?? (currentRun.status === "skipped" ? [] : [
       { finding_id: "finding", snapshot: finding, inline_line: 46 },
@@ -4666,6 +4667,58 @@ for (const target of ["Overview", "AI defaults"]) {
     expect(ids).toEqual([generationId]);
   });
 }
+
+
+test("notification reads on a direct review visit use the exact completion revision", async ({ page }) => {
+  await mock(page, { run: { activity_finished_at: at } });
+  await page.route("**/api/v1/activity/read", (route) => route.fulfill({ status: 204 }));
+  const receipt = page.waitForRequest((request) => request.url().endsWith("/api/v1/activity/read"));
+  await page.goto("/runs/run");
+  await expect(page.getByRole("heading", { name: "Review run" })).toBeVisible();
+  expect((await receipt).postDataJSON()).toEqual({ mode: "one", kind: "review", id: run.id, finished_at: at });
+});
+
+test("notification reads a standalone PR summary separately from its parent review", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/runs/run/summary/attempts/summary", (route) =>
+    route.fulfill({ json: { id: "summary", status: "done", finished_at: at } }));
+  const receipts: unknown[] = [];
+  await page.route("**/api/v1/activity/read", (route) => {
+    receipts.push(route.request().postDataJSON());
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto("/runs/run?summaryJob=summary");
+  await expect(page.getByRole("region", { name: "PR summary generation" })).toContainText(/completed/i);
+  await expect.poll(() => receipts).toEqual([{ mode: "one", kind: "pr_summary", id: "summary", finished_at: at }]);
+});
+
+test("notification links preserve an active context draft and prompt before leaving for another job", async ({ page }) => {
+  const requests = await mock(page, { background: { id: "active-context", status: "running" } });
+  await page.route("**/api/v1/activity", (route) => route.fulfill({ json: {
+    running: [
+      { kind: "context", id: "active-context", repository: "acme/payments", title: "Project context",
+        href: "/repositories/22/settings?tab=context&generation=active-context", status: "running", stages: ["Generating context"], unread: false, finished_at: null },
+      { kind: "review", id: "run", repository: "acme/payments", title: "PR review", href: "/runs/run",
+        status: "running", stages: ["Assessment"], unread: false, finished_at: null },
+    ],
+    updates: [], running_count: 2, unread_count: 0, as_of: at, snapshot: "feed-snapshot", next_running_cursor: null, next_updates_cursor: null,
+  } }));
+  await page.goto("/repositories/22/settings?tab=context");
+  await page.getByRole("button", { name: "Generate context", exact: true }).click();
+  await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Generating project context");
+  await page.getByRole("button", { name: "Notifications, 2 running, 0 unread" }).click();
+  const inbox = page.getByRole("dialog", { name: "Notifications" });
+  await inbox.getByRole("link", { name: /Project context.*Generating context/ }).click();
+  await expect(page).toHaveURL(/tab=context&generation=active-context$/);
+  const navigationGuard = page.getByRole("dialog", { name: "Leave and cancel generation?" });
+  await expect(navigationGuard).toBeHidden();
+  await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Generating project context");
+  await page.getByRole("button", { name: "Notifications, 2 running, 0 unread" }).click();
+  await inbox.getByRole("link", { name: /PR review.*Assessment/ }).click();
+  await expect(navigationGuard).toBeVisible();
+  await navigationGuard.getByRole("button", { name: "Stay", exact: true }).click();
+  expect(requests.filter(({ path }) => path.endsWith("/background/cancel"))).toHaveLength(0);
+});
 
 test("project background cancels when the browser reload is confirmed", async ({ page }) => {
   await mock(page, { background: { id: "reload-context", status: "running" } });

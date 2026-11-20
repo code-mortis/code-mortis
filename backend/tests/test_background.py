@@ -59,9 +59,12 @@ def test_cancel_context_generation_prevents_provider_calls(generation, client, c
         assert cancelled.json()["id"] == identity
     identity = cancelled.json()["id"]
     jobs.execute_job(identity)
-    assert status(client, identity).json() == {
+    result = status(client, identity).json()
+    assert result == {
         "id": identity, "status": "cancelled", "background": None, "project_summary": None, "error": None,
+        "finished_at": cancelled.json()["finished_at"], "mode": None if cancel_before_start else "draft",
     }
+    assert bool(result["finished_at"]) != cancel_before_start
     assert client.post(endpoint, json=request).json() == cancelled.json()
     assert generation == []
 
@@ -108,8 +111,9 @@ def test_generation_uses_draft_model_and_never_saves_repository(generation, clie
     assert status(client, identity).json()["status"] == "queued"
     jobs.execute_job(identity)
     result = status(client, identity).json()
+    assert result.pop("finished_at")
     assert result == {"id": identity, "status": "done", "background": "A review service using Python and React.",
-                      "project_summary": PARAGRAPH, "error": None}
+                      "project_summary": PARAGRAPH, "error": None, "mode": "draft"}
     assert generation[0][0]["model"] == expected
     assert "A review service" in generation[0][1]
     assert generation[0][2:] == (None, None)

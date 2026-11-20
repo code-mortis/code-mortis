@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "react-router-dom";
 import { api } from "../api";
+import { activityQueryKey } from "../hooks/use-activity-read";
 import { ErrorNotice } from "./common";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -15,7 +16,11 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
     && (currentLocation.pathname !== nextLocation.pathname
       || new URLSearchParams(currentLocation.search).get("tab") !== new URLSearchParams(nextLocation.search).get("tab")));
   const path = `/repositories/${repositoryId}/background/cancel`;
-  const cancel = useMutation({ mutationFn: (id: string) => api(path, "POST", { generation_id: id }) });
+  const cache = useQueryClient();
+  const cancel = useMutation({
+    mutationFn: (id: string) => api(path, "POST", { generation_id: id }),
+    onSuccess: () => { void cache.invalidateQueries({ queryKey: activityQueryKey }); },
+  });
 
   useEffect(() => {
     if (!generationId) return;
