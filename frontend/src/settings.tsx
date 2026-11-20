@@ -423,43 +423,48 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
             </section>
             <section aria-labelledby={`${id}-review-behavior`} className="space-y-3">
               <h3 id={`${id}-review-behavior`} className="text-base font-semibold">Review behavior</h3>
-              <div className="space-y-2 rounded-lg border bg-card p-5">
-                <label htmlFor={`${id}-sensitivity`} className="text-sm font-medium">Finding sensitivity</label>
-                <input
-                  id={`${id}-sensitivity`}
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={1}
-                  value={sensitivityIndex}
-                  aria-valuetext={sensitivity.label}
-                  aria-describedby={`${id}-sensitivity-hint`}
-                  onChange={(event) => change("review_sensitivity", reviewSensitivities[Number(event.target.value)].value)}
-                  className="block h-11 w-full cursor-pointer rounded-sm accent-primary"
-                />
-                <div aria-hidden="true" className="grid grid-cols-3 gap-3 text-xs">
-                  {reviewSensitivities.map((item) => <span key={item.value}
-                    className={`text-center first:text-left last:text-right ${item.value === sensitivity.value ? "font-medium text-foreground" : "text-muted-foreground"}`}>
-                    {item.label}
-                  </span>)}
-                </div>
-                <p id={`${id}-sensitivity-hint`} className="text-xs leading-relaxed text-muted-foreground">{sensitivity.description}</p>
-              </div>
-              <Field label="Review effort">
-                {(id) => (
-                  <SearchSelect
-                    id={id}
-                    required
-                    value={settings.effort}
-                    onChange={(value) =>
-                      change("effort", value as "low" | "medium" | "high")
-                    }
-                    options={["low", "medium", "high"].map((value) => ({ value, label: value }))}
-                    placeholder="Choose review effort"
-                  />
-                )}
-              </Field>
               <div className="divide-y rounded-lg border bg-card">
+                <div className="space-y-2 p-5">
+                  <label htmlFor={`${id}-sensitivity`} className="text-sm font-medium">Finding sensitivity</label>
+                  <input
+                    id={`${id}-sensitivity`}
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={1}
+                    value={sensitivityIndex}
+                    aria-valuetext={sensitivity.label}
+                    aria-describedby={`${id}-sensitivity-hint`}
+                    onChange={(event) => change("review_sensitivity", reviewSensitivities[Number(event.target.value)].value)}
+                    className="block h-11 w-full cursor-pointer rounded-sm accent-primary"
+                  />
+                  <div aria-hidden="true" className="grid grid-cols-3 gap-3 text-xs">
+                    {reviewSensitivities.map((item) => <span key={item.value}
+                      className={`text-center first:text-left last:text-right ${item.value === sensitivity.value ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                      {item.label}
+                    </span>)}
+                  </div>
+                  <p id={`${id}-sensitivity-hint`} className="text-xs leading-relaxed text-muted-foreground">{sensitivity.description}</p>
+                </div>
+                <div className="p-5">
+                  <Field label="Review effort" hint={<span id={`${id}-review-effort-hint`}>
+                    Higher effort lets the review gather more evidence, which can take longer and use more tokens.
+                  </span>}>
+                    {(id) => (
+                      <SearchSelect
+                        id={id}
+                        aria-describedby={`${id}-review-effort-hint`}
+                        required
+                        value={settings.effort}
+                        onChange={(value) =>
+                          change("effort", value as "low" | "medium" | "high")
+                        }
+                        options={["low", "medium", "high"].map((value) => ({ value, label: value }))}
+                        placeholder="Choose review effort"
+                      />
+                    )}
+                  </Field>
+                </div>
                 <div className="flex items-start justify-between gap-4 p-5">
                   <div className="space-y-2">
                     <label htmlFor={`${id}-resolve`} className="text-sm font-medium">Automatically resolve verified fixes</label>
@@ -467,42 +472,44 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   </div>
                   <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
                 </div>
+                <details ref={rulesDisclosure} open={initialRulesOpen.current}>
+                  <summary className="cursor-pointer rounded-lg p-5 text-sm font-medium">Custom review rules</summary>
+                  <div className="space-y-3 px-5 pb-5">
+                    <label htmlFor={`${id}-rules-json`} className="sr-only">Custom review rules (JSON)</label>
+                    <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
+                      Leave blank to use rules from the trusted base revision.
+                    </p>
+                    <Textarea
+                      ref={rulesInput}
+                      id={`${id}-rules-json`}
+                      aria-describedby={`${id}-rules-hint`}
+                      rows={6}
+                      className="min-h-40 max-h-96 resize-y font-mono text-xs"
+                      value={rules}
+                      onChange={(e) => setRules(e.target.value)}
+                    />
+                  </div>
+                </details>
               </div>
-              <details ref={rulesDisclosure} open={initialRulesOpen.current} className="rounded-lg border bg-card">
-                <summary className="cursor-pointer rounded-lg p-5 text-sm font-medium">Custom review rules</summary>
-                <div className="space-y-3 px-5 pb-5">
-                  <label htmlFor={`${id}-rules-json`} className="sr-only">Custom review rules (JSON)</label>
-                  <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
-                    Leave blank to use rules from the trusted base revision.
-                  </p>
-                  <Textarea
-                    ref={rulesInput}
-                    id={`${id}-rules-json`}
-                    aria-describedby={`${id}-rules-hint`}
-                    rows={6}
-                    className="min-h-40 max-h-96 resize-y font-mono text-xs"
-                    value={rules}
-                    onChange={(e) => setRules(e.target.value)}
-                  />
-                </div>
-              </details>
             </section>
             <section aria-labelledby={`${id}-review-output`} className="space-y-3">
               <h3 id={`${id}-review-output`} className="text-base font-semibold">GitHub output</h3>
-              <Field label="Review language">
-                {(id) => (
-                  <SearchSelect
-                    id={id}
-                    required
-                    value={settings.language}
-                    onChange={(value) => change("language", value)}
-                    options={languages.map((value) => ({ value, label: value }))}
-                    placeholder="Choose or enter a language"
-                    allowCustom
-                  />
-                )}
-              </Field>
               <div className="divide-y rounded-lg border bg-card">
+                <div className="p-5">
+                  <Field label="Review language">
+                    {(id) => (
+                      <SearchSelect
+                        id={id}
+                        required
+                        value={settings.language}
+                        onChange={(value) => change("language", value)}
+                        options={languages.map((value) => ({ value, label: value }))}
+                        placeholder="Choose or enter a language"
+                        allowCustom
+                      />
+                    )}
+                  </Field>
+                </div>
                 {([
                   ["summary_diagram_enabled", "Include a diagram in the PR overview", "Include a collapsed diagram in the PR overview, generated with the summary."],
                   ["ai_fix_prompts_enabled", "Include AI fix prompts", "Include fix prompts in the PR overview and new finding comments."],
@@ -680,16 +687,25 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
             <section aria-labelledby={`${id}-indexing-limits`} className="space-y-4">
               <h3 id={`${id}-indexing-limits`} className="text-base font-semibold">Indexing limits</h3>
               <p className="text-sm text-muted-foreground">Limits apply to eligible source after mandatory and additional exclusions and language filtering. Unsupported formats retain metadata for coverage and source navigation; their bodies are not parsed.</p>
-              {([
-                { key: "max_files", label: "Maximum indexed files", max: 5000, min: 1, step: 1, hint: "Default: 1,000. Maximum: 5,000 files." },
-                { key: "max_file_bytes", label: "Maximum individual file size (MiB)", max: 4, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 1 MiB. Maximum: 4 MiB. Larger files are skipped with a warning." },
-                { key: "max_source_bytes", label: "Maximum total source size (MiB)", max: 32, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 8 MiB. Maximum: 32 MiB. Exceeding this limit or the file count fails the attempt and preserves the previous index." },
-              ] as const).map((field) => <Field key={field.key} label={field.label} hint={field.hint}>
-                {(fieldId) => <Input id={fieldId} type="number" required min={field.min} max={field.max} step={field.step}
-                  ref={field.key === "max_file_bytes" ? graphFileInput : undefined}
-                  value={graphDraft[field.key]} className="max-w-xs"
-                  onChange={(event) => { setError(undefined); setGraphDraft({ ...graphDraft, [field.key]: event.target.value }); }} />}
-              </Field>)}
+              <div className="divide-y rounded-lg border bg-card">
+                {([
+                  { key: "max_files", label: "Maximum indexed files", max: 5000, min: 1, step: 1, hint: "Default: 1,000. Maximum: 5,000 files." },
+                  { key: "max_file_bytes", label: "Maximum individual file size (MiB)", max: 4, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 1 MiB. Maximum: 4 MiB. Larger files are skipped with a warning." },
+                  { key: "max_source_bytes", label: "Maximum total source size (MiB)", max: 32, min: 1 / 1048576, step: 1 / 1048576, hint: "Default: 8 MiB. Maximum: 32 MiB. Exceeding this limit or the file count fails the attempt and preserves the previous index." },
+                ] as const).map((field) => {
+                  const fieldId = `${id}-indexing-${field.key}`;
+                  return <div key={field.key} className="grid gap-4 p-5 sm:grid-cols-[minmax(0,1fr)_160px] sm:gap-6">
+                    <div className="space-y-2">
+                      <label htmlFor={fieldId} className="text-sm font-medium">{field.label}</label>
+                      <p id={`${fieldId}-hint`} className="text-xs leading-relaxed text-muted-foreground">{field.hint}</p>
+                    </div>
+                    <Input id={fieldId} aria-describedby={`${fieldId}-hint`} type="number" required min={field.min} max={field.max} step={field.step}
+                      ref={field.key === "max_file_bytes" ? graphFileInput : undefined}
+                      value={graphDraft[field.key]}
+                      onChange={(event) => { setError(undefined); setGraphDraft({ ...graphDraft, [field.key]: event.target.value }); }} />
+                  </div>;
+                })}
+              </div>
               <p className="text-xs text-muted-foreground">Saving changes schedules a fresh index when enabled. Paused indexing stays paused until you retry.</p>
             </section>
           </section>
