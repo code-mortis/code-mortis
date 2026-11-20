@@ -5006,10 +5006,8 @@ for (const outcome of ["done", "failed"] as const) {
       const requests = await mock(page, { background });
       await page.goto("/repositories/22");
       await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await repositorySection(page, "Project context");
-      const field = page.getByRole("textbox", { name: "Project context", exact: true });
-      await field.fill("Original context");
       await repositorySection(page, "Project context");
+      const field = page.getByRole("textbox", { name: "Project context", exact: true });
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
       const editedField = change === "background" ? field : page.getByRole("textbox", { name: "Repository summary", exact: true });
       await editedField.fill("Keep this edit");
@@ -5018,11 +5016,12 @@ for (const outcome of ["done", "failed"] as const) {
       background.error = "Failure from the old selections";
       background.status = outcome;
       await repositorySection(page, "Project context");
+      await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Your selections or context changed.");
       if (outcome === "done") {
-        await expect(page.locator("[data-sonner-toast]")).toContainText("Project context and repository summary saved.");
-      } else {
-        await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Your selections or context changed.");
+        const otherField = change === "background" ? page.getByRole("textbox", { name: "Repository summary", exact: true }) : field;
+        await expect(otherField).toHaveValue(change === "background" ? background.project_summary! : background.background);
       }
+      await expect(page.getByText("Project context and repository summary saved.")).toHaveCount(0);
       await repositorySection(page, "Project context");
       await expect(editedField).toHaveValue("Keep this edit");
       await expect(page.getByRole("alert")).toHaveCount(0);

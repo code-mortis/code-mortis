@@ -85,16 +85,17 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
     completedJob.current = jobId;
     const draft = summaryDraft ? result.data?.project_summary : result.data?.background;
     if (autoSave && sessionStorage.getItem(jobKey) === jobId) sessionStorage.removeItem(jobKey);
-    if (autoSave && result.data?.status === "done" && draft && result.data.project_summary) {
+    if (request.current.revision !== revision.current) {
+      if (autoSave && result.data?.status === "done") void cache.invalidateQueries({ queryKey: ["/repositories"] });
+      setMessage(STALE_MESSAGE);
+      setError(undefined);
+      setFailedJob(undefined);
+    } else if (autoSave && result.data?.status === "done" && draft && result.data.project_summary) {
       const summary = result.data.project_summary;
       void cache.invalidateQueries({ queryKey: ["/repositories"] }).then(() => {
         const saved = cache.getQueryData<Repository[]>(["/repositories"])?.find((row) => row.id === repositoryId)?.settings;
         if (saved?.background === draft && saved.project_summary === summary) toast.success("Project context and repository summary saved.");
       });
-    } else if (request.current.revision !== revision.current) {
-      setMessage(STALE_MESSAGE);
-      setError(undefined);
-      setFailedJob(undefined);
     } else if (result.data?.status === "cancelled") {
       setMessage("");
     } else if (failed) {
