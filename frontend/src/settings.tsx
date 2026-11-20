@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowUpRight, Bot, Check, Copy, FolderGit2, GitPullRequest, Github, KeyRound, MoreHorizontal, Network, Palette, Plug, Plus, Shield, Users } from "lucide-react";
@@ -252,6 +252,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const [connection, setConnection] = useState(repo.connection_id ?? "");
   const savedBackground = useRef(repo.settings.background ?? "");
   const savedProjectSummary = useRef(repo.settings.project_summary ?? null);
+  const expectedBackground = useRef<string>(undefined);
+  const expectedProjectSummary = useRef<string | null>(undefined);
   const [settings, setSettings] = useState({
     ...repo.settings,
     analysis_engine: "mortis" as const,
@@ -263,6 +265,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
     summary_token_budget: repo.settings.summary_token_budget ?? null,
     max_files: repo.settings.max_files ?? null,
     background: repo.settings.background ?? "",
+    project_summary: repo.settings.project_summary ?? null,
   });
   const sensitivityIndex = reviewSensitivities.findIndex((item) => item.value === (settings.review_sensitivity ?? "balanced"));
   const sensitivity = reviewSensitivities[sensitivityIndex];
@@ -280,9 +283,24 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const rulesInput = useRef<HTMLTextAreaElement>(null);
   const saveBar = useRef<HTMLElement>(null);
   const [invalidLimitDrafts, setInvalidLimitDrafts] = useState<ReadonlySet<string>>(() => new Set());
-  const draft = JSON.stringify({ enabled, codeGraphEnabled, graphDraft, connection, settings, scanSettings, rules });
+  const draft = { enabled, codeGraphEnabled, graphDraft, connection, settings, scanSettings, rules };
   const [savedDraft, setSavedDraft] = useState(draft);
-  const dirty = draft !== savedDraft || invalidLimitDrafts.size > 0;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(savedDraft) || invalidLimitDrafts.size > 0;
+  useEffect(() => {
+    const background = repo.settings.background ?? "";
+    const project_summary = repo.settings.project_summary ?? null;
+    const previousBackground = savedBackground.current;
+    const previousSummary = savedProjectSummary.current;
+    if (background === previousBackground && project_summary === previousSummary) return;
+    savedBackground.current = background;
+    savedProjectSummary.current = project_summary;
+    setSavedDraft((current) => ({ ...current, settings: { ...current.settings, background, project_summary } }));
+    setSettings((current) => ({
+      ...current,
+      background: current.background === previousBackground ? background : current.background,
+      project_summary: current.project_summary === previousSummary ? project_summary : current.project_summary,
+    }));
+  }, [repo.settings.background, repo.settings.project_summary]);
   const [error, setError] = useState<unknown>();
   const sharedConnections = connections.data?.filter((item) => item.kind === "api") ?? [];
   const selectedConnection = sharedConnections.find((item) => item.id === connection);
@@ -339,9 +357,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           || scanSettings.timeout_seconds !== savedScanSettings.current.timeout_seconds
           || scanSettings.concurrency !== savedScanSettings.current.concurrency;
         try {
-          const { project_summary: summaryDraft, ...nextSettings } = settings;
+          const { background, project_summary: summaryDraft, ...nextSettings } = settings;
           const project_summary = summaryDraft?.trim() || null;
-          const contextChanged = savedBackground.current !== settings.background;
+          const contextChanged = savedBackground.current !== background;
           const summaryChanged = savedProjectSummary.current !== project_summary;
           await action.mutateAsync({
             path: `/repositories/${repo.id}`,
@@ -351,19 +369,27 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               code_graph_enabled: codeGraphEnabled,
               code_graph_limits: graphLimits,
               connection_id: connection || null,
-              expected_background: savedBackground.current,
-              ...(summaryChanged ? { expected_project_summary: savedProjectSummary.current } : {}),
+              ...(contextChanged ? { expected_background: expectedBackground.current ?? savedBackground.current } : {}),
+              ...(summaryChanged ? { expected_project_summary: expectedProjectSummary.current === undefined
+                ? savedProjectSummary.current : expectedProjectSummary.current } : {}),
               ...(scanSettingsChanged ? { scan_settings: scanSettings } : {}),
               settings: {
                 ...nextSettings,
+                ...(contextChanged ? { background } : {}),
                 ...(summaryChanged ? { project_summary } : {}),
                 concurrency: settings.concurrency,
                 rules: nextRules,
               },
             },
           });
-          if (summaryChanged) savedProjectSummary.current = project_summary;
-          savedBackground.current = settings.background;
+          if (contextChanged) {
+            savedBackground.current = background;
+            expectedBackground.current = background;
+          }
+          if (summaryChanged) {
+            savedProjectSummary.current = project_summary;
+            expectedProjectSummary.current = project_summary;
+          }
           if (contextGeneration && (contextChanged || summaryChanged || generatedDraft.current)) {
             const state = { ...location.state };
             delete state.contextGeneration;
@@ -644,6 +670,12 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               value={{ background: settings.background, project_summary: settings.project_summary }}
               onChange={(value, generated) => {
                 if (generated) generatedDraft.current = true;
+                if (value.background !== undefined && settings.background === savedBackground.current) {
+                  expectedBackground.current = savedBackground.current;
+                }
+                if (value.project_summary !== undefined && settings.project_summary === savedProjectSummary.current) {
+                  expectedProjectSummary.current = savedProjectSummary.current;
+                }
                 setSettings((current) => ({ ...current, ...value }));
               }}
               initialJobId={contextGeneration?.jobId}

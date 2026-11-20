@@ -189,7 +189,7 @@ def generate_background(repository_id: int, body: BackgroundInput, db: DB, user:
         if prior:
             return background.job_out(prior)
     connection_id, model, limits = body.connection_id, body.model, body.limits
-    if body.mode != "draft":
+    if body.mode not in {"draft", "context_refresh"}:
         saved = repo.settings.get("background", "").strip()
         has_summary = bool(repo.settings.get("project_summary"))
         if body.mode in {"summary_draft", "summary_refresh"}:

@@ -2481,7 +2481,7 @@ export interface components {
              * @default draft
              * @enum {string}
              */
-            mode: "draft" | "context" | "summary" | "summary_draft" | "summary_refresh";
+            mode: "draft" | "context" | "context_refresh" | "summary" | "summary_draft" | "summary_refresh";
             /** Connection Id */
             connection_id?: string | null;
             /**
@@ -2505,7 +2505,7 @@ export interface components {
             /** Finished At */
             finished_at?: string | null;
             /** Mode */
-            mode?: ("draft" | "context" | "summary" | "summary_draft" | "summary_refresh") | null;
+            mode?: ("draft" | "context" | "context_refresh" | "summary" | "summary_draft" | "summary_refresh") | null;
             /** Background */
             background?: string | null;
             /** Project Summary */

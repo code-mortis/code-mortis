@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Sparkles } from "lucide-react";
+import { toast } from "sonner";
+import type { Repository } from "../api";
 import { backgroundFinished, isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
 import { useContextGenerationGuard } from "./context-generation-guard";
@@ -27,14 +30,17 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   initialSummaryDraft: boolean;
   initialContextChanged: boolean;
 }) {
-  const [jobId, setJobId] = useState(initialJobId);
+  const jobKey = `repository-context-job:${repositoryId}`;
+  const [jobId, setJobId] = useState(() => sessionStorage.getItem(jobKey) ?? initialJobId);
+  const [autoSave, setAutoSave] = useState(() => !initialJobId || jobId !== initialJobId);
   const [generationId, setGenerationId] = useState(initialGenerationId);
-  const [summaryDraft, setSummaryDraft] = useState(initialSummaryDraft);
+  const [summaryDraft, setSummaryDraft] = useState(initialSummaryDraft && !autoSave);
   const cancelledId = useRef<string>(undefined);
   const [error, setError] = useState<unknown>();
   const [message, setMessage] = useState("");
   const [failedJob, setFailedJob] = useState<string>();
   const [undo, setUndo] = useState<ContextDraft>();
+  const completedJob = useRef<string>(undefined);
   const revision = useRef(0);
   const request = useRef({ revision: initialContextChanged ? -1 : 0, previous: value });
   const selection = JSON.stringify([repositoryId, connectionId, model, tokenBudget, timeoutSeconds, value.background, value.project_summary]);
@@ -59,9 +65,10 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   }, [repositoryId, connectionId, model, tokenBudget, timeoutSeconds]);
 
   const start = useStartBackground(repositoryId);
+  const cache = useQueryClient();
   const result = useBackgroundStatus(repositoryId, jobId);
   const finished = backgroundFinished(result.data?.status);
-  const activeGeneration = finished ? undefined : generationId;
+  const activeGeneration = autoSave || finished ? undefined : generationId;
   const { dialog } = useContextGenerationGuard(repositoryId, activeGeneration, (id) => {
     cancelledId.current = id;
     setGenerationId(undefined);
@@ -72,11 +79,19 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   const lostStatus = !finished && !!result.error && isBackgroundConnectionError(result.error);
 
   useEffect(() => {
-    if (!jobId || lostStatus) return;
+    if (!jobId || lostStatus || completedJob.current === jobId) return;
     const failed = result.error || result.data?.status === "failed";
     if (!failed && result.data?.status !== "done" && result.data?.status !== "cancelled") return;
+    completedJob.current = jobId;
     const draft = summaryDraft ? result.data?.project_summary : result.data?.background;
-    if (request.current.revision !== revision.current) {
+    if (autoSave && sessionStorage.getItem(jobKey) === jobId) sessionStorage.removeItem(jobKey);
+    if (autoSave && result.data?.status === "done" && draft && result.data.project_summary) {
+      const summary = result.data.project_summary;
+      void cache.invalidateQueries({ queryKey: ["/repositories"] }).then(() => {
+        const saved = cache.getQueryData<Repository[]>(["/repositories"])?.find((row) => row.id === repositoryId)?.settings;
+        if (saved?.background === draft && saved.project_summary === summary) toast.success("Project context and repository summary saved.");
+      });
+    } else if (request.current.revision !== revision.current) {
       setMessage(STALE_MESSAGE);
       setError(undefined);
       setFailedJob(undefined);
@@ -86,7 +101,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
       setError(result.error ?? new Error(result.data?.error || `${summaryDraft ? "Summary" : "Context"} generation failed. Try again.`));
       setFailedJob(jobId);
       setMessage("");
-    } else if (draft) {
+    } else if (draft && !autoSave) {
       setUndo(request.current.previous);
       onChange(summaryDraft ? { project_summary: draft }
         : { background: draft, project_summary: result.data?.project_summary ?? value.project_summary }, true);
@@ -96,7 +111,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
     }
     setJobId(undefined);
     setGenerationId(undefined);
-  }, [jobId, result.data, result.error, onChange, value.project_summary, lostStatus, summaryDraft]);
+  }, [autoSave, cache, jobId, jobKey, lostStatus, onChange, repositoryId, result.data, result.error, summaryDraft, value.project_summary]);
 
   const pending = start.isPending || !!jobId;
   let missing = "";
@@ -115,6 +130,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   const feedback = <>
     <p role="status" aria-label={summaryDraft ? "Summary generation status" : "Context generation status"} className="text-xs leading-relaxed text-muted-foreground empty:sr-only">
       {pending ? summaryDraft ? "Generating repository summary…"
+        : autoSave ? "Generating project context…"
         : "Generating project context. Changing the context, connection, model, or limits will discard this result." : message}
     </p>
     <ErrorNotice error={lostStatus ? result.error : error} />
@@ -135,19 +151,23 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
                   void result.refetch();
                   return;
                 }
-                const attemptId = generationId ?? crypto.randomUUID();
+                const attemptId = autoSave && generationId ? generationId : crypto.randomUUID();
+                setAutoSave(true);
                 setSummaryDraft(false);
+                setUndo(undefined);
                 setGenerationId(attemptId);
-                if (!generationId) request.current = { revision: revision.current, previous: value };
+                if (attemptId !== generationId) request.current = { revision: revision.current, previous: value };
                 setError(undefined);
                 setFailedJob(undefined);
                 setMessage("");
                 try {
                   const created = await start.mutateAsync({
+                    mode: "context_refresh",
                     generation_id: attemptId, connection_id: connectionId, model,
                     limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
                   });
-                  if (mounted.current && cancelledId.current !== attemptId) setJobId(created.id);
+                  sessionStorage.setItem(jobKey, created.id);
+                  if (mounted.current) setJobId(created.id);
                 } catch (error) {
                   if (mounted.current && cancelledId.current !== attemptId) {
                     if (!isBackgroundConnectionError(error)) setGenerationId(undefined);
@@ -178,7 +198,7 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
             onClick={() => { void result.refetch(); }}>Check status</Button> : undoAction)}>
           {(id) => <Textarea id={id} rows={4} maxLength={SUMMARY_MAX_LENGTH}
             value={value.project_summary ?? ""} onChange={(event) => {
-              onChange({ project_summary: event.target.value });
+              onChange({ project_summary: event.target.value || null });
               setUndo(undefined);
               setMessage("");
               setError(undefined);

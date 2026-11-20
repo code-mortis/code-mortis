@@ -339,6 +339,54 @@ def test_regenerate_publishes_only_for_explicit_refresh(seed, github_stub, clien
     assert saved.json()["settings"]["background"] == (saved_context or "")
 
 
+@pytest.mark.parametrize("edit", ["automatic", "background", "project_summary"])
+def test_context_refresh_atomically_saves_both_fields_without_overwriting_edits(seed, github_stub, client, monkeypatch, edit):
+    original = {"background": "Saved context.", "project_summary": "Saved summary.", "automatic": False}
+    generated = {"background": "Generated context.", "project_summary": "Generated summary."}
+    changed = True if edit == "automatic" else "Newer manual edit."
+    with transaction() as db:
+        db.get(Repository, 22).settings = original
+    monkeypatch.setattr(background, "context", lambda *a, **kw: {
+        "sha": "a" * 40, "sources": {"README.md": {"text": "A review service", "truncated": False}},
+    })
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        with transaction() as db:
+            repo = db.get(Repository, 22)
+            assert repo.settings == original
+            repo.settings = {**repo.settings, edit: changed}
+        return httpx.Response(200, json=wire_result("openai", content=json.dumps(generated)))
+
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    endpoint = "/api/v1/repositories/22/background"
+    request = {"mode": "context_refresh", "connection_id": "connection", "model": "selected-model",
+               "limits": {"token_budget": 60000, "timeout_seconds": 60}, "generation_id": str(uuid4())}
+    started = client.post(endpoint, json=request)
+    assert started.status_code == 202, started.text
+    identity = started.json()["id"]
+    jobs.execute_job(identity)
+    result = client.get(f"{endpoint}/{identity}").json()
+    assert result["mode"] == "context_refresh"
+    assert len(calls) == 1 and calls[0]["model"] == "selected-model"
+    with transaction() as db:
+        plan = db.scalar(select(AnalysisPlan))
+        assert plan.snapshot["revisions"] == {"head": "a" * 40}
+        assert {key: plan.snapshot["settings"][key] for key in request["limits"]} == request["limits"]
+        repo = db.get(Repository, 22)
+        if edit == "automatic":
+            assert result["status"] == "done", result
+            assert {key: result[key] for key in generated} == generated
+            assert repo.settings == {**original, **generated, edit: changed}
+        else:
+            assert result["status"] == "failed", result
+            assert result["background"] is None and result["project_summary"] is None
+            assert repo.settings == {**original, edit: changed}
+
+
 @pytest.mark.parametrize("mode", ["draft", "summary_refresh"])
 def test_background_cancellation_fences_a_running_provider_call(seed, github_stub, client, monkeypatch, mode):
     request = {"generation_id": str(uuid4())}

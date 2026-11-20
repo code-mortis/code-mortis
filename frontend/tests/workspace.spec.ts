@@ -481,6 +481,7 @@ async function mock(
 ) {
   const current: Schema["FindingOut"] = { ...structuredClone(finding), sync_intent: null, ...options.finding };
   const fixedSnapshots = new Map<string, Schema["OccurrenceOut"]>();
+  let savedContext: Pick<Schema["RepositoryOut"]["settings"], "background" | "project_summary"> | undefined;
   const requests: {
     path: string;
     method: string;
@@ -522,17 +523,22 @@ async function mock(
         avatar_url: "",
         csrf: "csrf-from-session",
       };
-    else if (path === "/repositories") data = [repo];
+    else if (path === "/repositories") data = [{ ...repo, settings: { ...repo.settings, ...savedContext } }];
     else if (/^\/repositories\/\d+\/activity$/.test(path)) data = {
       days: Array.from({ length: 365 }, (_, index) => ({
         date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10), reviews: 0, scans: 0,
       })),
     };
-    else if (path === "/repositories/22/background" && options.background)
+    else if (path === "/repositories/22/background" && options.background) {
+      options.background.mode = request.postDataJSON().mode;
       data = { ...options.background, status: "queued", background: null, error: null };
-    else if (path.startsWith("/repositories/22/background/") && options.background)
+    } else if (path.startsWith("/repositories/22/background/") && options.background) {
+      const { mode, status, background, project_summary } = options.background;
+      if (mode === "context_refresh" && status === "done" && background && project_summary) {
+        savedContext = { background, project_summary };
+      }
       data = options.background;
-    else if (path === "/repositories/22/pulls")
+    } else if (path === "/repositories/22/pulls")
       data = [
         { ...pr, latest_run: currentRun },
         {
@@ -1452,7 +1458,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   const saves: Schema["RepositoryOut"]["settings"][] = [];
   await page.route("**/api/v1/repositories/22", async (route) => {
     const body = route.request().postDataJSON();
-    savedSettings = body.settings;
+    savedSettings = { ...savedSettings, ...body.settings };
     saves.push(body.settings);
     await route.fulfill({ json: { ...repo, settings: savedSettings } });
   });
@@ -1490,7 +1496,8 @@ test("repository sensitivity preserves custom rules and saves all three policies
     expect(layout.contentWidth).toBeLessThanOrEqual(layout.availableWidth);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
-    expect(saves.at(-1)).toMatchObject({ review_sensitivity: value, rules, background: "Saved project context" });
+    expect(saves.at(-1)).toMatchObject({ review_sensitivity: value, rules });
+    expect(saves.at(-1)).not.toHaveProperty("background");
     await page.goto("/repositories/22/settings");
     await expect(slider).toHaveValue(String(index));
     await expect(slider).toHaveAttribute("aria-valuetext", label);
@@ -4600,8 +4607,9 @@ test("repository summary can be entered without context and updates Overview on 
   await page.route("**/api/v1/repositories/22", (route) => {
     expect(route.request().method()).toBe("PUT");
     const body = route.request().postDataJSON();
-    expect(body.settings).toMatchObject({ background: "", project_summary: edit });
-    savedSettings = body.settings;
+    expect(body.settings).toMatchObject({ project_summary: edit });
+    expect(body.settings).not.toHaveProperty("background");
+    savedSettings = { ...savedSettings, ...body.settings };
     saves++;
     return route.fulfill({ json: { ...repo, settings: savedSettings } });
   });
@@ -4650,18 +4658,19 @@ test("repository summary survives clearing and saving project context", async ({
 });
 
 for (const target of ["Overview", "AI defaults"]) {
-  test(`project background stays running unless leaving for ${target} is confirmed`, async ({ page }) => {
+  test(`legacy Overview context draft stays running unless leaving for ${target} is confirmed`, async ({ page }) => {
     await mock(page, { background: { id: "active-context", status: "running" } });
     const ids: string[] = [];
     await page.route("**/api/v1/repositories/22/background/cancel", (route) => {
       ids.push(route.request().postDataJSON().generation_id);
       return route.fulfill({ json: { id: "active-context", status: "cancelled" } });
     });
-    await page.goto("/repositories/22/settings?tab=context");
+    await page.goto("/repositories/22/overview");
     const started = page.waitForRequest((request) => request.url().endsWith("/22/background"));
     await page.getByRole("button", { name: "Generate context", exact: true }).click();
     const generationId = (await started).postDataJSON().generation_id;
     expect(generationId).toMatch(/^[\da-f-]{36}$/);
+    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
     const dialog = page.getByRole("dialog", { name: "Leave and cancel generation?" });
     const destination = target === "Overview"
       ? page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: target, exact: true })
@@ -4721,7 +4730,7 @@ test("notification links preserve an active context draft and prompt before leav
     ],
     updates: [], running_count: 2, unread_count: 0, as_of: at, snapshot: "feed-snapshot", next_running_cursor: null, next_updates_cursor: null,
   } }));
-  await page.goto("/repositories/22/settings?tab=context");
+  await page.goto("/repositories/22/overview");
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Generating project context");
   await page.getByRole("button", { name: "Notifications, 2 running, 0 unread" }).click();
@@ -4738,8 +4747,9 @@ test("notification links preserve an active context draft and prompt before leav
   expect(requests.filter(({ path }) => path.endsWith("/background/cancel"))).toHaveLength(0);
 });
 
-test("project background cancels when the browser reload is confirmed", async ({ page }) => {
-  await mock(page, { background: { id: "reload-context", status: "running" } });
+test("legacy Overview context draft cancels when the browser reload is confirmed", async ({ page }) => {
+  const background: Schema["BackgroundJobOut"] = { id: "reload-context", status: "running" };
+  await mock(page, { background });
   // Requests kept alive by the browser can outlive Playwright's page routing.
   await page.addInitScript(() => {
     const fetch = window.fetch.bind(window);
@@ -4751,7 +4761,7 @@ test("project background cancels when the browser reload is confirmed", async ({
       return fetch(url, init);
     };
   });
-  await page.goto("/repositories/22/settings?tab=context");
+  await page.goto("/repositories/22/overview");
   const started = page.waitForRequest((request) => request.url().endsWith("/22/background"));
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
   const generationId = (await started).postDataJSON().generation_id;
@@ -4761,6 +4771,7 @@ test("project background cancels when the browser reload is confirmed", async ({
   expect(await page.evaluate(() => sessionStorage.getItem("tested-context-cancellation"))).toBeNull();
   page.once("dialog", (dialog) => {
     expect(dialog.type()).toBe("beforeunload");
+    background.status = "cancelled";
     return dialog.accept();
   });
   await page.reload();
@@ -4770,7 +4781,48 @@ test("project background cancels when the browser reload is confirmed", async ({
   await expect(page.getByRole("button", { name: "Generate context", exact: true })).toBeEnabled();
 });
 
-test("project background generates an editable draft with unsaved selections and Undo", async ({ page }, info) => {
+test("project context continues after navigation and reload, then automatically saves both fields", async ({ page }) => {
+  const background: Schema["BackgroundJobOut"] = { id: "active-context", status: "running" };
+  const requests = await mock(page, { background });
+  const dialogs: string[] = [];
+  page.on("dialog", (dialog) => { dialogs.push(dialog.type()); return dialog.accept(); });
+  const settings = "/repositories/22/settings?tab=context";
+  await page.goto(settings);
+  const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
+  await summary.fill("Temporary summary");
+  await summary.clear();
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Generate context", exact: true }).click();
+  const generating = page.getByRole("button", { name: "Generating…", exact: true });
+  await expect(generating).toBeDisabled();
+  await repositorySection(page, "AI defaults");
+  await repositorySection(page, "Project context");
+  await expect(generating).toBeDisabled();
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Overview", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/22/overview");
+  await page.goBack();
+  await expect(generating).toBeDisabled();
+  await page.reload();
+  await expect(generating).toBeDisabled();
+  await page.goto("/repositories/22/overview");
+  await page.goto(settings);
+  await expect(generating).toBeDisabled();
+  Object.assign(background, { status: "done", background: "The payment workers dispatch callbacks.", project_summary: paymentsSummary });
+  await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(background.background!);
+  await expect(summary).toHaveValue(paymentsSummary);
+  await expect(page.getByText("Unsaved changes", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-sonner-toast]")).toContainText("Project context and repository summary saved.");
+  expect(dialogs).toEqual([]);
+  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: {
+    mode: "context_refresh", generation_id: expect.any(String), connection_id: "connection", model: "",
+    limits: { token_budget: 200000, timeout_seconds: 900 },
+  }, csrf: "csrf-from-session" }]);
+  await page.goto("/repositories/22/overview");
+  await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+});
+
+test("project context generation uses unsaved model selections and preserves manual edits", async ({ page }, info) => {
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
   const requests = await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
@@ -4778,7 +4830,6 @@ test("project background generates an editable draft with unsaved selections and
   await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
-  await field.fill("Existing context");
   await repositorySection(page, "AI defaults");
   await chooseOption(page, page.getByLabel("Default AI connection", { exact: true }), "Second connection");
   await repositorySection(page, "AI defaults");
@@ -4787,12 +4838,12 @@ test("project background generates an editable draft with unsaved selections and
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
   await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
   await repositorySection(page, "Project context");
-  await expect(field).toHaveValue("Existing context");
+  await expect(field).toHaveValue("");
   await repositorySection(page, "Project context");
-  await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Changing the context, connection, model, or limits will discard this result.");
+  await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Generating project context…");
   await repositorySection(page, "Project context");
   await expect(field).toHaveAttribute("maxlength", "20000");
-  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { generation_id: expect.any(String), connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
+  expect(requests).toEqual([{ path: "/repositories/22/background", method: "POST", body: { mode: "context_refresh", generation_id: expect.any(String), connection_id: "second", model: "next-model", limits: { token_budget: 200000, timeout_seconds: 900 } }, csrf: "csrf-from-session" }]);
   background.background = Array.from({ length: 40 }, (_, index) => `Module ${index + 1}: A payment service built with TypeScript. Workers deliver webhooks and handle retries.`).join("\n\n");
   Object.assign(background, { project_summary: paymentsSummary.replace("accept payments", "**accept payments**") });
   background.status = "done";
@@ -4800,7 +4851,6 @@ test("project background generates an editable draft with unsaved selections and
   await expect(field).toHaveValue(background.background);
   const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
   await expect(summary).toHaveValue(background.project_summary!);
-  await expect(page.getByRole("status", { name: "Context generation status" }).filter({ hasText: "Context generated." })).toBeVisible();
   const editor = await field.evaluate((element: HTMLTextAreaElement) => ({ height: element.clientHeight, contentHeight: element.scrollHeight }));
   expect(editor.height).toBeLessThanOrEqual(384);
   expect(editor.contentHeight).toBeGreaterThan(editor.height);
@@ -4813,31 +4863,31 @@ test("project background generates an editable draft with unsaved selections and
   await repositorySection(page, "Pull request reviews");
   await page.getByRole("switch", { name: "Automatically review new commits", exact: true }).click();
   await repositorySection(page, "Project context");
-  await page.getByRole("button", { name: "Undo", exact: true }).click();
-  await repositorySection(page, "Project context");
-  await expect(field).toHaveValue("Existing context");
-  await expect(summary).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Undo", exact: true })).toHaveCount(0);
-  await repositorySection(page, "Project context");
-  await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Previous context restored.");
-  await repositorySection(page, "Pull request reviews");
-  await expect(page.getByRole("switch", { name: "Automatically review new commits", exact: true })).not.toBeChecked();
+  const editBase = background.background;
   background.id = "second-background-job";
-  await repositorySection(page, "Project context");
+  background.status = "running";
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
-  await repositorySection(page, "Project context");
-  await expect(field).toHaveValue(background.background);
   await field.fill("Edited generated context");
-  await expect(summary).toHaveValue(background.project_summary!);
+  Object.assign(background, { status: "done", background: "Another generated context", project_summary: "Another generated summary" });
+  await expect(summary).toHaveValue("Another generated summary");
+  await expect(field).toHaveValue("Edited generated context");
+  await page.route("**/api/v1/repositories/22", (route) => {
+    const body = route.request().postDataJSON();
+    expect(body).toMatchObject({
+      connection_id: "second", expected_background: editBase,
+      settings: { model: "next-model", background: "Edited generated context", automatic: false },
+    });
+    expect(body.settings).not.toHaveProperty("project_summary");
+    return route.fulfill({ status: 409, json: { detail: "Project context changed while you were editing." } });
+  });
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  expect(requests.at(-1)).toMatchObject({ path: "/repositories/22", method: "PUT", body: {
-    connection_id: "second", settings: { model: "next-model", background: "Edited generated context", project_summary: background.project_summary },
-  } });
+  await expect(page.getByRole("alert")).toContainText("Project context changed while you were editing.");
+  await expect(field).toHaveValue("Edited generated context");
 });
 
 for (const outcome of ["done", "failed"] as const) {
   for (const change of ["background", "summary"]) {
-    test(`project background discards a late ${outcome} result after changing ${change}`, async ({ page }) => {
+    test(`project background preserves edits to ${change} when generation is ${outcome}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
       await page.goto("/repositories/22");
@@ -4850,16 +4900,21 @@ for (const outcome of ["done", "failed"] as const) {
       const editedField = change === "background" ? field : page.getByRole("textbox", { name: "Repository summary", exact: true });
       await editedField.fill("Keep this edit");
       background.background = "Stale generated context";
+      background.project_summary = paymentsSummary;
       background.error = "Failure from the old selections";
       background.status = outcome;
       await repositorySection(page, "Project context");
-      await expect(page.getByRole("status", { name: "Context generation status" }).filter({ hasText: "Your selections or context changed." })).toBeVisible();
+      if (outcome === "done") {
+        await expect(page.locator("[data-sonner-toast]")).toContainText("Project context and repository summary saved.");
+      } else {
+        await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Your selections or context changed.");
+      }
       await repositorySection(page, "Project context");
       await expect(editedField).toHaveValue("Keep this edit");
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expect(page.getByText(/Generation reference:/)).toHaveCount(0);
       expect(requests).toHaveLength(1);
-      expect(requests[0].body).toEqual({ generation_id: expect.any(String), connection_id: "connection", model: "", limits: { token_budget: 200000, timeout_seconds: 900 } });
+      expect(requests[0].body).toEqual({ mode: "context_refresh", generation_id: expect.any(String), connection_id: "connection", model: "", limits: { token_budget: 200000, timeout_seconds: 900 } });
     });
   }
 }
@@ -4868,7 +4923,8 @@ for (const outcome of ["done", "failed"] as const) {
   for (const change of ["background", "model", "connection", "limits"]) {
     test(`project background clears ${outcome} feedback after changing ${change}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = {
-        id: "feedback-job", status: outcome, background: "A generated draft", error: "The provider denied model access.",
+        id: "feedback-job", status: outcome, background: "A generated draft", project_summary: paymentsSummary,
+        error: "The provider denied model access.",
       };
       await mock(page, { background });
       await page.goto("/repositories/22");
@@ -4876,7 +4932,7 @@ for (const outcome of ["done", "failed"] as const) {
   await repositorySection(page, "Project context");
       await repositorySection(page, "Project context");
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
-      if (outcome === "done") await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Context generated.");
+      if (outcome === "done") await expect(page.locator("[data-sonner-toast]")).toContainText("Project context and repository summary saved.");
       else {
         await expect(page.getByRole("alert")).toContainText(background.error!);
         await expect(page.getByText("Generation reference: feedback-job")).toBeVisible();
@@ -4900,7 +4956,7 @@ for (const outcome of ["done", "failed"] as const) {
 
 for (const transient of ["network", "server"] as const) {
   test(`project background retries a transient ${transient} polling error without another generation`, async ({ page }) => {
-    const background: Schema["BackgroundJobOut"] = { id: "retry-job", status: "done", background: "Recovered draft", error: null };
+    const background: Schema["BackgroundJobOut"] = { id: "retry-job", status: "done", background: "Recovered context", project_summary: paymentsSummary };
     const requests = await mock(page, { background });
     const polls: string[] = [];
     await page.route("**/api/v1/repositories/22/background/*", async (route) => {
@@ -4908,19 +4964,19 @@ for (const transient of ["network", "server"] as const) {
       if (polls.length <= 2) {
         if (transient === "network") await route.abort("failed");
         else await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } });
-      } else await route.fulfill({ json: background });
+      } else await route.fallback();
     });
     await page.goto("/repositories/22");
     await page.getByRole("button", { name: "Configure", exact: true }).click();
   await repositorySection(page, "Project context");
     await repositorySection(page, "Project context");
     await page.getByRole("button", { name: "Generate context", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Recovered draft");
+    await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue("Recovered context");
     expect(polls).toEqual(Array(3).fill("/api/v1/repositories/22/background/retry-job"));
     expect(requests).toHaveLength(1);
     await expect(page.getByRole("alert")).toHaveCount(0);
     await repositorySection(page, "Project context");
-    await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Context generated.");
+    await expect(page.locator("[data-sonner-toast]")).toContainText("Project context and repository summary saved.");
   });
 }
 

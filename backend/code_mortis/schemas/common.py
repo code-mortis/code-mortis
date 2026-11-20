@@ -195,7 +195,7 @@ class RepositoryInput(StrictModel):
 
 
 class BackgroundInput(StrictModel):
-    mode: Literal["draft", "context", "summary", "summary_draft", "summary_refresh"] = "draft"
+    mode: Literal["draft", "context", "context_refresh", "summary", "summary_draft", "summary_refresh"] = "draft"
     connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     limits: RunLimits | None = None
@@ -229,7 +229,7 @@ class BackgroundJobOut(StrictModel):
     id: str
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     finished_at: datetime | None = None
-    mode: Literal["draft", "context", "summary", "summary_draft", "summary_refresh"] | None = None
+    mode: Literal["draft", "context", "context_refresh", "summary", "summary_draft", "summary_refresh"] | None = None
     background: str | None = None
     project_summary: str | None = None
     error: str | None = None

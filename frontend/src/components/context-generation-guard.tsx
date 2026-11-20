@@ -18,7 +18,7 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
   const path = `/repositories/${repositoryId}/background/cancel`;
   const cache = useQueryClient();
   const cancel = useMutation({
-    mutationFn: (id: string) => api(path, "POST", { generation_id: id }, undefined, AbortSignal.timeout(10000)),
+    mutationFn: (id: string) => api(path, "POST", { generation_id: id }),
     onSuccess: () => { void cache.invalidateQueries({ queryKey: activityQueryKey }); },
   });
 
@@ -65,9 +65,6 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
         </DialogHeader>
         <ErrorNotice error={cancel.error} />
         <DialogFooter>
-          {generationId && cancel.isError && <Button type="button" variant="ghost" onClick={() => blocker.proceed()}>
-            Leave without cancelling
-          </Button>}
           <Button type="button" variant="outline" disabled={cancel.isPending} onClick={() => {
             cancel.reset();
             blocker.reset();

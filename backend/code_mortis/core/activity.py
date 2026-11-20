@@ -240,8 +240,12 @@ def item(row):
         href = f"/security/scans/{identity}"
     else:
         repository = f"/repositories/{row.repository_id}"
-        href = (f"{repository}/overview?{urlencode({'generation': row.id})}" if row.mode in {"summary", "summary_refresh"}
-                else f"{repository}/settings?{urlencode({'tab': 'context', 'generation': row.id})}")
+        if row.mode in {"summary", "summary_refresh"}:
+            href = f"{repository}/overview?{urlencode({'generation': row.id})}"
+        elif row.mode == "context_refresh":
+            href = f"{repository}/settings?tab=context"
+        else:
+            href = f"{repository}/settings?{urlencode({'tab': 'context', 'generation': row.id})}"
     return ActivityItem(
         kind=row.kind, id=row.id, repository=row.repository, title=title, href=href,
         status="completed" if row.status == "done" else row.status, stages=stage_labels(row),

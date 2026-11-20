@@ -48,7 +48,7 @@ function ActivityRow({ item, onOpen }: { item: Activity; onOpen: () => void }) {
         <span className="break-words text-xs text-muted-foreground">{item.title === kind ? item.repository : `${kind} · ${item.repository}`}</span>
         <span className="flex flex-wrap items-center gap-x-1 text-xs">
           <span className={cn(running ? "activity-stage" : ["done", "completed"].includes(item.status)
-            ? "text-emerald-700 dark:text-emerald-300" : item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+            ? "text-primary" : item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
             {running ? item.stages.join(" · ") || status : status}
           </span>
           {item.finished_at && <><span aria-hidden="true" className="text-muted-foreground">·</span><ListDate value={item.finished_at} /></>}
@@ -69,7 +69,7 @@ function BrushCleaning() {
   </svg>;
 }
 
-const tabStyle = "inline-flex min-h-9 items-center gap-2 rounded-md border border-transparent px-2.5 text-[13px] text-foreground hover:bg-muted focus-visible:outline-offset-2 data-[state=active]:border-border data-[state=active]:bg-muted data-[state=active]:text-primary";
+const tabStyle = "inline-flex min-h-9 items-center gap-2 rounded-md border border-transparent px-2.5 text-[13px] text-foreground focus-visible:outline-offset-2 data-[state=active]:border-border data-[state=active]:text-primary";
 
 const denied = (error: Error | null) => error instanceof ApiError && [401, 403].includes(error.status);
 
@@ -134,10 +134,7 @@ export function NotificationInbox({ userId }: { userId: number }) {
       onOpenAutoFocus={(event) => { event.preventDefault(); runningTab.current?.focus(); }}
       className="flex max-h-[min(62dvh,490px,var(--radix-popover-content-available-height))] w-100 max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl p-0 sm:max-h-[min(74dvh,var(--radix-popover-content-available-height))] motion-reduce:animate-none">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b p-4">
-        <div>
-          <PopoverTitle id={title} className="text-base font-semibold">Notifications</PopoverTitle>
-          {snapshot && <p className="mt-0.5 text-xs tabular-nums text-muted-foreground" aria-live="polite">{running} running · {unread} unread</p>}
-        </div>
+        <PopoverTitle id={title} className="text-base font-semibold">Notifications</PopoverTitle>
         <TooltipProvider delayDuration={350}><Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground pointer-coarse:size-11 aria-disabled:opacity-50 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
