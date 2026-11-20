@@ -522,6 +522,11 @@ async function mock(
         csrf: "csrf-from-session",
       };
     else if (path === "/repositories") data = [repo];
+    else if (/^\/repositories\/\d+\/activity$/.test(path)) data = {
+      days: Array.from({ length: 365 }, (_, index) => ({
+        date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10), reviews: 0, scans: 0,
+      })),
+    };
     else if (path === "/repositories/22/background" && options.background)
       data = { ...options.background, status: "queued", background: null, error: null };
     else if (path.startsWith("/repositories/22/background/") && options.background)

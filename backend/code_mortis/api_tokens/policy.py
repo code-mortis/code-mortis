@@ -94,6 +94,7 @@ SESSION_ONLY_ROUTES: set[tuple[str, str]] = {
     ("POST", "/api/v1/api-tokens"),
     ("DELETE", "/api/v1/api-tokens/{token_id}"),
     ("PUT", "/api/v1/repositories/{repository_id}"),
+    ("GET", "/api/v1/repositories/{repository_id}/activity"),
     ("GET", "/api/v1/repositories/{repository_id}/code-graph"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/retry"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/cancel"),

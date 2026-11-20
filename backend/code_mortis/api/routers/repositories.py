@@ -1,18 +1,30 @@
+from datetime import datetime, time, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import Date, cast, func, select
 
-from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, USER, repo_access
+from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
 from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import service as graphs
 from code_mortis.code_graph import store
+from code_mortis.core.db import now
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
-from code_mortis.models import CodeGraphRepository, Connection, Job, Repository, ReviewRun
+from code_mortis.models import (
+    CodeGraphRepository,
+    Connection,
+    Job,
+    PullRequest,
+    Repository,
+    ReviewRun,
+    SecurityScan,
+)
 from code_mortis.reviews import background, inbox
 from code_mortis.reviews.service import enqueue
+from code_mortis.schemas.analytics import RepositoryActivity, RepositoryActivityDay, RepositoryActivityFilters
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
     BackgroundInput,
@@ -39,6 +51,36 @@ def repositories(db: DB, user: USER):
         repo.security = security[repo.id]
         repo.latest_completed_review = reviews.get(repo.id)
     return result
+
+
+@router.get("/repositories/{repository_id}/activity", response_model=RepositoryActivity)
+def repository_activity(
+    repository_id: int, db: DB, user: SESSION_USER, filters: Annotated[RepositoryActivityFilters, Query()],
+):
+    repo, remote = repo_access(db, user, repository_id)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+
+    end = now()
+    zone = ZoneInfo(filters.timezone)
+    first = end.astimezone(zone).date() - timedelta(days=364)
+    start = datetime.combine(first, time.min, zone)
+    review_day = cast(func.timezone(filters.timezone, ReviewRun.created_at), Date)
+    scan_day = cast(func.timezone(filters.timezone, SecurityScan.created_at), Date)
+    reviews = dict(db.execute(
+        select(review_day, func.count()).select_from(ReviewRun).join(PullRequest).where(
+            PullRequest.repository_id == repo.id, ReviewRun.created_at >= start, ReviewRun.created_at <= end,
+        ).group_by(review_day)
+    ).all())
+    scans = dict(db.execute(
+        select(scan_day, func.count()).where(
+            SecurityScan.repository_id == repo.id, SecurityScan.created_at >= start, SecurityScan.created_at <= end,
+        ).group_by(scan_day)
+    ).all())
+    dates = (first + timedelta(days=offset) for offset in range(365))
+    return RepositoryActivity(days=[
+        RepositoryActivityDay(date=day, reviews=reviews.get(day, 0), scans=scans.get(day, 0)) for day in dates
+    ])
 
 
 @router.put("/repositories/{repository_id}", response_model=RepositoryOut)

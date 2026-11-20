@@ -192,6 +192,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repository Activity */
+        get: operations["repository_activity_api_v1_repositories__repository_id__activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}": {
         parameters: {
             query?: never;
@@ -3797,6 +3814,23 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** RepositoryActivity */
+        RepositoryActivity: {
+            /** Days */
+            days: components["schemas"]["RepositoryActivityDay"][];
+        };
+        /** RepositoryActivityDay */
+        RepositoryActivityDay: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Reviews */
+            reviews: number;
+            /** Scans */
+            scans: number;
+        };
         /** RepositoryInput */
         RepositoryInput: {
             /** Enabled */
@@ -5202,6 +5236,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"][];
+                };
+            };
+        };
+    };
+    repository_activity_api_v1_repositories__repository_id__activity_get: {
+        parameters: {
+            query?: {
+                timezone?: string;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryActivity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

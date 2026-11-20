@@ -32,6 +32,7 @@ import logo from "./assets/logo.svg";
 import { AppHeader } from "./components/app-header";
 import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
 import { AppBreadcrumb } from "./components/app-breadcrumb";
+import { RepositoryActivity } from "./components/repository-activity";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
@@ -62,7 +63,7 @@ function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
   if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
     return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
   }
-  if (!analytics) return <PageTitle title="Overview" />;
+  if (!analytics) return <><PageTitle title="Overview" /><RepositoryActivity key={repository.id} repositoryId={repository.id} /></>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
 }
 
