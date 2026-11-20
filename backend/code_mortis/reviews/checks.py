@@ -99,10 +99,10 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         conclusion, title = "action_required", "Review needs your attention"
     elif run.status == "skipped":
         conclusion, title = "skipped", "Review skipped"
+    elif run.status == "partial":
+        conclusion, title = "neutral", "Review incomplete"
     elif run.failure_reason == "timeout":
         conclusion, title = "timed_out", "Review timed out"
-    elif run.status == "partial":
-        title = "Review incomplete"
     elif run.publication in {"failed", "partially_published"}:
         title = "Comments could not be fully published"
     elif run.status == "completed":
@@ -134,7 +134,7 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
             f"Withheld candidates: {assessment['withheld_candidates']}. "
             f"Comments published: {assessment['published_comments']}."
         )
-        if (status == "completed" and conclusion in {"success", "neutral"} and (
+        if (run.status != "partial" and status == "completed" and conclusion in {"success", "neutral"} and (
             assessment.get("failed") or assessment.get("skipped")
             or run.stages.get("assessment", {}).get("status") in {"partial", "failed", "cancelled"}
         )):

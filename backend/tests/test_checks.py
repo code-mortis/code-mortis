@@ -28,7 +28,9 @@ from code_mortis.reviews import service as reviews
         ("completed", "pending", None, "in_progress", None),
         ("completed", "publishing", None, "in_progress", None),
         ("completed", "published", None, "completed", "success"),
-        ("partial", "published", None, "completed", "failure"),
+        ("partial", "published", None, "completed", "neutral"),
+        ("partial", "published", "timeout", "completed", "neutral"),
+        ("partial", "not_applicable", None, "completed", "cancelled"),
         ("failed", "not_applicable", None, "completed", "failure"),
         ("completed", "failed", None, "completed", "failure"),
         ("completed", "partially_published", None, "completed", "failure"),
@@ -70,8 +72,9 @@ def test_review_limit_warning_cannot_publish_a_successful_check():
     run = ReviewRun(id="run", head_sha="a" * 40, status=status, publication="no_new_comments",
                     report=report, progress={}, created_at=now())
     payload = checks.check_payload(run, 0)
-    assert payload["conclusion"] == "failure"
+    assert payload["conclusion"] == "neutral"
     assert payload["output"]["title"] == "Review incomplete"
+    assert "Coverage: 1 of 2 selected review items completed." in payload["output"]["summary"]
 
 
 @pytest.mark.parametrize("state,title", [
