@@ -13,7 +13,7 @@ import {
 import { ModelPicker } from "./components/model-picker";
 import { SearchSelect } from "./components/search-select";
 import { BackgroundField } from "./components/background-field";
-import { savedBackgroundInputs } from "./hooks/use-background-generation";
+import { savedBackgroundInputs, type BackgroundHandoff } from "./hooks/use-background-generation";
 import { CodeGraphSettings } from "./components/code-graph-settings";
 import { SettingsNavigation } from "./components/settings-navigation";
 import { GitHubInstallations } from "./components/github-installations";
@@ -189,7 +189,8 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const id = useId();
   const location = useLocation();
   const navigate = useNavigate();
-  const contextGeneration = location.state?.contextGeneration as { jobId: string; generationId: string; inputs: string } | undefined;
+  const contextGeneration = location.state?.contextGeneration as BackgroundHandoff | undefined;
+  const generatedDraft = useRef(false);
   const [params, setParams] = useSearchParams();
   const sections = [
     { value: "reviews", label: "Review behavior", icon: GitPullRequest },
@@ -301,6 +302,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               code_graph_limits: graphLimits,
               connection_id: connection || null,
               expected_background: savedBackground.current,
+              ...(summaryChanged ? { expected_project_summary: savedProjectSummary.current } : {}),
               ...(scanSettingsChanged ? { scan_settings: scanSettings } : {}),
               settings: {
                 ...nextSettings,
@@ -312,7 +314,7 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
           });
           if (summaryChanged) savedProjectSummary.current = project_summary;
           savedBackground.current = settings.background;
-          if (contextGeneration && (contextChanged || summaryChanged)) {
+          if (contextGeneration && (contextChanged || summaryChanged || generatedDraft.current)) {
             const state = { ...location.state };
             delete state.contextGeneration;
             navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state });
@@ -503,9 +505,13 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               tokenBudget={settings.token_budget}
               timeoutSeconds={settings.timeout_seconds}
               value={{ background: settings.background, project_summary: settings.project_summary }}
-              onChange={(value) => setSettings((current) => ({ ...current, ...value }))}
+              onChange={(value, generated) => {
+                if (generated) generatedDraft.current = true;
+                setSettings((current) => ({ ...current, ...value }));
+              }}
               initialJobId={contextGeneration?.jobId}
               initialGenerationId={contextGeneration?.generationId}
+              initialSummaryDraft={contextGeneration?.mode === "summary_draft"}
               initialContextChanged={!!contextGeneration && contextGeneration.inputs !== savedBackgroundInputs(repo)}
             />
           </section>

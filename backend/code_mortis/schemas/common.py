@@ -191,10 +191,11 @@ class RepositoryInput(StrictModel):
     settings: RepoSettingsWithSummary = Field(default_factory=RepoSettingsWithSummary)
     scan_settings: ScanSettings | None = None
     expected_background: str | None = Field(default=None, max_length=20000)
+    expected_project_summary: str | None = Field(default=None, max_length=600)
 
 
 class BackgroundInput(StrictModel):
-    mode: Literal["draft", "context", "summary"] = "draft"
+    mode: Literal["draft", "context", "summary", "summary_draft"] = "draft"
     connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     limits: RunLimits | None = None

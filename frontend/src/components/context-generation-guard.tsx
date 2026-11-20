@@ -6,7 +6,7 @@ import { ErrorNotice } from "./common";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
-export function useContextGenerationGuard(repositoryId: number, generationId?: string, onCancelled?: (id: string) => void) {
+export function useContextGenerationGuard(repositoryId: number, generationId?: string, onCancelled?: (id: string) => void, summaryOnly = false) {
   const handingOff = useRef(false);
   const previousFocus = useRef<HTMLElement | null>(null);
   const handOff = useCallback(() => { handingOff.current = true; }, []);
@@ -54,7 +54,7 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
       >
         <DialogHeader>
           <DialogTitle>Leave and cancel generation?</DialogTitle>
-          <DialogDescription>Project context is being generated. Leaving this page cancels the job.</DialogDescription>
+          <DialogDescription>{summaryOnly ? "The repository summary" : "Project context"} is being generated. Leaving this page cancels the job.</DialogDescription>
         </DialogHeader>
         <ErrorNotice error={cancel.error} />
         <DialogFooter>

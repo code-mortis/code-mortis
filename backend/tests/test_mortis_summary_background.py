@@ -281,6 +281,58 @@ def test_repository_summary_uses_saved_context_with_durable_usage(seed, github_s
             assert repo.settings["project_summary"] == result["project_summary"] == f"{paragraph} [redacted]"
 
 
+@pytest.mark.parametrize("saved_context", [None, "Saved evidence from repository settings."])
+def test_regenerate_only_drafts_summary_until_settings_save(seed, github_stub, client, monkeypatch, saved_context):
+    settings = {"project_summary": "Published summary.", "token_budget": 60_000}
+    if saved_context:
+        settings["background"] = saved_context
+    with transaction() as db:
+        db.get(Repository, 22).settings = settings
+
+    def source_evidence(*args, **kwargs):
+        assert not saved_context
+        return {"sha": "a" * 40, "sources": {"README.md": {"text": "Readme fallback evidence.", "truncated": False}}}
+
+    calls = []
+    paragraph = "The replacement summary."
+
+    def handler(request):
+        calls.append(request.content.decode())
+        return httpx.Response(200, json=wire_result("openai", content=json.dumps({"project_summary": paragraph})))
+
+    monkeypatch.setattr(background, "context", source_evidence)
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm, "http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False))
+    endpoint = "/api/v1/repositories/22/background"
+    started = client.post(endpoint, json={"mode": "summary_draft", "generation_id": str(uuid4())})
+    assert started.status_code == 202, started.text
+    identity = started.json()["id"]
+    jobs.execute_job(identity)
+    result = client.get(f"{endpoint}/{identity}").json()
+    assert result["status"] == "done", result
+    assert result["project_summary"] == paragraph
+    assert result["background"] is None
+    assert len(calls) == 1
+    assert (saved_context or "Readme fallback evidence.") in calls[0]
+    with transaction() as db:
+        plan = db.scalar(select(AnalysisPlan).where(AnalysisPlan.job_id == identity))
+        assert plan.snapshot["revisions"] == ({"context": fingerprint(saved_context)} if saved_context else {"head": "a" * 40})
+        assert db.get(Repository, 22).settings == settings
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "project_summary": "Newer edit."}
+
+    body = {"enabled": False, "expected_background": saved_context or "",
+            "expected_project_summary": "Published summary.", "settings": {"project_summary": paragraph}}
+    endpoint = "/api/v1/repositories/22"
+    assert client.put(endpoint, json=body).status_code == 409
+    body["expected_project_summary"] = "Newer edit."
+    saved = client.put(endpoint, json=body)
+    assert saved.status_code == 200
+    assert saved.json()["settings"]["project_summary"] == paragraph
+    assert saved.json()["settings"]["background"] == (saved_context or "")
+
+
 def test_context_cancellation_fences_a_running_provider_call(seed, github_stub, client, monkeypatch):
     request = {"generation_id": str(uuid4())}
     endpoint = "/api/v1/repositories/22/background"

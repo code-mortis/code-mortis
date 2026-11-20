@@ -2352,7 +2352,7 @@ export interface components {
              * @default draft
              * @enum {string}
              */
-            mode: "draft" | "context" | "summary";
+            mode: "draft" | "context" | "summary" | "summary_draft";
             /** Connection Id */
             connection_id?: string | null;
             /**
@@ -3881,6 +3881,8 @@ export interface components {
             scan_settings?: components["schemas"]["ScanSettings"] | null;
             /** Expected Background */
             expected_background?: string | null;
+            /** Expected Project Summary */
+            expected_project_summary?: string | null;
         };
         /** RepositoryOut */
         RepositoryOut: {

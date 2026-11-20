@@ -3,13 +3,16 @@ import { api, ApiError, type Repository, type Schema } from "../api";
 
 type BackgroundJob = Schema["BackgroundJobOut"];
 
+export type BackgroundHandoff = { jobId: string; generationId: string; mode: "context" | "summary_draft"; inputs: string };
+
 export function isBackgroundConnectionError(error: unknown) {
   return !(error instanceof ApiError) || error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
 export function savedBackgroundInputs(repository: Repository) {
-  const { background, model, token_budget, timeout_seconds } = repository.settings;
-  return JSON.stringify([repository.id, repository.connection_id, model, token_budget ?? null, timeout_seconds ?? null, background]);
+  const { background, model, token_budget, timeout_seconds, project_summary } = repository.settings;
+  return JSON.stringify([repository.id, repository.connection_id, model, token_budget ?? null, timeout_seconds ?? null, background,
+    project_summary ?? null]);
 }
 
 export function useStartBackground(repositoryId: number) {

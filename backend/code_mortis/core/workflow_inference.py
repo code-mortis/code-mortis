@@ -122,8 +122,9 @@ def execute(connection, credentials, context, *, instructions, schema, validator
             target = {"head": scan.head_sha}
         elif job.kind == "generate_background" and not run_id and not scan_id:
             config = job.payload
-            expected = ({"context": config.get("context_fingerprint")} if config.get("mode") == "summary"
-                        else {"head": config.get("source_sha")})
+            mode, source_sha = config.get("mode"), config.get("source_sha")
+            use_saved_context = mode == "summary" or (mode == "summary_draft" and source_sha is None)
+            expected = {"context": config.get("context_fingerprint")} if use_saved_context else {"head": source_sha}
             if stage != "summary" or config.get("repository_id") != repository_id or revisions != expected or not all(expected.values()):
                 raise ValueError("Background evidence must match the pinned job source")
             repo = db.get(Repository, repository_id)

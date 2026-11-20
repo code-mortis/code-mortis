@@ -258,6 +258,22 @@ def test_settings_save_preserves_summary_when_context_changes_or_is_cleared(gene
     assert removed.json()["settings"]["project_summary"] is None
 
 
+def test_regenerate_discards_stale_summary_job(generation, client):
+    with transaction() as db:
+        db.get(Repository, 22).settings = {"project_summary": "Published summary.", "background": "Saved context."}
+    identity = start(client, mode="summary_draft", generation_id=str(uuid4()))
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "project_summary": "Newer edit."}
+    jobs.execute_job(identity)
+    result = status(client, identity).json()
+    assert result["status"] == "failed"
+    assert result["project_summary"] is None
+    assert generation == []
+    with transaction() as db:
+        assert db.get(Repository, 22).settings["project_summary"] == "Newer edit."
+
+
 @pytest.mark.parametrize("body", [{"connection_id": "missing"}, {"model": "x" * 151}])
 def test_invalid_connection_or_model_rejected(generation, client, body):
     response = client.post("/api/v1/repositories/22/background", json={"connection_id": "connection", **body})

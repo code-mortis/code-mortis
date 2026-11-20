@@ -95,6 +95,9 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
     saved_background = repo.settings.get("background", "")
     if body.expected_background is not None and saved_background != body.expected_background:
         raise HTTPException(409, "Project context changed while you were editing. Reload settings and try again.")
+    if ("project_summary" in body.settings.model_fields_set and "expected_project_summary" in body.model_fields_set
+            and repo.settings.get("project_summary") != body.expected_project_summary):
+        raise HTTPException(409, "The repository summary changed while you were editing. Reload settings and try again.")
     if "background" not in body.settings.model_fields_set:
         effective_settings["background"] = saved_background
     if "project_summary" not in body.settings.model_fields_set:
@@ -188,7 +191,11 @@ def generate_background(repository_id: int, body: BackgroundInput, db: DB, user:
     connection_id, model, limits = body.connection_id, body.model, body.limits
     if body.mode != "draft":
         saved = repo.settings.get("background", "").strip()
-        if repo.settings.get("project_summary") or bool(saved) != (body.mode == "summary"):
+        has_summary = bool(repo.settings.get("project_summary"))
+        if body.mode == "summary_draft":
+            if not has_summary:
+                raise HTTPException(409, "The saved repository summary changed. Refresh the repository and try again.")
+        elif has_summary or bool(saved) != (body.mode == "summary"):
             raise HTTPException(409, "The saved project context changed. Refresh the repository and try again.")
         connection_id, model, limits = repo.connection_id, repo.settings.get("model", ""), None
     connection = db.get(Connection, connection_id) if connection_id else None

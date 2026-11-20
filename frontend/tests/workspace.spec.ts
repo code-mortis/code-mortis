@@ -4302,6 +4302,8 @@ test("repository summary appears above activity for members", async ({ page }) =
   const activity = page.getByRole("region", { name: "Repository activity" });
   await expect(summary).toBeVisible();
   await expect(summary.locator("strong")).toHaveText("accept payments");
+  await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Edit", exact: true })).toHaveCount(0);
   await expect(activity).toBeVisible();
   expect((await summary.boundingBox())!.width).toBeCloseTo((await activity.boundingBox())!.width);
   expect((await summary.boundingBox())!.y + (await summary.boundingBox())!.height).toBeLessThan((await activity.boundingBox())!.y);
@@ -4324,6 +4326,72 @@ test("repository summary offers AI connection setup when no connection is saved"
   await expect(page.getByRole("button", { name: /Generate (summary|context)/ })).toHaveCount(0);
   expect(requests).toHaveLength(0);
 });
+
+test("repository summary Edit opens Project context with the saved text", async ({ page }) => {
+  const requests = await mock(page);
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
+    ...repo, settings: { ...repo.settings, project_summary: paymentsSummary },
+  }] }));
+  await page.goto("/repositories/22/overview");
+  const edit = page.getByRole("link", { name: /^Edit(?: (?:repository )?summary)?$/ });
+  await expect(edit).toHaveAttribute("href", "/repositories/22/settings?tab=context");
+  const summary = page.getByText(paymentsSummary, { exact: true });
+  const positions = await Promise.all([summary.boundingBox(), edit.boundingBox()]);
+  expect(positions[1]!.y).toBeGreaterThanOrEqual(positions[0]!.y + positions[0]!.height);
+  await noOverflow(page);
+  await edit.click();
+  await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+  await expect(page.getByRole("textbox", { name: "Repository summary", exact: true })).toHaveValue(paymentsSummary);
+  expect(requests).toHaveLength(0);
+});
+
+for (const context of ["Technical context about payment processing.", ""]) {
+  test(`repository summary Regenerate keeps the saved text until Save ${context ? "with" : "without"} context`, async ({ page }) => {
+    await mock(page);
+    const replacement = "This repository helps merchants **accept payments** and receive updates.";
+    let savedSettings = { ...repo.settings, background: context, project_summary: paymentsSummary };
+    await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, settings: savedSettings }] }));
+    let starts = 0;
+    await page.route("**/api/v1/repositories/22/background", (route) => {
+      expect(route.request().postDataJSON()).toEqual({ mode: "summary_draft", generation_id: expect.any(String) });
+      starts++;
+      return route.fulfill({ status: 202, json: { id: "replacement-draft", status: "queued" } });
+    });
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    await page.route("**/api/v1/repositories/22/background/replacement-draft", async (route) => {
+      await finished;
+      await route.fulfill({ json: { id: "replacement-draft", status: "done", background: null, project_summary: replacement } });
+    });
+    await page.route("**/api/v1/repositories/22", (route) => {
+      expect(route.request().method()).toBe("PUT");
+      const body = route.request().postDataJSON();
+      expect(body.expected_project_summary).toBe(paymentsSummary);
+      expect(body.settings).toMatchObject({ background: context, project_summary: replacement });
+      savedSettings = body.settings;
+      return route.fulfill({ json: { ...repo, settings: savedSettings } });
+    });
+    await page.goto("/repositories/22/overview");
+    await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Regenerate", exact: true }).click();
+    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+    const summary = page.getByRole("textbox", { name: "Repository summary", exact: true });
+    const background = page.getByRole("textbox", { name: "Project context", exact: true });
+    await expect(page.getByRole("status", { name: "Summary generation status" })).toContainText("Generating repository summary");
+    await expect(summary).toHaveValue(paymentsSummary);
+    await expect(background).toHaveValue(context);
+    finish();
+    await expect(summary).toHaveValue(replacement);
+    await expect(background).toHaveValue(context);
+    await expect(page.getByRole("status", { name: "Summary generation status" })).toContainText("Summary generated");
+    expect(savedSettings.project_summary).toBe(paymentsSummary);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Repository configuration saved.", { exact: true }).last()).toBeVisible();
+    await page.goto("/repositories/22/overview");
+    await expect(page.getByText("This repository helps merchants accept payments and receive updates.", { exact: true }).locator("strong")).toHaveText("accept payments");
+    expect(starts).toBe(1);
+  });
+}
 
 test("repository summary generation retries and displays the saved paragraph on Overview", async ({ page }) => {
   await mock(page);
@@ -4357,6 +4425,7 @@ test("repository summary generation retries and displays the saved paragraph on 
   finish();
   await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "No repository summary yet" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toBeEnabled();
   expect(starts).toBe(2);
   await expect(page).toHaveURL("/repositories/22/overview");
 });
