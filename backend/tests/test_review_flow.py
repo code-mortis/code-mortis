@@ -530,11 +530,14 @@ def test_automatic_edits_reuse_any_existing_revision_attempt(seed, trigger, stat
         first.status = status
         first.cancel_requested = status == "cancelled"
         db.flush()
+        db.refresh(first)
         snapshot = copy.deepcopy({column.key: getattr(first, column.key) for column in first.__table__.columns})
         repo.settings = {"exclusions": "AGENTS.md"}
         connection = db.get(Connection, "connection")
         connection.model, connection.options = "another-model", {"prompt_token_ceiling": 200000}
         assert reviews.create_run(db, pr, repo, "automatic").id == first.id
+        db.flush()
+        db.refresh(first)
         assert {column.key: getattr(first, column.key) for column in first.__table__.columns} == snapshot
         assert db.scalar(select(func.count()).select_from(ReviewRun)) == 1
         assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == 1

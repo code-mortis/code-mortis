@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Pencil, RefreshCw, Settings2, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -28,22 +28,33 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   const summaryJobKey = `repository-summary-job:${repository.id}`;
   const [jobId, setJobId] = useState(() => sessionStorage.getItem(summaryJobKey) ?? undefined);
   const [generationId, setGenerationId] = useState<string>();
+  const starting = useRef(false);
   const generationRequest = useRef<{ mode: NonNullable<Schema["BackgroundInput"]["mode"]>; inputs: string }>(undefined);
   const completedJobId = useRef<string>(undefined);
   const [contextGeneration, setContextGeneration] = useState<BackgroundHandoff>();
+  const [stayOnOverview, setStayOnOverview] = useState(false);
+  const deferredContext = stayOnOverview ? contextGeneration : undefined;
+  const activeJobId = jobId ?? deferredContext?.jobId;
   const navigate = useNavigate();
   const cache = useQueryClient();
   const start = useStartBackground(repository.id);
-  const result = useBackgroundStatus(repository.id, jobId);
-  useActivityRead("repository_summary", result.data?.id, result.data?.finished_at, result.isSuccess ? result.dataUpdatedAt : 0);
+  const result = useBackgroundStatus(repository.id, activeJobId);
+  const summaryJob = jobId && result.data?.mode !== "context" ? result.data : undefined;
+  useActivityRead("repository_summary", summaryJob?.id, summaryJob?.finished_at, result.isSuccess ? result.dataUpdatedAt : 0);
   const savedSummary = repository.settings.project_summary;
   const mode = (generationId && generationRequest.current?.mode)
     || (savedSummary ? "summary_refresh" : repository.settings.background?.trim() ? "summary" : "context");
   const finished = backgroundFinished(result.data?.status);
   const statusDenied = !!result.error && !isBackgroundConnectionError(result.error);
   const { dialog, blocked, handOff } = useContextGenerationGuard(repository.id,
-    mode === "context" && !finished && !statusDenied ? generationId : undefined);
+    mode === "context" && !finished && !statusDenied ? generationId : undefined,
+    undefined, false, () => setStayOnOverview(true));
   const settings = `/repositories/${repository.id}/settings`;
+  const openContext = useCallback((handoff: BackgroundHandoff) => {
+    setContextGeneration(undefined);
+    handOff();
+    navigate(`${settings}?tab=context`, { state: { contextGeneration: handoff } });
+  }, [handOff, navigate, settings]);
   useEffect(() => {
     const job = result.data;
     if ((finished || statusDenied) && sessionStorage.getItem(summaryJobKey) === jobId) {
@@ -63,37 +74,46 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
     void cache.invalidateQueries({ queryKey: activityQueryKey });
   }, [cache, finished, jobId, repository.id, result.data, statusDenied, summaryJobKey]);
   useEffect(() => {
-    if (contextGeneration && !blocked) {
-      handOff();
-      navigate(`${settings}?tab=context`, { state: { contextGeneration } });
+    if (contextGeneration && !blocked && !stayOnOverview) {
+      openContext(contextGeneration);
     }
-  }, [contextGeneration, blocked, handOff, navigate, settings]);
+  }, [contextGeneration, blocked, openContext, stayOnOverview]);
 
   const error = start.error ?? result.error ?? (result.data?.status === "failed"
     ? new Error(result.data.error || "Summary generation failed. Try again.")
     : result.data?.status === "done" && !result.data.project_summary ? new Error("The model returned no summary. Try again.") : null);
-  const lostStatus = !!jobId && !!result.error && isBackgroundConnectionError(result.error) && !finished;
-  const pending = !error && (start.isPending || (!!jobId && !finished) || !!contextGeneration);
+  const lostStatus = !!activeJobId && !!result.error && isBackgroundConnectionError(result.error) && !finished;
+  const pending = !error && (start.isPending || ((!!activeJobId || !!contextGeneration) && !finished));
+  const readyContext = !error && result.data?.status !== "cancelled" ? deferredContext : undefined;
   const needsSetup = !repository.connection_id || repository.connection_requires_setup
     || (start.error instanceof ApiError && start.error.status === 422);
   const actionVariant = savedSummary ? "ghost" : "outline";
   const actionSize = savedSummary ? "icon" : "sm";
   const actionClass = savedSummary ? headerActionClass : undefined;
-  const actionLabel = needsSetup ? "Configure AI connection" : lostStatus ? "Check status" : pending ? "Generating…"
+  const actionLabel = needsSetup ? "Configure AI connection" : lostStatus ? "Check status"
+    : readyContext ? "Open project context" : pending ? "Generating…"
     : savedSummary ? "Regenerate" : error ? "Retry generation" : mode === "summary" ? "Generate summary" : "Generate context";
   const generationAction = needsSetup ? <Button asChild variant={actionVariant} size={actionSize} className={actionClass}>
     <Link to={`${settings}?tab=connection`} aria-label={actionLabel}>{savedSummary ? <Settings2 aria-hidden="true" /> : actionLabel}</Link>
-  </Button> : <Button type="button" variant={actionVariant} size={actionSize} className={actionClass} aria-label={actionLabel} disabled={pending || (lostStatus && result.isFetching)} onClick={() => {
+  </Button> : <Button type="button" variant={actionVariant} size={actionSize} className={actionClass} aria-label={actionLabel} disabled={(pending && !readyContext) || (lostStatus && result.isFetching)} onClick={() => {
     if (lostStatus) {
       void result.refetch();
       return;
     }
-    if (!generationId || statusDenied) generationRequest.current = {
-      mode, inputs: mode === "context" ? savedBackgroundInputs(repository) : "",
-    };
+    if (readyContext) {
+      openContext(readyContext);
+      return;
+    }
+    if (starting.current) return;
+    if (!generationId || statusDenied) {
+      setStayOnOverview(false);
+      generationRequest.current = { mode, inputs: mode === "context" ? savedBackgroundInputs(repository) : "" };
+    }
     const attemptId = !statusDenied && generationId ? generationId : crypto.randomUUID();
     setGenerationId(attemptId);
     setJobId(undefined);
+    setContextGeneration(undefined);
+    starting.current = true;
     void start.mutateAsync({ mode, generation_id: attemptId }).then(
       (job) => {
         if (mode === "context" && job.status !== "failed" && job.status !== "cancelled") {
@@ -109,7 +129,7 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
           void cache.invalidateQueries({ queryKey: ["/repositories"] });
         }
       },
-    );
+    ).finally(() => { starting.current = false; });
   }}>
     {pending ? <LoaderCircle className="motion-safe:animate-spin" aria-hidden="true" />
       : savedSummary ? <RefreshCw aria-hidden="true" /> : <Sparkles aria-hidden="true" />}

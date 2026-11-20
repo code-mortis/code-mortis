@@ -632,6 +632,12 @@ def test_repository_scan_settings_default_independently_and_retry_keeps_saved_li
     assert review_update.status_code == 200, review_update.text
     assert review_update.json()["scan_settings"] == limits
 
+    updates = {"effort": "low", "timeout_seconds": None}
+    partial_update = client.put(path, json={**body, "scan_settings": updates})
+    limits = {**limits, **updates}
+    assert partial_update.status_code == 200, partial_update.text
+    assert partial_update.json()["scan_settings"] == limits
+
     scan_body = {"connection_id": "connection", "request_key": uid()}
     started = client.post(scan_path, json=scan_body)
     assert started.status_code == 202, started.text
@@ -3938,7 +3944,7 @@ def test_finished_report_grades_migration_uses_saved_findings_and_preserves_fail
     from alembic import command
     from alembic.config import Config
 
-    command.downgrade(Config("alembic.ini"), "20261020_security_scans")
+    config = Config("alembic.ini")
     cases = [("partial", "high", True, None, "D"), ("completed", "medium", True, None, "C"),
              ("partial", "unknown", True, None, None), ("partial", "high", False, None, None),
              ("cancelled", "high", True, None, None), ("partial", "high", True, "B", "B"),
@@ -3953,7 +3959,10 @@ def test_finished_report_grades_migration_uses_saved_findings_and_preserves_fail
                 "findings": [{"state": "open", "severity": severity}] if severity else []}
             identities.append((scan.id, status, expected))
         saved_finding(db, seed, scan, severity="critical")  # Current state must not replace historical report evidence.
-    command.upgrade(Config("alembic.ini"), "head")
+    try:
+        command.downgrade(config, "20261020_security_scans")
+    finally:
+        command.upgrade(config, "head")
     with transaction() as db:
         for identity, status, expected in identities:
             scan = db.get(SecurityScan, identity)

@@ -1,5 +1,5 @@
 import { useApi, type Schema } from "../api";
-import { useBackgroundStatus } from "../hooks/use-background-generation";
+import { backgroundFinished, useBackgroundStatus } from "../hooks/use-background-generation";
 import { useActivityRead } from "../hooks/use-activity-read";
 import { Button } from "./ui/button";
 import { ErrorNotice, Loading, Status } from "./common";
@@ -25,7 +25,10 @@ export function GenerationActivity({ repositoryId, jobId }: {
 }
 
 export function PullSummaryActivity({ runId, jobId }: { runId: string; jobId: string }) {
-  const summary = useApi<Schema["SummaryAttemptOut"]>(`/runs/${encodeURIComponent(runId)}/summary/attempts/${encodeURIComponent(jobId)}`, true);
+  const summary = useApi<Schema["SummaryAttemptOut"]>(
+    `/runs/${encodeURIComponent(runId)}/summary/attempts/${encodeURIComponent(jobId)}`,
+    (data) => data?.finished_at || backgroundFinished(data?.status) ? false : 5000,
+  );
   useActivityRead("pr_summary", summary.data?.id, summary.data?.finished_at, summary.isSuccess ? summary.dataUpdatedAt : 0);
   return <section aria-label="PR summary generation" className="my-4 space-y-2 rounded-md border p-4">
     <h2 className="text-sm font-medium">PR summary generation</h2>

@@ -142,6 +142,17 @@ def test_parallel_scan_attempts_reserve_and_settle_both_token_budgets(seed, unkn
         assert verification is not None and verification.output_tokens == 1150
 
 
+@pytest.mark.parametrize("phase", [["assessment"], {"stage": "assessment"}, 1, "summary"])
+def test_invalid_scan_budget_stage_does_not_break_reservation_or_settlement(seed, phase):
+    plan, tasks = planned(seed, budgets={"security": 100, "summary": 100},
+        tasks=[{"key": "a", "stage": "security", "input_hash": "d" * 64, "scope": [{"budget_stage": phase}]}])
+    lease = claim(tasks["a"])
+    assert lease and analysis.finish_task(lease, usage_tokens=25, result={"ok": True})
+    with transaction() as db:
+        assert db.get(AnalysisBudget, (plan, "security")).charged_tokens == 25
+        assert db.get(AnalysisBudget, (plan, "summary")).charged_tokens == 0
+
+
 def test_plan_inputs_and_task_identity_survive_restart_and_reordering(seed):
     identity, tasks = planned(seed)
     with transaction() as db:

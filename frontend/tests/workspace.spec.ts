@@ -4641,7 +4641,10 @@ test("repository summary and context started from Overview require a Settings sa
     await route.fulfill({ json: { id: "context-from-overview", status: "done", background: draft, project_summary: paymentsSummary } });
   });
   await page.goto("/repositories/22/overview");
-  await page.getByRole("button", { name: "Generate context", exact: true }).click();
+  await page.getByRole("button", { name: "Generate context", exact: true }).evaluate((button) => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=context/);
   await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Generating project context");
   expect(savedSettings.project_summary).toBeNull();
@@ -4661,6 +4664,42 @@ test("repository summary and context started from Overview require a Settings sa
   await expect(page.getByText(paymentsSummary, { exact: true })).toBeVisible();
   expect(jobStarts).toBe(1);
 });
+
+for (const dismiss of ["Stay", "Escape"]) {
+  test(`an Overview context launch respects ${dismiss} and keeps the draft available`, async ({ page }) => {
+    const draft = "Payment workers dispatch callbacks.";
+    const background: Schema["BackgroundJobOut"] = {
+      id: "deferred-context", status: "done", mode: "context", background: draft, project_summary: paymentsSummary,
+    };
+    const requests = await mock(page, { background });
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    await page.route("**/api/v1/repositories/22/background", async (route) => {
+      await finished;
+      await route.fulfill({ status: 202, json: { id: background.id, status: "queued" } });
+    });
+    await page.goto("/repositories/22/overview");
+    await page.getByRole("button", { name: "Generate context", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeDisabled();
+    await openNavigation(page);
+    await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings" }).click();
+    const dialog = page.getByRole("dialog", { name: "Leave and cancel generation?" });
+    await expect(dialog).toBeVisible();
+    const launched = page.waitForResponse((response) => response.url().endsWith("/22/background"));
+    finish();
+    await (await launched).finished();
+    if (dismiss === "Stay") await dialog.getByRole("button", { name: "Stay", exact: true }).click();
+    else await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    const openContext = page.getByRole("button", { name: "Open project context" });
+    await expect(openContext).toBeEnabled();
+    await expect(page).toHaveURL("/repositories/22/overview");
+    await openContext.click();
+    await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+    await expect(page.getByRole("textbox", { name: "Project context", exact: true })).toHaveValue(draft);
+    expect(requests.filter(({ path }) => path.endsWith("/background/cancel"))).toHaveLength(0);
+  });
+}
 
 test("repository summary can be entered without context and updates Overview on Save", async ({ page }) => {
   const requests = await mock(page);
@@ -4771,16 +4810,27 @@ test("notification reads on a direct review visit use the exact completion revis
 
 test("notification reads a standalone PR summary separately from its parent review", async ({ page }) => {
   await mock(page);
-  await page.route("**/api/v1/runs/run/summary/attempts/summary", (route) =>
-    route.fulfill({ json: { id: "summary", status: "done", finished_at: at } }));
+  await page.clock.install();
+  let finished = false;
+  let polls = 0;
+  await page.route("**/api/v1/runs/run/summary/attempts/summary", (route) => {
+    polls++;
+    return route.fulfill({ json: { id: "summary", status: finished ? "done" : "running", finished_at: finished ? at : null } });
+  });
   const receipts: unknown[] = [];
   await page.route("**/api/v1/activity/read", (route) => {
     receipts.push(route.request().postDataJSON());
     return route.fulfill({ status: 204 });
   });
   await page.goto("/runs/run?summaryJob=summary");
-  await expect(page.getByRole("region", { name: "PR summary generation" })).toContainText(/completed/i);
+  const summary = page.getByRole("region", { name: "PR summary generation" });
+  await expect(summary).toContainText(/running/i);
+  finished = true;
+  await page.clock.fastForward(5000);
+  await expect(summary).toContainText(/completed/i);
   await expect.poll(() => receipts).toEqual([{ mode: "one", kind: "pr_summary", id: "summary", finished_at: at }]);
+  await page.clock.runFor(11000);
+  expect(polls).toBe(2);
 });
 
 test("notification links preserve an active context draft and prompt before leaving for another job", async ({ page }) => {

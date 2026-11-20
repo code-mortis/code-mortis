@@ -102,6 +102,9 @@ def request_job_id(repo, actor, generation_id):
 
 
 def requested_job(db, repo, actor, generation_id, *, lock=False):
+    if lock:
+        # Serialize creation even when the job is absent, without blocking foreign-key checks.
+        db.scalar(select(Repository.id).where(Repository.id == repo.id).with_for_update(key_share=True))
     job = db.get(Job, request_job_id(repo, actor, generation_id), with_for_update=lock)
     if job and (job.kind != "generate_background" or job.payload.get("repository_id") != repo.id
                 or job.payload.get("actor_id") != actor.id or job.payload.get("generation_id") != str(generation_id)):
@@ -110,7 +113,6 @@ def requested_job(db, repo, actor, generation_id, *, lock=False):
 
 
 def cancel_request(db, repo, actor, generation_id):
-    # Both start and cancel hold the repository lock, including before a job exists.
     job = requested_job(db, repo, actor, generation_id, lock=True)
     if not job:
         job = Job(id=request_job_id(repo, actor, generation_id), kind="generate_background", status="cancelled",
@@ -131,6 +133,8 @@ def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None, gener
     from code_mortis.api_tokens import provenance as pat
     from code_mortis.mcp import provenance as mcp
 
+    if generation_id is not None and (prior := requested_job(db, repo, actor, generation_id, lock=True)) is not None:
+        return prior
     require_shared(connection)
     engine = new_engine_snapshot(repo.settings)
     snapshot = connection_snapshot(connection, workflow=True)
@@ -360,7 +364,9 @@ def perform(job_id, attempt):
         if mode and (type(remote.get("id")) is not int or remote["id"] != repo.id):
             raise ValueError("GitHub repository identity changed.")
         saved = current_background(repo, payload) if checked_settings else ""
-        use_saved_context = mode == "summary" or (summary_only and bool(saved.strip()))
+        use_saved_context = summary_only and bool(saved.strip())
+        if mode == "summary" and not use_saved_context:
+            raise ValueError("Generate project context before generating a summary.")
         snapshot = payload["connection"]
         workflow = payload.get("execution_limits") == EXECUTION_LIMITS
         current = connection_snapshot(connection, workflow=workflow)

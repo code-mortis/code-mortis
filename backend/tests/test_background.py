@@ -69,6 +69,17 @@ def test_cancel_context_generation_prevents_provider_calls(generation, client, c
     assert generation == []
 
 
+def test_enqueue_replays_cancelled_request_without_inserting_another_job(seed):
+    generation_id = uuid4()
+    with transaction() as db:
+        repo, actor = db.get(Repository, 22), db.get(User, 7)
+        cancelled = background.cancel_request(db, repo, actor, generation_id)
+        replayed = background.enqueue(db, repo, actor, db.get(Connection, "connection"), "",
+                                      mode="context", generation_id=generation_id)
+        assert replayed is cancelled and replayed.status == "cancelled"
+        assert db.scalars(select(Job).where(Job.kind == "generate_background")).all() == [cancelled]
+
+
 def test_context_cancellation_requires_repository_admin_and_csrf(generation, client, monkeypatch):
     request = {"generation_id": str(uuid4())}
     endpoint = "/api/v1/repositories/22/background/cancel"
@@ -210,6 +221,22 @@ def test_overview_generation_reuses_matching_active_job_for_large_repository_id(
         db.get(Repository, identity).connection_id = None
     missing = client.post(endpoint, json={"mode": "summary"})
     assert missing.status_code == 422 and "AI connection" in missing.text
+
+
+def test_saved_context_summary_fails_before_inference_when_context_is_blank(generation, client, monkeypatch):
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "background": "  "}
+        job = background.enqueue(db, repo, db.get(User, 7), db.get(Connection, "connection"), "", mode="summary")
+        identity = job.id
+    context_calls = []
+    monkeypatch.setattr(background, "context", lambda *a, **k: context_calls.append(a))
+    jobs.execute_job(identity)
+    result = status(client, identity).json()
+    assert result["status"] == "failed"
+    assert result["error"] == "Generate project context before generating a summary."
+    assert result["project_summary"] is None
+    assert context_calls == generation == []
 
 
 def test_overview_context_remains_draft_and_save_respects_saved_context(generation, client):

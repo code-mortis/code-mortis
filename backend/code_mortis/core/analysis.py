@@ -85,8 +85,10 @@ def budget_state(db, plan_id, stage, *, scoped_stage=None):
 
 def lock_task_budgets(db, task):
     phases = {task.stage}
-    if task.stage == "security" and task.scope and (phase := task.scope[0].get("budget_stage")):
-        phases.add(phase)
+    if task.stage == "security" and task.scope and isinstance(task.scope[0], dict):
+        phase = task.scope[0].get("budget_stage")
+        if isinstance(phase, str) and phase in {"assessment", "verification"}:
+            phases.add(phase)
     return db.scalars(select(AnalysisBudget).where(
         AnalysisBudget.plan_id == task.plan_id, AnalysisBudget.stage.in_(phases))
         .order_by(AnalysisBudget.stage).with_for_update()).all()

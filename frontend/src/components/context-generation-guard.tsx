@@ -7,7 +7,7 @@ import { ErrorNotice } from "./common";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
-export function useContextGenerationGuard(repositoryId: number, generationId?: string, onCancelled?: (id: string) => void, summaryOnly = false) {
+export function useContextGenerationGuard(repositoryId: number, generationId?: string, onCancelled?: (id: string) => void, summaryOnly = false, onStay?: () => void) {
   const handingOff = useRef(false);
   const previousFocus = useRef<HTMLElement | null>(null);
   const handOff = useCallback(() => { handingOff.current = true; }, []);
@@ -38,12 +38,15 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
     };
   }, [generationId, path]);
 
+  const stay = () => {
+    if (blocker.state !== "blocked" || cancel.isPending) return;
+    cancel.reset();
+    onStay?.();
+    blocker.reset();
+  };
   const dialog = blocker.state === "blocked" && (
     <Dialog open onOpenChange={(open) => {
-      if (!open && !cancel.isPending) {
-        cancel.reset();
-        blocker.reset();
-      }
+      if (!open) stay();
     }}>
       <DialogContent showCloseButton={false}
         onOpenAutoFocus={() => {
@@ -65,10 +68,7 @@ export function useContextGenerationGuard(repositoryId: number, generationId?: s
         </DialogHeader>
         <ErrorNotice error={cancel.error} />
         <DialogFooter>
-          <Button type="button" variant="outline" disabled={cancel.isPending} onClick={() => {
-            cancel.reset();
-            blocker.reset();
-          }}>Stay</Button>
+          <Button type="button" variant="outline" disabled={cancel.isPending} onClick={stay}>Stay</Button>
           <Button type="button" variant="destructive" disabled={cancel.isPending} onClick={async () => {
             if (generationId) {
               try {
