@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchGroupedPages, type GroupedData } from "../lib/grouped-pagination";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, type Schema } from "../api";
+import { useRefreshQueuedReviews } from "../hooks/use-refresh-queued-reviews";
 import { getInboxReturn, groups, normalizeFilters, withoutPages, type Property } from "../lib/inbox-filters";
 import { Empty, ErrorNotice, Loading } from "./common";
 import { InboxFilters } from "./inbox-filters";
@@ -37,6 +38,8 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
     retry: false,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === repositoryId ? previous : undefined,
   });
+  useRefreshQueuedReviews(pulls.isSuccess && pulls.isFetchedAfterMount && !pulls.isPlaceholderData && !pulls.isFetching
+    ? pulls.data.groups : undefined);
   useEffect(() => {
     const bounded = withConfiguration(new URLSearchParams(canonical));
     if (pulls.data && !pulls.isPlaceholderData && !pulls.isFetching) for (const group of groups) {
@@ -84,7 +87,7 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
             {items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
                 state={{ inbox: inboxReturn, repository: `/repositories/${repositoryId}${routeSearch}` }}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
+                status={<PullRequestStatus reviewStatus={pr.review_status} state={pr.state} hasRunningReview={pr.has_running_review} />} />)}
             <Pagination page={page} pageSize={rows!.page_size} total={total} loading={pulls.isFetching && (pulls.isPlaceholderData || !!error)}
               error={error ? new Error(error) : null} onRetry={pulls.refetch} label={titles[group].toLowerCase()} onPageChange={(page) => {
                 const next = new URLSearchParams(params);

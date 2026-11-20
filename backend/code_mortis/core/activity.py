@@ -298,6 +298,7 @@ def feed(db, user, running_cursor, updates_cursor):
         bounds.c.as_of,
         bounds.c.snapshot,
         select(func.count()).where(c.status == "running").scalar_subquery().label("running_count"),
+        select(func.count()).where(c.status == "queued").scalar_subquery().label("queued_count"),
         select(func.count()).where(c.status.in_(TERMINAL), c.unread).scalar_subquery().label("unread_count"),
         page_query(active, running_cursor).label("running"),
         page_query(updates_query, updates_cursor).label("updates"),
@@ -305,8 +306,9 @@ def feed(db, user, running_cursor, updates_cursor):
     running, next_running = page_result(row.running)
     updates, next_updates = page_result(row.updates)
     snapshot = seal(json.dumps(["activity-inbox-v1", user.id, row.as_of.isoformat(), row.snapshot]))
-    return ActivityFeed(running=running, updates=updates, running_count=row.running_count, unread_count=row.unread_count,
-                        as_of=row.as_of, snapshot=snapshot, next_running_cursor=next_running, next_updates_cursor=next_updates)
+    return ActivityFeed(running=running, updates=updates, running_count=row.running_count, queued_count=row.queued_count,
+                        unread_count=row.unread_count, as_of=row.as_of, snapshot=snapshot,
+                        next_running_cursor=next_running, next_updates_cursor=next_updates)
 
 
 def mark_read(db, user, body, now):

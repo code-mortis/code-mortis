@@ -51,6 +51,7 @@ def test_workspace_activity_groups_stages_and_keeps_five_read_updates(seed, clie
     feed = response.json()
     running = {row["id"]: row for row in feed["running"]}
     assert feed["running_count"] == 4
+    assert feed["queued_count"] == 1
     assert feed["unread_count"] == 0
     assert len(feed["updates"]) == 5
     assert set(running) == {"live-review", "live-scan", "waiting", "active-context", "summary-retry"}

@@ -24,6 +24,7 @@ class ActivityFeed(StrictModel):
     running: list[ActivityItem]
     updates: list[ActivityItem]
     running_count: int
+    queued_count: int
     unread_count: int
     as_of: datetime
     snapshot: str

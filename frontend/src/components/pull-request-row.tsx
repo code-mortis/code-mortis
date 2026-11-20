@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { GitPullRequest } from "lucide-react";
+import { reviewStatusLabel } from "../lib/inbox-filters";
 import { FindingCount, ListDate, Status, StatusGroup } from "./common";
 import { Badge } from "./ui/badge";
 import { PullRequestActions } from "./pull-request-actions";
@@ -11,11 +12,16 @@ export function PullRequestListHeading({ dateLabel = "Created" }: { dateLabel?: 
   </div>;
 }
 
-export function PullRequestStatus({ reviewStatus, state }: { reviewStatus: string; state: string }) {
-  return <StatusGroup>
-    <span className="sr-only">Review status: </span><Status value={reviewStatus} />
-    <span className="sr-only">; Pull request state: </span><Badge variant="secondary" className="capitalize"><GitPullRequest aria-hidden="true" />{state}</Badge>
-  </StatusGroup>;
+export function PullRequestStatus({ reviewStatus, state, hasRunningReview }: {
+  reviewStatus: string; state: string; hasRunningReview: boolean;
+}) {
+  return <>
+    <StatusGroup>
+      <span className="sr-only">Review status: </span><Status value={reviewStatus} label={reviewStatusLabel(reviewStatus)} />
+      <span className="sr-only">; Pull request state: </span><Badge variant="secondary" className="capitalize"><GitPullRequest aria-hidden="true" />{state}</Badge>
+    </StatusGroup>
+    {hasRunningReview && reviewStatus !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}
+  </>;
 }
 
 export function PullRequestRow({ id, number, repositoryId, admin, ignored, title, metadata, status, findings, timestamp, state }: {

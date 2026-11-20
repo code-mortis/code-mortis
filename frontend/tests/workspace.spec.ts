@@ -4792,7 +4792,7 @@ test("notification links preserve an active context draft and prompt before leav
       { kind: "review", id: "run", repository: "acme/payments", title: "PR review", href: "/runs/run",
         status: "running", stages: ["Assessment"], unread: false, finished_at: null },
     ],
-    updates: [], running_count: 2, unread_count: 0, as_of: at, snapshot: "feed-snapshot", next_running_cursor: null, next_updates_cursor: null,
+    updates: [], running_count: 2, queued_count: 0, unread_count: 0, as_of: at, snapshot: "feed-snapshot", next_running_cursor: null, next_updates_cursor: null,
   } }));
   await page.goto("/repositories/22/overview");
   await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5486,7 +5486,7 @@ test("oversized review explains its outcome and links to editable limits through
   const reason = "41 reviewable files exceed the limit of 40. No files were reviewed.";
   await page.goto("/repositories/22");
   const row = page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]");
-  await expect(row.getByText("skipped", { exact: true })).toBeVisible();
+  await expect(row.getByText("Skipped", { exact: true })).toBeVisible();
   await expect(row).not.toContainText(reason);
   await page.getByRole("link", { name: /Add retry handling/ }).click();
   await expect(page.getByRole("region", { name: "Review outcome" })).toContainText(reason);
@@ -6364,7 +6364,7 @@ for (const publication of ["not_applicable", "failed"] as const) {
       });
       await page.goto(path);
       const row = page.locator("[data-pull-row]").filter({ has: page.getByRole("link", { name: pr.title, exact: true }) });
-      await expect(row.getByText("cancelled", { exact: true })).toBeVisible();
+      await expect(row.getByText("Cancelled", { exact: true })).toBeVisible();
       await expect(row).not.toContainText("This review was cancelled before it finished.");
       if (publication === "failed" && path === "/") await expect(row).toContainText("Publication failed");
       else await expect(row).not.toContainText("Publication failed");

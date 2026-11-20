@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type Schema } from "../api";
 
 export const activityQueryKey = ["activity"] as const;
+export const activityFeedQueryKey = [...activityQueryKey, "feed"] as const;
 
 export function useActivityRead(
   kind: Schema["ActivityItem"]["kind"],

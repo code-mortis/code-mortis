@@ -6,6 +6,7 @@ export type Property = keyof typeof properties;
 export const orderings = { created_at: "Created", updated_at: "Updated", title: "Title", repository: "Repository", author: "Author" };
 export type OrderingField = keyof typeof orderings;
 export const label = (value: string) => value.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
+export const reviewStatusLabel = (status: string) => status === "blocked" ? "Paused" : label(status);
 export const INBOX_QUERY_MAX_LENGTH = 256;
 export const INBOX_SEARCH_DEBOUNCE_MS = 300;
 export const INBOX_MAX_PAGES = 1000000;

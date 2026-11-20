@@ -4,7 +4,8 @@ import { Bell, ChevronRight, FileText, GitPullRequest, LoaderCircle, Shield } fr
 import { Link, useLocation } from "react-router-dom";
 import { Tabs } from "radix-ui";
 import { api, ApiError, type Schema } from "../api";
-import { activityQueryKey } from "../hooks/use-activity-read";
+import { activityFeedQueryKey, activityQueryKey } from "../hooks/use-activity-read";
+import { reviewStatusLabel } from "../lib/inbox-filters";
 import { cn } from "../lib/utils";
 import { ListDate } from "./common";
 import { Button } from "./ui/button";
@@ -37,7 +38,8 @@ function ActivityRow({ item, onOpen }: { item: Activity; onOpen: () => void }) {
   const preserveState = pathname === location.pathname
     && new URLSearchParams(search).get("tab") === new URLSearchParams(location.search).get("tab");
   const running = item.status === "running";
-  const status = statusLabels[item.status] ?? item.status;
+  const status = item.kind === "review" ? reviewStatusLabel(item.status) : statusLabels[item.status] ?? item.status;
+  const stages = running ? item.stages.join(" · ") : "";
   return <li>
     <Link to={item.href} state={preserveState ? location.state : undefined} onClick={(event) => {
       if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) onOpen();
@@ -49,7 +51,7 @@ function ActivityRow({ item, onOpen }: { item: Activity; onOpen: () => void }) {
         <span className="flex flex-wrap items-center gap-x-1 text-xs">
           <span className={cn(running ? "activity-stage" : ["done", "completed"].includes(item.status)
             ? "text-primary" : item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
-            {running ? item.stages.join(" · ") || status : status}
+            {stages && item.kind === "review" ? `${status} · ${stages}` : stages || status}
           </span>
           {item.finished_at && <><span aria-hidden="true" className="text-muted-foreground">·</span><ListDate value={item.finished_at} /></>}
         </span>
@@ -81,7 +83,7 @@ export function NotificationInbox({ userId }: { userId: number }) {
   const [pages, setPages] = useState<string[]>([]);
   const cache = useQueryClient();
   const feed = useQuery({
-    queryKey: [...activityQueryKey, userId],
+    queryKey: [...activityFeedQueryKey, userId],
     queryFn: ({ signal }) => api<Feed>("/activity", "GET", undefined, undefined, signal),
     refetchInterval: ({ state }) => state.data?.running?.length ? 5000 : 30000,
     refetchOnWindowFocus: "always",
@@ -103,6 +105,8 @@ export function NotificationInbox({ userId }: { userId: number }) {
   });
   const snapshot = denied(feed.error) ? undefined : feed.data;
   const running = snapshot?.running_count ?? 0;
+  const queued = snapshot?.queued_count ?? 0;
+  const inProgress = running + queued;
   const unread = snapshot?.unread_count ?? 0;
   const pageQuery = cursor ? more : feed;
   const current = snapshot && !denied(pageQuery.error) ? pageQuery.data : undefined;
@@ -123,9 +127,9 @@ export function NotificationInbox({ userId }: { userId: number }) {
       <span className="flex h-14 items-center">
         <PopoverTrigger asChild>
           <Button variant="ghost" size="icon" className="w-auto min-w-9 gap-1.5 px-2 text-muted-foreground aria-expanded:bg-muted pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-            aria-label={snapshot ? `Notifications, ${running} running, ${unread} unread` : "Notifications"}>
+            aria-label={snapshot ? `Notifications, ${running} running${queued ? `, ${queued} queued` : ""}, ${unread} unread` : "Notifications"}>
             {running ? <LoaderCircle aria-hidden="true" className="text-primary motion-safe:animate-spin" /> : <Bell aria-hidden="true" />}
-            {running + unread > 0 && <span aria-hidden="true" className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/10 px-1 text-xs font-semibold tabular-nums text-primary">{running + unread}</span>}
+            {inProgress + unread > 0 && <span aria-hidden="true" className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/10 px-1 text-xs font-semibold tabular-nums text-primary">{inProgress + unread}</span>}
           </Button>
         </PopoverTrigger>
       </span>
@@ -148,7 +152,7 @@ export function NotificationInbox({ userId }: { userId: number }) {
       </div>
       <Tabs.Root value={tab} className="flex min-h-0 flex-col" onValueChange={(value) => { setTab(value === "updates" ? "updates" : "running"); setPages([]); }}>
         <Tabs.List aria-label="Notification views" className="flex shrink-0 gap-2 border-b px-3 py-2">
-          <Tabs.Trigger ref={runningTab} value="running" className={tabStyle}>Running <span className="tabular-nums">{running}</span></Tabs.Trigger>
+          <Tabs.Trigger ref={runningTab} value="running" className={tabStyle}>In progress <span className="tabular-nums">{inProgress}</span></Tabs.Trigger>
           <Tabs.Trigger value="updates" className={tabStyle}>Updates <span className="tabular-nums">{unread}</span></Tabs.Trigger>
         </Tabs.List>
         {(["running", "updates"] as const).map((view) => <Tabs.Content value={view} key={view} className="min-h-0 overflow-y-auto overscroll-contain px-3 py-1">

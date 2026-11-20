@@ -5,6 +5,7 @@ import { ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
 import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
+import { useRefreshQueuedReviews } from "./hooks/use-refresh-queued-reviews";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
 import { Button } from "./components/ui/button";
 import { Pagination } from "./components/pagination";
@@ -40,6 +41,8 @@ export function Inbox({ admin }: { admin: boolean }) {
     retry: false,
     placeholderData: (previous) => previous,
   });
+  useRefreshQueuedReviews(!legacy && query.isSuccess && query.isFetchedAfterMount && !query.isPlaceholderData && !query.isFetching
+    ? query.data.groups : undefined);
   useEffect(() => {
     if (!legacy && raw.toString() !== canonical) setParams(canonical, { replace: true });
   }, [raw, canonical, legacy, setParams]);
@@ -90,7 +93,7 @@ export function Inbox({ admin }: { admin: boolean }) {
       {list.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
         state={{ inbox: `${location.pathname}${location.search}` }}
         metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
-        status={<><PullRequestStatus reviewStatus={pr.review_status} state={pr.state} />{pr.has_running_review && pr.review_status !== "running" && <p className="text-xs text-muted-foreground">A review is still running</p>}</>} />)}
+        status={<PullRequestStatus reviewStatus={pr.review_status} state={pr.state} hasRunningReview={pr.has_running_review} />} />)}
       <Pagination page={list.page} pageSize={data.page_size} total={list.total} loading={query.isFetching && (query.isPlaceholderData || !!query.error)}
         error={query.error} onRetry={query.refetch} label="pull requests" onPageChange={(page) => {
           const next = new URLSearchParams(params);

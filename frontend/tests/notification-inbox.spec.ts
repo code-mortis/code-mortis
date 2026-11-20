@@ -12,13 +12,19 @@ const running: Schema["ActivityItem"] = {
   kind: "scan", id: "active", repository: "acme/payments", title: "Default branch",
   href: "/security/scans/active", status: "running", stages: ["Assessment"], finished_at: null, unread: false,
 };
+const reviewHref = "/runs/new-review";
+const reviewTitle = "Add queue visibility";
+type ReviewStatus = "queued" | "running" | "completed";
 
 async function mockActivity(page: Page) {
   const calls: Record<string, unknown>[] = [];
   const recent = Array.from({ length: 5 }, (_, index) => ({
     ...draft, id: `read-${index}`, title: `Older run ${index + 1}`, unread: false,
   }));
-  const state = { unread: true, running: true, failActivity: false, failDetail: false, more: false, activityGets: 0, cursor: "" };
+  const state = {
+    unread: true, running: true, failActivity: false, failDetail: false, more: false,
+    activityGets: 0, cursor: "", reviewStatus: null as ReviewStatus | null,
+  };
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -26,7 +32,20 @@ async function mockActivity(page: Page) {
     let json: unknown = [];
     if (path === "/setup/status") json = { configured: true, public_url: url.origin };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", avatar_url: "", csrf: "csrf" };
-    else if (path === "/pulls") json = { groups: [], total: 0, repository_count: 0, registered_total: 0, repositories: [], state_counts: {}, authors: [], page_size: 10 };
+    else if (path === "/pulls" || path === "/repositories/22/pulls") {
+      const items: Schema["InboxPullOut"][] = state.reviewStatus ? [{
+        id: "new-pr", number: 54, title: reviewTitle, repository_id: 22, repository_name: "acme/payments",
+        author: "developer", state: "open", draft: false, ignored: false, fork: false, head_ref: "queue-visibility",
+        created_at: completedAt, updated_at: completedAt,
+        review_status: state.reviewStatus, has_running_review: state.reviewStatus === "running", run_id: "new-review",
+        publication: null, publication_error: null, open_findings: 0,
+      }] : [];
+      const total = items.length;
+      json = {
+        groups: [{ group: path === "/pulls" ? "all" : "active", items, total, page: 1, has_more: false }],
+        total, repository_count: total, registered_total: total, repositories: [], state_counts: {}, authors: [], page_size: 10,
+      } satisfies Schema["InboxOut"];
+    }
     else if (path === "/repositories") json = [{
       id: 22, installation_id: 10, full_name: "acme/payments", active: true, enabled: true, connection_id: "connection",
       settings: { analysis_engine: "mortis", automatic: true, model: "review-model", effort: "medium", language: "English",
@@ -39,10 +58,19 @@ async function mockActivity(page: Page) {
       state.activityGets++;
       if (state.failActivity) return route.fulfill({ status: 503, json: { detail: "Activity unavailable." } });
       state.cursor = url.searchParams.get("running_cursor") ?? "";
+      const review: Schema["ActivityItem"] | null = state.reviewStatus ? {
+        kind: "review", id: "new-review", repository: "acme/payments", title: `#54 ${reviewTitle}`,
+        href: reviewHref, status: state.reviewStatus, stages: state.reviewStatus === "running" ? ["Analysis"] : [],
+        finished_at: state.reviewStatus === "completed" ? completedAt : null, unread: state.reviewStatus === "completed",
+      } : null;
+      const active = state.running ? state.cursor ? [{ ...running, id: "second", title: "Second page job", stages: ["Fix verification"] }] : [running] : [];
+      const updates = state.unread ? [draft, ...recent] : [{ ...draft, unread: false }, ...recent.slice(0, 4)];
+      if (review?.unread) updates.unshift(review);
+      else if (review) active.unshift(review);
       json = {
-        running: state.running ? state.cursor ? [{ ...running, id: "second", title: "Second page job", stages: ["Fix verification"] }] : [running] : [],
-        updates: state.unread ? [draft, ...recent] : [{ ...draft, unread: false }, ...recent.slice(0, 4)],
-        running_count: state.running ? 1 : 0, unread_count: Number(state.unread), as_of: snapshot, snapshot: "feed-snapshot",
+        running: active, updates, running_count: Number(state.running) + Number(state.reviewStatus === "running"),
+        queued_count: Number(state.reviewStatus === "queued"), unread_count: Number(state.unread) + Number(review?.unread ?? false),
+        as_of: snapshot, snapshot: "feed-snapshot",
         next_running_cursor: state.more && !state.cursor ? "continue" : null, next_updates_cursor: null,
       } satisfies Schema["ActivityFeed"];
     } else if (path === "/activity/read") {
@@ -64,7 +92,7 @@ test("notification inbox keeps recent read updates, opens and dismisses by keybo
   await expect(trigger).toHaveText("2");
   await trigger.press("Enter");
   const inbox = page.getByRole("dialog", { name: "Notifications" });
-  await expect(inbox.getByRole("tab", { name: "Running 1" })).toBeFocused();
+  await expect(inbox.getByRole("tab", { name: "In progress 1" })).toBeFocused();
   await expect(inbox.getByText("Assessment", { exact: true })).toHaveCSS("animation-name", "none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(inbox.getByText("Assessment", { exact: true })).toHaveCSS("animation-duration", "3.4s");
@@ -91,6 +119,57 @@ test("notification inbox keeps recent read updates, opens and dismisses by keybo
   await expect(inbox).toBeHidden();
   await expect(updatedTrigger).toBeFocused();
 });
+
+for (const [surface, url] of [["workspace Inbox", "/"], ["repository PR list", "/repositories/22"]] as const) {
+  test(`the ${surface} refreshes the bell when a review is queued`, async ({ page }, info) => {
+    await page.clock.install();
+    const { state } = await mockActivity(page);
+    state.running = false;
+    state.unread = false;
+    await page.goto(url);
+    await expect(page.getByRole("button", { name: "Notifications, 0 running, 0 unread" })).toBeVisible();
+    await expect(page.getByText(surface === "workspace Inbox" ? "Your inbox is empty" : "No pull requests here yet")).toBeVisible();
+    expect(state.activityGets).toBe(1);
+
+    const pr = page.locator("[data-pull-row]").filter({ hasText: reviewTitle });
+    state.reviewStatus = "queued";
+    await page.clock.fastForward(5100);
+    await expect(pr.getByText("Queued", { exact: true })).toBeVisible();
+    const queued = page.getByRole("button", { name: "Notifications, 0 running, 1 queued, 0 unread" });
+    await expect(queued).toHaveText("1");
+    await expect(queued.locator(".lucide-bell")).toBeVisible();
+    expect(state.activityGets).toBe(2);
+    await queued.click();
+    const inbox = page.getByRole("dialog", { name: "Notifications" });
+    const review = inbox.getByRole("link", { name: new RegExp(reviewTitle) });
+    await expect(inbox.getByRole("tab", { name: "In progress 1" })).toBeFocused();
+    await expect(review.getByText("Queued", { exact: true })).toBeVisible();
+    await expect(review).toHaveAttribute("href", reviewHref);
+    await page.screenshot({ path: info.outputPath("queued-review.png") });
+
+    await page.clock.fastForward(5100);
+    await expect.poll(() => state.activityGets).toBe(3);
+    state.reviewStatus = "running";
+    await page.clock.fastForward(5100);
+    await expect(pr.getByText("Running", { exact: true })).toBeVisible();
+    const working = page.getByRole("button", { name: "Notifications, 1 running, 0 unread" });
+    await expect(working).toHaveText("1");
+    await expect(working.locator(".lucide-loader-circle")).toBeVisible();
+    await expect(review.getByText("Running · Analysis", { exact: true })).toBeVisible();
+    await expect(review).toHaveAttribute("href", reviewHref);
+
+    state.reviewStatus = "completed";
+    await page.clock.fastForward(5100);
+    await expect(pr.getByText("Completed", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Notifications, 0 running, 1 unread" })).toHaveText("1");
+    await expect(inbox.getByRole("tab", { name: "In progress 0" })).toBeVisible();
+    await expect(review).toHaveCount(0);
+    await inbox.getByRole("tab", { name: "Updates 1" }).click();
+    await expect(review.getByText("Completed", { exact: true })).toBeVisible();
+    await expect(review.getByText("Unread", { exact: true })).toHaveCount(1);
+    await expect(review).toHaveAttribute("href", reviewHref);
+  });
+}
 
 for (const source of ["inbox", "direct", "denied"] as const) {
   test(`summary draft result marks read only on a successful ${source} visit`, async ({ page }) => {

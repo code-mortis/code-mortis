@@ -1954,6 +1954,8 @@ export interface components {
             updates: components["schemas"]["ActivityItem"][];
             /** Running Count */
             running_count: number;
+            /** Queued Count */
+            queued_count: number;
             /** Unread Count */
             unread_count: number;
             /**
