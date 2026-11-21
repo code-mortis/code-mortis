@@ -59,7 +59,7 @@ function QuickViewCard({ title, icon: Icon, to, badge, count, pending, details }
   details: [string, ReactNode][];
 }) {
   const heading = useId();
-  return <section aria-labelledby={heading} className="flex min-w-0 flex-col rounded-xl border border-[#dce1d9] bg-card px-[17px] pt-3.5 text-[#202c26] [--quick-view-muted:#606a62] dark:border-border dark:text-foreground dark:[--quick-view-muted:var(--muted-foreground)]">
+  return <section aria-labelledby={heading} className="flex min-w-0 flex-col rounded-lg border border-[#dce1d9] bg-card px-[17px] pt-3.5 text-[#202c26] [--quick-view-muted:#606a62] dark:border-border dark:text-foreground dark:[--quick-view-muted:var(--muted-foreground)]">
     <div className="flex min-h-[26px] flex-wrap items-center justify-between gap-2">
       <h2 id={heading} className="flex items-center gap-2 text-[15px] font-[650]">
         <Icon aria-hidden="true" className="size-[18px] text-primary" strokeWidth={1.65} />{title}

@@ -4,7 +4,7 @@ import { PageTitle } from "./common";
 
 export const repositoryHeaderLink = "inline-flex min-h-11 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6";
 export const repositoryActivityLink = `${repositoryHeaderLink} w-fit text-xs font-semibold text-primary sm:min-h-8`;
-const summaryCard = "min-w-0 rounded-xl border bg-card px-[17px] pt-3.5 text-card-foreground";
+const summaryCard = "min-w-0 rounded-lg border bg-card px-[17px] pt-3.5 text-card-foreground";
 
 export function RepositoryHeader({
   repository, children, ...titleProps
