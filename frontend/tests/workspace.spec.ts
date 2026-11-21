@@ -8678,9 +8678,14 @@ test("pull detail searches evidence and separates severity, status, and run hist
     ],
   }));
   await page.goto("/pulls/pr");
+  const title = page.getByRole("heading", { level: 1 });
+  await expect(title.locator("..").getByText(/^open$/i)).toBeVisible();
+  await expect(page.locator('main [data-slot="page-title"] code[data-slot="badge"]')).toHaveText([pr.head_ref, pr.head_sha.slice(0, 7)]);
   const summary = page.getByRole("region", { name: "Latest review" });
   await expect(summary).toContainText("Earlier commit");
-  await expect(summary).toContainText("ccccccc");
+  await expect(summary.locator('code[data-slot="badge"]')).toHaveText("ccccccc");
+  await expect(summary.locator("time")).toHaveAttribute("datetime", latest.created_at);
+  await expect(summary.getByRole("link", { name: "Inspect review", exact: true })).toHaveAttribute("href", `/runs/${latest.id}`);
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
   await expect(list.getByRole("region")).toHaveCount(1);

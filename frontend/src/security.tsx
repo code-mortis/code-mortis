@@ -48,7 +48,7 @@ const text = (value: unknown) => typeof value === "string" ? value : "";
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const entries = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.map(object) : [];
 const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "Unknown";
-const metadataLink = "rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring";
+const metadataLink = "rounded-sm no-underline outline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 const disclosure = "group rounded-lg border bg-card p-4 sm:p-5";
 const disclosureSummary = "flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden";
 const stageDescriptions: Record<string, [string, string]> = {

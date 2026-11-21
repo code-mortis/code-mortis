@@ -380,35 +380,50 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </DialogContent>
     </Dialog>
     <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>}>
+      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>} titleMeta={<Status value={pr.state} />}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-          <Status value={pr.state} />
           <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound aria-hidden="true" className="size-3.5 shrink-0" /><span className="break-words [overflow-wrap:anywhere]">@{pr.author}</span></span>
           {pr.draft && <span>Draft</span>}
-          <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1"><GitBranch aria-hidden="true" className="size-3.5 shrink-0" /><code className="min-w-0 break-words [overflow-wrap:anywhere]">{pr.head_ref}</code><span>·</span><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></span>
-          <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="min-w-0 shrink px-1.5 py-0 font-normal wrap-anywhere whitespace-normal"><code>{pr.head_ref}</code></Badge>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></Badge>
+          </span>
+          <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm no-underline hover:text-foreground">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
         </div>
       </PageTitle>
-      <section aria-label="Latest review" className="mt-6 border-t pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0 space-y-2">
+      <section aria-label="Latest review" className="mt-3 rounded-lg border bg-muted/40 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <div className="min-w-0 flex-1 basis-64 space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium">{latest ? "Latest review" : "No reviews yet"}</span>
+              <History aria-hidden="true" className="size-4 shrink-0 text-primary" />
+              <h2 className="font-semibold">{latest ? "Latest review" : "No reviews yet"}</h2>
               {latest && <Status value={latest.status} />}
-              {latest && <Link className="inline-flex min-h-6 items-center gap-1 rounded-sm text-xs underline-offset-4 hover:text-primary hover:underline" to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              {latest ? <><span>{date(latest.created_at)}</span><span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span></> : <span>A review records findings and coverage for this commit.</span>}
+              {latest ? <>
+                <time dateTime={latest.created_at}>{date(latest.created_at)}</time>
+                <span className="inline-flex items-center gap-1.5">
+                  {latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}
+                  <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={latest.head_sha}>{latest.head_sha.slice(0, 7)}</code></Badge>
+                </span>
+              </> : <span>A review records findings and coverage for this commit.</span>}
             </div>
           </div>
-          {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-            <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
-              options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
-            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection} onClick={async () => {
-              const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
-              if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
-            }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
-          </div>}
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 empty:hidden">
+            {latest && <Link className={repositoryActivityLink} to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
+            {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+              <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
+                options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
+              <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection} onClick={async () => {
+                const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
+                if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
+              }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
+            </div>}
+          </div>
         </div>
         {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { date, PageTitle } from "./common";
 import { Button } from "./ui/button";
 
-export const repositoryHeaderLink = "inline-flex min-h-11 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6";
+export const repositoryHeaderLink = "inline-flex min-h-11 items-center gap-1 rounded-sm no-underline outline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6";
 export const repositoryActivityLink = `${repositoryHeaderLink} w-fit text-xs font-semibold text-primary`;
 
 export function RepositorySettingsShortcut({ repositoryId, section }: {

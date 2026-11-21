@@ -1150,10 +1150,8 @@ for (const status of ["queued", "running", "blocked", "completed", "partial", "f
     const run = page.getByRole("button", { name: "Run scan", exact: true });
     if (["queued", "running", "blocked"].includes(status)) await expect(run).toBeDisabled();
     else await expect(run).toBeEnabled();
-    if (info.project.name === "desktop") {
-      await inspect.hover();
-      await expect(inspect).toHaveCSS("text-decoration-line", "underline");
-    }
+    if (info.project.name === "desktop") await inspect.hover();
+    await expect(inspect).toHaveCSS("text-decoration-line", "none");
     await inspect.focus();
     await expect(inspect).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1553,7 +1551,10 @@ test("security finding sheet separates evidence and activity while keeping actio
   await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(footer.getByRole("button", { name: "Create GitHub issue", exact: true })).toBeInViewport();
   await expect(footer.getByRole("button", { name: "Change status", exact: true })).toBeInViewport();
-  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  const viewActivity = sheet.getByRole("button", { name: "View activity", exact: true });
+  if (info.project.name === "desktop") await viewActivity.hover();
+  await expect(viewActivity).toHaveCSS("text-decoration-line", "none");
+  await viewActivity.click();
   const activity = sheet.getByRole("tab", { name: "Activity 2", exact: true });
   await expect(activity).toBeFocused();
   await expect(activity).toHaveAttribute("aria-selected", "true");

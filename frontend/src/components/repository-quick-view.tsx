@@ -1,14 +1,15 @@
+import { cn } from "cn";
 import { ChevronRight, GitPullRequest, ShieldCheck, type LucideIcon } from "lucide-react";
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useApi, type Repository, type Schema } from "../api";
 import { date } from "./common";
-import { RepositoryCardHeading } from "./repository-header";
+import { RepositoryCardHeading, repositoryActivityLink } from "./repository-header";
 import { Badge } from "./ui/badge";
 
 const numberFormat = new Intl.NumberFormat();
 const scanDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-const countLink = "inline-flex min-h-6 min-w-6 items-center justify-end rounded-sm whitespace-nowrap text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
+const countLink = "inline-flex min-h-6 min-w-6 items-center justify-end rounded-sm whitespace-nowrap text-primary no-underline hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 export function RepositoryQuickView({ repository }: { repository: Repository }) {
   const { id, enabled, settings } = repository;
@@ -36,7 +37,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
       details={[
         ["Automatic reviews", enabled && settings.automatic ? "On" : "Off"],
         ["PRs needing review", needsReviewCount === undefined ? needsReview.isPending ? "Loading…" : "Unavailable"
-          : <Link className={`${countLink} underline decoration-primary/45 underline-offset-4 hover:decoration-current`} to={`${reviewsPath}?${needsReviewFilters}`}
+          : <Link className={countLink} to={`${reviewsPath}?${needsReviewFilters}`}
             aria-label={`${numberFormat.format(needsReviewCount)} ${needsReviewCount === 1 ? "PR" : "PRs"} needing review`}>
             {numberFormat.format(needsReviewCount)}
           </Link>],
@@ -55,7 +56,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
         ["Priority findings", openSeverities ? <span className="flex flex-wrap justify-end gap-x-2 gap-y-1">
           {(["critical", "high"] as const).map((severity) => {
             const count = openSeverities[severity] ?? 0;
-            return <Link key={severity} className={`${countLink} no-underline hover:text-foreground`} to={`${securityPath}?severity=${severity}`}
+            return <Link key={severity} className={countLink} to={`${securityPath}?severity=${severity}`}
               aria-label={`${numberFormat.format(count)} open ${severity} ${count === 1 ? "finding" : "findings"}`}>
               {numberFormat.format(count)} {severity}
             </Link>;
@@ -96,7 +97,7 @@ function QuickViewCard({ title, icon, to, badge, count, pending, details }: {
       </div>)}
     </dl>
     <div className="mt-auto border-t border-inherit">
-      <Link to={to} className="inline-flex min-h-11 items-center gap-0.5 rounded-sm text-xs font-[650] text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:min-h-[36px]">
+      <Link to={to} className={cn(repositoryActivityLink, "gap-0.5 font-[650] sm:min-h-9")}>
         View {title.toLowerCase()}<ChevronRight aria-hidden="true" className="size-3.5" />
       </Link>
     </div>

@@ -138,8 +138,13 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(calendar.locator('[tabindex="0"]')).toHaveCount(1);
   const today = calendar.getByRole("button", { name: /8 total, 6 review runs, 2 security scans/ });
   const primaryColor = await today.evaluate((cell) => getComputedStyle(cell).backgroundColor);
-  await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveCSS("color", primaryColor);
-  await expect(securityCard.getByRole("link", { name: "View security" })).toHaveCSS("color", primaryColor);
+  const actionLinks = [reviewCard.getByRole("link", { name: "View reviews" }), securityCard.getByRole("link", { name: "View security" }),
+    reviewCard.getByRole("link", { name: "12 PRs needing review", exact: true })];
+  for (const link of actionLinks) {
+    await expect(link).toHaveCSS("color", primaryColor);
+    if (info.project.name === "desktop") await link.hover();
+    await expect(link).toHaveCSS("text-decoration-line", "none");
+  }
   if (info.project.name === "mobile") {
     await today.scrollIntoViewIfNeeded();
     await expect(today).toBeInViewport({ ratio: 1 });
