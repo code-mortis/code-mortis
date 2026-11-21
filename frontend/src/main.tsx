@@ -78,8 +78,8 @@ function RepositoryOverview({ analytics = false, admin = false }: { analytics?: 
   if (!analytics) return <>
     {directoryError && <div className="mb-4">{directoryError}</div>}
     <RepositorySummary key={`summary-${repository.id}`} repository={repository} admin={admin} />
-    <RepositoryActivity key={repository.id} repositoryId={repository.id} />
     <RepositoryQuickView repository={repository} />
+    <RepositoryActivity key={repository.id} repositoryId={repository.id} />
   </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
 }

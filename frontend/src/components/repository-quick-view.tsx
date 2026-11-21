@@ -17,7 +17,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
   const summary = security.error ? undefined : security.data?.summary;
   const counts = security.error ? undefined : security.data?.finding_state_counts;
 
-  return <div className="mt-3.5 grid gap-3.5 md:grid-cols-2">
+  return <div className="mb-6 grid gap-3.5 md:grid-cols-2">
     <QuickViewCard
       title="Reviews" icon={GitPullRequest} to={`/repositories/${id}`}
       badge={<Badge variant={enabled ? "secondary" : "outline"} className={badgeClass}>

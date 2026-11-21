@@ -88,7 +88,7 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(securityCard).toContainText(/Scan status\s*completed/i);
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
   const [chartBox, reviewBox, securityBox] = await Promise.all([activity.boundingBox(), reviewCard.boundingBox(), securityCard.boundingBox()]);
-  expect(reviewBox!.y).toBeGreaterThan(chartBox!.y + chartBox!.height);
+  expect(chartBox!.y).toBeGreaterThan(Math.max(reviewBox!.y + reviewBox!.height, securityBox!.y + securityBox!.height));
   if (info.project.name === "mobile") {
     expect(securityBox!.y).toBeGreaterThan(reviewBox!.y);
   } else {
@@ -105,6 +105,7 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveCSS("color", primaryColor);
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveCSS("color", primaryColor);
   if (info.project.name === "mobile") {
+    await today.scrollIntoViewIfNeeded();
     await expect(today).toBeInViewport({ ratio: 1 });
     await today.tap();
   } else await today.hover();
