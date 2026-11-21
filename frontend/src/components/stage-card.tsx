@@ -22,7 +22,7 @@ export function StageCard({ label, status, title, progress, progressLabel, expla
     <span className="h-9 whitespace-nowrap text-sm font-medium tabular-nums leading-6 @min-[500px]:h-6" aria-label={progressLabel}>{progress ?? "—"}</span>
   </span>;
   return <Popover><section ref={card} data-status={status} data-motion={status === "running" && motionActive ? "active" : "paused"}
-    className="stage-card @container my-5 rounded-lg bg-muted/40 p-4 text-xs" aria-label={label}>
+    className="stage-card @container mt-3 rounded-lg border bg-muted/40 p-4 text-xs" aria-label={label}>
     {children ? <PopoverTrigger asChild><button type="button" aria-label={detailsLabel ?? label} data-status={status}
       className="group flex w-full cursor-pointer items-start gap-3 rounded-sm text-left outline-offset-4 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
       {header}<ChevronDown aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" />

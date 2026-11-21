@@ -1822,6 +1822,10 @@ test("review stage animation follows execution, visibility and reduced motion", 
   await page.goto("/runs/run");
   const card = page.getByRole("region", { name: "Review stages", exact: true });
   const divider = card.locator(".stage-divider");
+  const [outcome, statistics] = await Promise.all([
+    card.boundingBox(), page.getByLabel("Run statistics").boundingBox(),
+  ]);
+  expect(statistics!.y).toBeGreaterThan(outcome!.y + outcome!.height);
   const animation = () => divider.evaluate((element) => {
     const style = getComputedStyle(element, "::before");
     return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
@@ -2363,11 +2367,11 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
-  if (info.project.name === "desktop") {
-    const comments = await publication.getByText("GitHub comments", { exact: true }).boundingBox();
-    const stages = await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox();
-    expect(stages!.y).toBeGreaterThan(comments!.y);
-  }
+  const [comments, statistics] = await Promise.all([
+    publication.getByText("GitHub comments", { exact: true }).boundingBox(),
+    page.getByLabel("Run statistics").boundingBox(),
+  ]);
+  expect(comments!.y).toBeGreaterThan(statistics!.y + statistics!.height);
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
   await trigger.focus();

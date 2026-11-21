@@ -524,20 +524,24 @@ export function SecurityScan({ user }: { user: User }) {
     .filter((problem) => problem && problem !== scan.error)
     .map(engineDiagnostic);
   return <>
-    <PageTitle title="Security scan" actions={<>
+    <PageTitle title="Security scan" titleMeta={<>
+      <SecurityScanStatus status={scan.status} />
+      {scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}
+    </>} actions={<>
       <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={!Object.keys(report).length}><Download aria-hidden="true" className="size-3.5" />Download report<ChevronDown aria-hidden="true" className="size-3.5" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">{(["markdown", "json"] as const).map((format) => <DropdownMenuItem asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download>Download {format === "json" ? "JSON" : "Markdown"}</a></DropdownMenuItem>)}</DropdownMenuContent>
       </DropdownMenu>
       {canWrite && active(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/scans/${scan.id}/cancel` })}>Cancel scan</Button>}
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
+    </>} footer={<>
+      {retiredEngine && <p role="status" className="mt-3 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
+      <ErrorNotice error={action.error} />
+      <ScanStages scan={scan} assessment={query.data.assessment} />
+      <p aria-label="Scan statistics" className="mt-2 flex flex-col gap-x-3 gap-y-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
     </>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span>{retiredEngine ? "Retired engine" : "Mortis"}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
-      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span>{retiredEngine ? "Retired engine" : "Mortis"}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
     </PageTitle>
-    {retiredEngine && <p role="status" className="mb-4 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
-    <ErrorNotice error={action.error} />
-    <ScanStages scan={scan} assessment={query.data.assessment} />
     {scanError && <div className="mb-5"><ErrorNotice error={scanError} tone={scan.status === "partial" ? "warning" : "error"} /></div>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Security scan" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}

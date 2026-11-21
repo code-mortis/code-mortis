@@ -1247,6 +1247,12 @@ test("running scan stages explain validated file progress without changing the s
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   const stages = page.getByRole("region", { name: "Scan stages" });
+  const title = page.getByRole("heading", { name: "Security scan", exact: true });
+  await expect(title.locator("..").getByText(/^running$/i)).toBeVisible();
+  const [outcome, statistics] = await Promise.all([
+    stages.boundingBox(), page.getByLabel("Scan statistics").boundingBox(),
+  ]);
+  expect(statistics!.y).toBeGreaterThan(outcome!.y + outcome!.height);
   const animation = () => stages.locator(".stage-divider").evaluate((element) => {
     const style = getComputedStyle(element, "::before");
     return { name: style.animationName, state: style.animationPlayState, transform: style.transform };

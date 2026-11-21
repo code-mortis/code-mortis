@@ -934,15 +934,19 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
             {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
-          </div>}>
+          </div>} footer={<>
+            <ErrorNotice error={action.error || error} />
+            <ErrorNotice error={run.error} />
+            <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
+            <RunMetrics run={run} tokens={detail.total_tokens} />
+          </>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
           <span>{words(run.trigger)}</span>
           <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
         </div>
-        <RunMetrics run={run} tokens={detail.total_tokens} />
       </PageTitle>
-      <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
+      <section aria-label="GitHub publication" className="mt-2 space-y-3 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
             {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass}><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
@@ -975,9 +979,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
     </div>
-    <ErrorNotice error={action.error || error} />
-    <ErrorNotice error={run.error} />
-    <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList variant="page" aria-label="Review run views" className="mb-4">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>
