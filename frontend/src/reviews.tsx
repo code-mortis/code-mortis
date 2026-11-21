@@ -815,7 +815,7 @@ function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
   const hasMetrics = [selected, completed, reused, failed, tokens].some(knownCount);
   const awaitingResults = active(run.status) || run.status === "blocked";
   return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-    <span>Duration: <ExecutionDuration run={run} /></span>
+    <span>Duration: <strong className="font-semibold text-foreground"><ExecutionDuration run={run} /></strong></span>
     <span>{hasMetrics
       ? <>{count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
       : awaitingResults ? "Awaiting review results" : "Review statistics unavailable"}</span>
@@ -942,8 +942,12 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
           </>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
-          <span>{words(run.trigger)}</span>
-          <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
+          <span>{label(run.trigger)}</span>
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code></Badge>
+            <span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span>
+          </span>
         </div>
       </PageTitle>
       <section aria-label="GitHub publication" className="mt-2 space-y-3 text-xs">

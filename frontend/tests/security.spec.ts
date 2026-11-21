@@ -1248,7 +1248,7 @@ test("running scan stages explain validated file progress without changing the s
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   const stages = page.getByRole("region", { name: "Scan stages" });
   const title = page.getByRole("heading", { name: "Security scan", exact: true });
-  await expect(title.locator("..").getByText(/^running$/i)).toBeVisible();
+  await expect(title.locator("..").getByText(/^running$/i).locator(".lucide-loader-circle")).toBeVisible();
   const [outcome, statistics] = await Promise.all([
     stages.boundingBox(), page.getByLabel("Scan statistics").boundingBox(),
   ]);
@@ -1477,6 +1477,8 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
 test("security grades and scan stages keep their help while finding and scan statuses stay informational", async ({ page }, info) => {
   const writes = await mock(page, { partial: true, latestStatus: "running" });
   await page.goto("/security/repositories/22");
+  const repoGrade = page.getByRole("region", { name: "Saved grade", exact: true }).getByText("Security D", { exact: true });
+  const gradeBackground = await repoGrade.evaluate((element) => getComputedStyle(element).backgroundColor);
   const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
   const status = latest.getByText("Running", { exact: true });
   await expect(status).toBeVisible();
@@ -1520,6 +1522,18 @@ test("security grades and scan stages keep their help while finding and scan sta
     }
   }
   await page.goto("/security/scans/scan");
+  const header = page.locator('main [data-slot="page-title"]');
+  const completed = header.getByText(/^completed$/i);
+  await expect(completed).toBeVisible();
+  await expect(completed.locator("svg")).toHaveCount(0);
+  const grade = header.locator("[data-security-badge]");
+  await expect(grade).toHaveText("Security D");
+  await expect(grade.locator('[data-slot="badge"]')).toHaveCSS("background-color", gradeBackground);
+  await expect(grade.locator("svg")).toHaveCount(0);
+  await grade.focus();
+  await expect(page.getByRole("tooltip")).toContainText("The grade saved with this scan.");
+  await page.keyboard.press("Escape");
+  await expect(header.locator('code[data-slot="badge"]')).toHaveText(["main", sha.slice(0, 7)]);
   await page.getByRole("button", { name: "Scan stage details", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Scan stage details", exact: true })).toContainText("A file counts only after its result passes validation");
   expect(writes).toHaveLength(0);
@@ -2097,6 +2111,9 @@ test("security history and details show recorded durations and live elapsed time
   await page.screenshot({ path: info.outputPath("security-history-duration-dark.png"), fullPage: true });
   await history.locator('a[href="/security/scans/scan"]').click();
   await expect(page.locator("main header")).toContainText("Duration: 29m 42s");
+  const duration = page.getByLabel("Scan statistics").locator("strong");
+  await expect(duration).toHaveText("29m 42s");
+  await expect(duration).toHaveCSS("color", await page.getByRole("heading", { name: "Security scan", exact: true }).evaluate((el) => getComputedStyle(el).color));
   await page.goto("/security/scans/running");
   await expect(page.locator("main header")).toContainText("Duration: 15s elapsed");
   await page.clock.setFixedTime(new Date("2026-10-18T23:08:10Z"));

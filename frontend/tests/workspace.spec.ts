@@ -3691,8 +3691,13 @@ test("review run statistics show live duration and validated progress", async ({
     progress: { selected: 8, completed: 3, failed: 1, reused: 0 } };
   await mock(page, { run: current, totalTokens: 12500 });
   await page.goto("/runs/run");
+  const header = page.locator('main [data-slot="page-title"]');
+  await expect(header.getByText("Automatic", { exact: true })).toBeVisible();
+  await expect(header.locator('code[data-slot="badge"]')).toHaveText(run.head_sha.slice(0, 7));
   const stats = page.getByLabel("Run statistics");
   await expect(stats).toHaveText("Duration: 10s elapsed0 reused · 1 failed · 12,500 tokens");
+  await expect(stats.locator("strong")).toHaveText("10s elapsed");
+  await expect(stats.locator("strong")).toHaveCSS("color", await header.getByRole("heading").evaluate((el) => getComputedStyle(el).color));
   await page.clock.setFixedTime(new Date("2026-10-05T13:20:15Z"));
   await page.clock.fastForward(5000);
   await expect(stats).toContainText("Duration: 15s elapsed");

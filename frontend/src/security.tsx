@@ -17,7 +17,7 @@ import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
 import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
-import { SecurityGrade, SecurityGradeShield, securityFreshness, securityStates } from "./components/security-grade";
+import { SecurityGrade, SecurityGradeBadge, securityFreshness, securityStates } from "./components/security-grade";
 import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
@@ -29,7 +29,7 @@ import { PopoverContent } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
-import { SecurityBadge, SecurityScanBadge, SecurityScanStatus, SecurityStatus } from "./components/security-badge";
+import { SecurityBadge, SecurityScanBadge, SecurityStatus } from "./components/security-badge";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
@@ -525,8 +525,10 @@ export function SecurityScan({ user }: { user: User }) {
     .map(engineDiagnostic);
   return <>
     <PageTitle title="Security scan" titleMeta={<>
-      <SecurityScanStatus status={scan.status} />
-      {scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}
+      <Status value={scan.status} label={scan.status === "partial" ? "Partial" : undefined} />
+      {scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}>
+        <SecurityGradeBadge grade={scan.grade} label={`Security ${scan.grade}`} />
+      </SecurityBadge>}
     </>} actions={<>
       <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={!Object.keys(report).length}><Download aria-hidden="true" className="size-3.5" />Download report<ChevronDown aria-hidden="true" className="size-3.5" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">{(["markdown", "json"] as const).map((format) => <DropdownMenuItem asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download>Download {format === "json" ? "JSON" : "Markdown"}</a></DropdownMenuItem>)}</DropdownMenuContent>
@@ -538,9 +540,23 @@ export function SecurityScan({ user }: { user: User }) {
       {retiredEngine && <p role="status" className="mt-3 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
       <ErrorNotice error={action.error} />
       <ScanStages scan={scan} assessment={query.data.assessment} />
-      <p aria-label="Scan statistics" className="mt-2 flex flex-col gap-x-3 gap-y-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
+      <p aria-label="Scan statistics" className="mt-2 flex flex-col gap-x-3 gap-y-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap">
+        <span>Duration: <strong className="font-semibold text-foreground"><ExecutionDuration run={scan} /></strong></span>
+        <span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span>
+      </p>
     </>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><span>{retiredEngine ? "Retired engine" : "Mortis"}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+        <span>{retiredEngine ? "Retired engine" : "Mortis"}</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+          <Badge asChild variant="secondary" className="min-w-0 shrink px-1.5 py-0 font-normal wrap-anywhere whitespace-normal"><code>{scan.branch}</code></Badge>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+          <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={scan.head_sha}>{scan.head_sha.slice(0, 7)}</code></Badge>
+        </span>
+        <time dateTime={scan.created_at}>{date(scan.created_at)}</time>
+      </div>
     </PageTitle>
     {scanError && <div className="mb-5"><ErrorNotice error={scanError} tone={scan.status === "partial" ? "warning" : "error"} /></div>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Security scan" className="mb-4">
