@@ -1440,7 +1440,10 @@ test("repository filters survive configuration and the pull request run round tr
   await mock(page);
   await page.goto("/repositories/22?q=148&author=maria&findings=open");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings", exact: true }).click();
   await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
   await noOverflow(page);
   await (await repositoryPullsLink(page)).click();
@@ -1529,9 +1532,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
 test("repository configuration keeps drafts and stays on the selected section after saving", async ({ page }, info) => {
   const requests = await mock(page);
   await mockRepositoryPulls(page, 22, () => Array.from({ length: 11 }, (_, index) => ({ ...pr, id: `retry-${index}` })));
-  await page.goto("/repositories/22?q=retry&state=all&active_pages=2");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await expect(page).toHaveURL(/repositories\/22\/settings\?q=retry&state=all&active_pages=2$/);
+  await page.goto("/repositories/22/settings?q=retry&state=all&active_pages=2");
   const effort = page.getByRole("combobox", { name: "Review effort", exact: true });
   await expect(effort).toHaveValue("medium");
   await chooseOption(page, effort, "high");
@@ -4059,8 +4060,7 @@ test("searchable providers and protocols preserve presets and required model val
 
 test("repository language searches suggestions and preserves custom language entry", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const language = page.getByRole("combobox", { name: "Review language", exact: true });
   const trigger = page.locator('[data-slot="input-group"]').filter({ has: language }).getByRole("button", { name: "Show options" });
   await language.fill("span");
@@ -4109,8 +4109,7 @@ for (const search of ["", "   "]) {
   for (const close of ["Tab", "outside", "Save"] as const) {
     test(`${search ? "whitespace" : "empty"} language search preserves the saved value on ${close}`, async ({ page }) => {
       const requests = await mock(page);
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
       const language = page.getByRole("combobox", { name: "Review language", exact: true });
       await language.fill(search);
       if (close !== "Save") {
@@ -4127,8 +4126,7 @@ for (const search of ["", "   "]) {
 for (const commit of ["Enter", "Save"] as const) {
   test(`custom language commits a trimmed value with ${commit}`, async ({ page }) => {
     const requests = await mock(page);
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
     const language = page.getByRole("combobox", { name: "Review language", exact: true });
     await language.fill("  Mapudungun  ");
     await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
@@ -4144,8 +4142,7 @@ for (const commit of ["Enter", "Save"] as const) {
 
 test("closed custom language input submits the configuration with Enter", async ({ page }) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const language = page.getByRole("combobox", { name: "Review language", exact: true });
   await language.fill("Mapudungun");
   await language.press("Enter");
@@ -4168,8 +4165,7 @@ for (const available of [true, false]) {
       await held;
       await route.fulfill({ json: available ? [connection] : [] });
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "AI defaults");
     const picker = page.getByRole("combobox", { name: "Default AI connection", exact: true });
     await expect(picker).toBeDisabled();
@@ -4413,8 +4409,7 @@ test("repository model choices follow its selected connection", async ({ page },
   const requests = await mock(page);
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection", model: "second-model" }] }));
   await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "AI defaults");
   const model = page.getByLabel("Model override (optional)");
   await expect(model).toHaveAttribute("placeholder", "review-model");
@@ -4984,8 +4979,7 @@ test("project context generation uses unsaved model selections and preserves man
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
   const requests = await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await repositorySection(page, "AI defaults");
@@ -5048,8 +5042,7 @@ for (const outcome of ["done", "failed"] as const) {
     test(`project background preserves edits to ${change} when generation is ${outcome}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
       await repositorySection(page, "Project context");
       const field = page.getByRole("textbox", { name: "Project context", exact: true });
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5084,8 +5077,7 @@ for (const outcome of ["done", "failed"] as const) {
         error: "The provider denied model access.",
       };
       await mock(page, { background });
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
       await repositorySection(page, "Project context");
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5123,8 +5115,7 @@ for (const transient of ["network", "server"] as const) {
         else await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } });
       } else await route.fallback();
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     await repositorySection(page, "Project context");
     await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5148,8 +5139,7 @@ for (const phase of ["start", "poll"] as const) {
       await response;
       await route.fulfill({ status: 403, json: { detail: "Access denied for the old selections" } });
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     const sent = page.waitForRequest((request) => new URL(request.url()).pathname === path);
     await repositorySection(page, "Project context");
@@ -5171,8 +5161,7 @@ test("project background preserves text on failure and explains missing selectio
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "failed", background: null, error: "Reconnect your account before retrying." };
   await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "no-model", name: "No model", model: "" }] }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   const generate = page.getByRole("button", { name: "Generate context", exact: true });
@@ -5236,8 +5225,7 @@ for (const status of [422, 503]) {
 test("project background preserves text when starting or polling fails", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 422, json: { detail: "Authorize this repository first." } }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await field.fill("Keep my context");
@@ -5259,8 +5247,7 @@ for (const unlimited of [false, true]) {
   test(`project background uses unsaved ${unlimited ? "unlimited" : "custom"} review limits`, async ({ page }) => {
     const background: Schema["BackgroundJobOut"] = { id: "limits-job", status: "running", background: null, error: null };
     const requests = await mock(page, { background });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     await repositorySection(page, "Pull request reviews");
     if (unlimited) {
@@ -5286,8 +5273,7 @@ test("project background explains missing output and displays its generation ref
   const error = "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result. Your background was not changed.";
   const background: Schema["BackgroundJobOut"] = { id: "ab31f162-abb3-4ce5-bc85-e6af43be6ba6", status: "failed", background: null, error };
   const requests = await mock(page, { background });
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await field.fill("Keep my existing project background.");
@@ -5351,8 +5337,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
     current = { ...current, ...route.request().postDataJSON() };
     await route.fulfill({ json: current });
   });
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Pull request reviews");
   const time = page.getByLabel("Time limit (seconds)", { exact: true });
   const tokens = page.getByLabel("Analysis token budget", { exact: true });
@@ -7079,8 +7064,7 @@ test("run omits verification summary and orders assessment before coverage", asy
 
 test("automatic resolution is opt-in and available for manual reviews", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const automatic = page.getByRole("switch", { name: "Automatically review new commits", exact: true });
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
   await expect(resolution).not.toBeChecked();

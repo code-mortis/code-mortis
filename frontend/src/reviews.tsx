@@ -26,7 +26,6 @@ import {
   ClipboardCheck,
   LockKeyhole,
   Globe,
-  SlidersHorizontal,
   CircleCheck,
   CircleDot,
   CircleSlash,
@@ -128,7 +127,6 @@ function RunFeedback({ run, repositoryId, admin }: {
 export function Repositories({ admin, configure = false }: { admin: boolean; configure?: boolean }) {
   const { repositoryId } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
   const repos = useApi<Repository[]>("/repositories", true);
   const [params] = useSearchParams();
   const requested = repositoryId ?? (params.get("repo") || null);
@@ -165,14 +163,13 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     <div className="mb-6 min-w-0">
       <PageTitle className="mb-0" title={selected ? "Pull requests" : "Repositories"}
         headingProps={selected ? { id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } } : undefined}
-        actions={selected && <>
+        actions={selected && (
           <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
             onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
           })}>
             <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
           </Button>
-          {admin && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
-        </>}>
+        )}>
         {selected ? <>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
@@ -195,7 +192,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
           {selected.enabled ? <>
             <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>
             <span className="text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span>
-          </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
+          </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}</span>}
         </div>
       </section>}
     </div>
