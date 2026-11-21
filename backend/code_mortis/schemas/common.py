@@ -821,6 +821,7 @@ class InboxOut(BaseModel):
 
 class RepositoryPullFilters(InboxFilters):
     state: list[Literal["open", "merged", "closed", "all"]] = Field(default=["all"], max_length=4)
+    strict_state: bool = False
     ordering: Literal[
         "created_at", "-created_at", "updated_at", "-updated_at", "title", "-title",
         "repository", "-repository", "author", "-author",

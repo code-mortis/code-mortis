@@ -3990,6 +3990,8 @@ export interface components {
         RepositoryActivity: {
             /** Days */
             days: components["schemas"]["RepositoryActivityDay"][];
+            /** Recent Results */
+            recent_results?: components["schemas"]["RepositoryResult"][];
         };
         /** RepositoryActivityDay */
         RepositoryActivityDay: {
@@ -4062,6 +4064,29 @@ export interface components {
             last_pr_sync_check_at?: string | null;
             latest_completed_review?: components["schemas"]["RepositoryReviewSummary"] | null;
             security?: components["schemas"]["SecuritySummary"] | null;
+        };
+        /** RepositoryResult */
+        RepositoryResult: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "review" | "scan" | "review_fix" | "scan_fix";
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Run Id */
+            run_id: string;
+            /** Title */
+            title: string;
+            /** Pr Number */
+            pr_number?: number | null;
+            /** Scan Status */
+            scan_status?: ("completed" | "partial") | null;
+            /** Finding Id */
+            finding_id?: string | null;
         };
         /** RepositoryReviewSummary */
         RepositoryReviewSummary: {
@@ -4689,8 +4714,14 @@ export interface components {
             finding_state_counts?: {
                 [key: string]: number;
             };
+            /** Open Finding Severity Counts */
+            open_finding_severity_counts?: {
+                [key: string]: number;
+            } | null;
             /** Scan Count */
             scan_count?: number | null;
+            /** Last Completed Scan At */
+            last_completed_scan_at?: string | null;
         };
         /** SecurityRepositoryPage */
         SecurityRepositoryPage: {
@@ -5818,6 +5849,7 @@ export interface operations {
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
                 group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
+                strict_state?: boolean;
             };
             header?: never;
             path: {

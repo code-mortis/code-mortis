@@ -24,9 +24,6 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ClipboardCheck,
-  LockKeyhole,
-  Globe,
-  SlidersHorizontal,
   CircleCheck,
   CircleDot,
   CircleSlash,
@@ -36,6 +33,7 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
+  GitPullRequest,
 } from "lucide-react";
 import {
   ApiError,
@@ -48,10 +46,10 @@ import {
 } from "./api";
 import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { Badge } from "./components/ui/badge";
+import { Badge, badgeRadius } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
-import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
+import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
@@ -91,7 +89,6 @@ import { assessmentExceptions, RunStages } from "./components/run-stages";
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
-import { SecurityGrade } from "./components/security-grade";
 import { Pagination } from "./components/pagination";
 import { usePagedList } from "./hooks/use-paged-list";
 import { FindingCard, FindingCategory } from "./components/finding-card";
@@ -129,7 +126,6 @@ function RunFeedback({ run, repositoryId, admin }: {
 export function Repositories({ admin, configure = false }: { admin: boolean; configure?: boolean }) {
   const { repositoryId } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
   const repos = useApi<Repository[]>("/repositories", true);
   const [params] = useSearchParams();
   const requested = repositoryId ?? (params.get("repo") || null);
@@ -159,48 +155,42 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
   const syncPending = syncHere && action.isPending;
-  const Visibility = selected?.private ? LockKeyhole : Globe;
   const latestReview = !repos.error ? selected?.latest_completed_review : null;
   const lastCheck = !repos.error ? selected?.last_pr_sync_check_at : null;
+  const reviewInProgress = !repos.error && selected?.has_running_review;
+  const missingActivity = repos.error ? "Unavailable" : "None recorded";
   return <>
-    <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" title={selected ? "Pull requests" : "Repositories"}
-        headingProps={selected ? { id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } } : undefined}
-        actions={selected && <>
-          <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
-            onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
-          })}>
-            <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
-          </Button>
-          {admin && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate(`${repositoryPath}/settings${location.search}`, { state: location.state })}><SlidersHorizontal aria-hidden="true" className="size-4" />Configure</Button>}
-        </>}>
-        {selected ? <>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
-            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-            <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
-          </div>
-          {(lastCheck || latestReview || (!repos.error && selected.has_running_review)) && <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {lastCheck && <span>Last successful GitHub PR check · <time dateTime={lastCheck}>{date(lastCheck)}</time></span>}
-            {latestReview && <Link className="rounded-sm underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-              to={`/runs/${latestReview.run_id}`} state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
-              title={`Reviewed commit ${latestReview.head_sha}`}>
-              Last completed review · PR #{latestReview.number} · <code>{latestReview.head_sha.slice(0, 7)}</code>
-            </Link>}
-            {!repos.error && selected.has_running_review && <span>Review in progress</span>}
-          </p>}
-        </> : "Follow each pull request from first review to final resolution."}
-      </PageTitle>
-      {selected && <section aria-label="Review configuration" className="mt-6 border-t pt-4 text-xs">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <div className="flex items-center gap-2"><span className="text-muted-foreground">Reviews</span><Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Enabled" : "Paused"} /></div>
-          {selected.enabled ? <>
-            <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>
-            <span className="text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span>
-          </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Configure to enable them." : "Your administrator can enable them."}</span>}
-        </div>
-      </section>}
-    </div>
+    {selected ? <RepositoryHeader title="Pull requests" repository={selected}
+      headingProps={{ id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } }}
+      actions={<><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
+        onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
+      })}>
+        <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
+      </Button>{admin && <RepositorySettingsShortcut repositoryId={selected.id} section="reviews" />}</>}
+    >
+      <RepositorySummaryCard label="Review policy" icon={GitPullRequest} regionLabel="Review configuration" badgeInHeading
+        badge={<Badge variant={selected.enabled ? "default" : "outline"}>{selected.enabled ? "Reviews enabled" : "Paused"}</Badge>}
+        details={selected.enabled ? [["File limit", selected.settings.max_files == null ? "No limit" : `${selected.settings.max_files} files per review`]] : undefined}
+        note={selected.enabled ? undefined : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
+        {selected.enabled && (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only")}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard label="GitHub PR check" icon={RefreshCw} timestamp={lastCheck}
+        details={!repos.error && selected.open_prs != null ? [["Open PRs", selected.open_prs.toLocaleString()]] : undefined}>
+        {!lastCheck && missingActivity}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard icon={History}
+        label={reviewInProgress && !latestReview ? "Current review" : "Last completed review"}
+        details={latestReview ? [["Reviewed commit", <code>{latestReview.head_sha.slice(0, 7)}</code>]] : undefined}
+        note={latestReview && reviewInProgress ? "Review in progress" : undefined}
+        action={latestReview && <Link className={repositoryActivityLink} to={`/runs/${latestReview.run_id}`}
+          state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
+          aria-label={`View review for PR #${latestReview.number}`} title={`Reviewed commit ${latestReview.head_sha}`}>
+          View review<ChevronRight aria-hidden="true" className="size-3.5" />
+        </Link>}
+      >
+        {latestReview ? `PR #${latestReview.number}` : reviewInProgress ? "Review in progress" : missingActivity}
+      </RepositorySummaryCard>
+    </RepositoryHeader> : <PageTitle title="Repositories">Follow each pull request from first review to final resolution.</PageTitle>}
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
     {repos.error && <Button variant="outline" className="mb-4" onClick={() => repos.refetch()}>Retry repositories</Button>}
     {requested && !selected && <Empty title="Repository unavailable">
@@ -288,8 +278,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [restoring, setRestoring] = useState(false);
   const restoreTrigger = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const connections = useApi<Schema["ConnectionOut"][]>("/connections");
-  const [connection, setConnection] = useState("");
   const [urlTab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "code", "impact"], "findings");
   const tab = urlTab === "impact" ? "code" : urlTab;
   const resolved = tab === "resolved";
@@ -354,12 +342,11 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
-  const needsSharedConnection = !connection && repository.connection_requires_setup;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
-    : needsSharedConnection ? "The repository's connection is retired. Choose a shared API connection for this review, or update repository configuration."
+    : repository.connection_requires_setup ? "The repository's connection is retired. Update the default AI connection in repository settings."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
     filters.clear();
@@ -389,37 +376,50 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </DialogContent>
     </Dialog>
     <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>}>
+      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>} titleMeta={<Status value={pr.state} />}
+        actions={can_write && pr.state === "open" && (
+          <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined}
+            disabled={action.isPending || running || pr.ignored || !repository.enabled || repository.connection_requires_setup}
+            onClick={async () => {
+              const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: {} }).catch(() => null);
+              if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
+            }}><Play aria-hidden="true" className="size-4" />Run review</Button>
+        )}
+        footer={reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-          <Status value={pr.state} />
           <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound aria-hidden="true" className="size-3.5 shrink-0" /><span className="break-words [overflow-wrap:anywhere]">@{pr.author}</span></span>
           {pr.draft && <span>Draft</span>}
-          <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1"><GitBranch aria-hidden="true" className="size-3.5 shrink-0" /><code className="min-w-0 break-words [overflow-wrap:anywhere]">{pr.head_ref}</code><span>·</span><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></span>
-          <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm underline-offset-4 hover:text-foreground hover:underline">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="min-w-0 shrink px-1.5 py-0 font-normal wrap-anywhere whitespace-normal"><code>{pr.head_ref}</code></Badge>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={pr.head_sha}>{pr.head_sha.slice(0, 7)}</code></Badge>
+          </span>
+          <a href={pr.url} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm no-underline hover:text-foreground">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
         </div>
       </PageTitle>
-      <section aria-label="Latest review" className="mt-6 border-t pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="min-w-0 space-y-2">
+      <section aria-label="Latest review" className="mt-3 rounded-lg border bg-muted/40 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <div className="min-w-0 flex-1 basis-64 space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium">{latest ? "Latest review" : "No reviews yet"}</span>
+              <History aria-hidden="true" className="size-4 shrink-0 text-primary" />
+              <h2 className="font-semibold">{latest ? "Latest review" : "No reviews yet"}</h2>
               {latest && <Status value={latest.status} />}
-              {latest && <Link className="inline-flex min-h-6 items-center gap-1 rounded-sm text-xs underline-offset-4 hover:text-primary hover:underline" to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              {latest ? <><span>{date(latest.created_at)}</span><span>{latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"} · <code>{latest.head_sha.slice(0, 7)}</code></span></> : <span>A review records findings and coverage for this commit.</span>}
+              {latest ? <>
+                <time dateTime={latest.created_at}>{date(latest.created_at)}</time>
+                <span className="inline-flex items-center gap-1.5">
+                  {latest.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}
+                  <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={latest.head_sha}>{latest.head_sha.slice(0, 7)}</code></Badge>
+                </span>
+              </> : <span>A review records findings and coverage for this commit.</span>}
             </div>
           </div>
-          {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-            <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
-              options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
-            <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection} onClick={async () => {
-              const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
-              if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
-            }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
-          </div>}
+          {latest && <Link className={repositoryActivityLink} to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
         </div>
-        {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
     </div>
     <ErrorNotice error={action.error || query.error} />
@@ -824,7 +824,7 @@ function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
   const hasMetrics = [selected, completed, reused, failed, tokens].some(knownCount);
   const awaitingResults = active(run.status) || run.status === "blocked";
   return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-    <span>Duration: <ExecutionDuration run={run} /></span>
+    <span>Duration: <strong className="font-semibold text-foreground"><ExecutionDuration run={run} /></strong></span>
     <span>{hasMetrics
       ? <>{count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
       : awaitingResults ? "Awaiting review results" : "Review statistics unavailable"}</span>
@@ -843,6 +843,8 @@ const checkDescriptions: Record<string, string> = {
   timed_out: "The review exceeded its time limit.",
   action_required: "The review or GitHub synchronization needs attention.",
 };
+
+const statusTriggerClass = `inline-flex cursor-pointer ${badgeRadius} outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring`;
 
 function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
   const { run, pull_request: pr, occurrences, finding_state_counts = {}, findings_revision = "", assessment_revision = 0, assessment, can_write } = detail;
@@ -941,39 +943,47 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
             {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
-          </div>}>
+          </div>} footer={<>
+            <ErrorNotice error={action.error || error} />
+            <ErrorNotice error={run.error} />
+            <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
+            <RunMetrics run={run} tokens={detail.total_tokens} />
+          </>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
-          <span>{words(run.trigger)}</span>
-          <span className="inline-flex flex-wrap items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" /><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code><span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span></span>
+          <span>{label(run.trigger)}</span>
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+            <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code></Badge>
+            <span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span>
+          </span>
         </div>
-        <RunMetrics run={run} tokens={detail.total_tokens} />
       </PageTitle>
-      <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
+      <section aria-label="GitHub publication" className="mt-2 space-y-3 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
-            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
+            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass}><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
             </Tooltip>}
           </div>
           {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessmentStatus === "partial" ? "Some candidates could not be fully assessed." : assessmentStatus === "running" ? "Candidates are being assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
           {!run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Fix verification</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
             {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
-              {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
+              {run.check_url ? <a className={`${statusTriggerClass} underline-offset-4`} href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
                 <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
-              </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
+              </a> : <span tabIndex={0} className={statusTriggerClass}><Status value={checkValue || "check"} /></span>}
             </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
               : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
           </div>}
@@ -982,9 +992,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
       </section>
     </div>
-    <ErrorNotice error={action.error || error} />
-    <ErrorNotice error={run.error} />
-    <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList variant="page" aria-label="Review run views" className="mb-4">
         <TabsTrigger value="findings">Findings <span className="text-xs font-normal tabular-nums text-muted-foreground">{finding_state_counts.open ?? 0}</span></TabsTrigger>

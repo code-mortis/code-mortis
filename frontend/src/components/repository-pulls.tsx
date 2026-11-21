@@ -7,18 +7,24 @@ import { useRefreshQueuedReviews } from "../hooks/use-refresh-queued-reviews";
 import { getInboxReturn, groups, normalizeFilters, withoutPages, type Property } from "../lib/inbox-filters";
 import { Empty, ErrorNotice, Loading } from "./common";
 import { InboxFilters } from "./inbox-filters";
-import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./pull-request-row";
+import { PullRequestListHeading, PullRequestRow } from "./pull-request-row";
 import { Button } from "./ui/button";
 import { Pagination } from "./pagination";
 
 const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
+
+function normalizeRepositoryFilters(input: URLSearchParams) {
+  const params = normalizeFilters(input, "open");
+  if (input.get("strict_state") === "true") params.set("strict_state", "true");
+  return params;
+}
 
 export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number; admin: boolean }) {
   const [raw, setParams] = useSearchParams();
   const { search: routeSearch, state } = useLocation();
   const inboxReturn = getInboxReturn(state) ?? undefined;
   const navigate = useNavigate();
-  const params = normalizeFilters(raw, "open");
+  const params = normalizeRepositoryFilters(raw);
   params.delete("repo");
   params.delete("all_pages");
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
@@ -54,13 +60,13 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
   const search = useCallback((value: string) => {
     const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
-    navigate({ search: withConfiguration(normalizeFilters(next, "open")).toString() }, { replace: true, state });
+    navigate({ search: withConfiguration(normalizeRepositoryFilters(next)).toString() }, { replace: true, state });
   }, [filters, navigate, state, withConfiguration]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(withConfiguration(normalizeFilters(next, "open")), { state });
+    setParams(withConfiguration(normalizeRepositoryFilters(next)), { state });
   }
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;
@@ -68,7 +74,7 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
   const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings", "visibility"].some((key) => params.has(key));
 
   return <section aria-labelledby="repository-pulls-heading">
-    <p role="status" className="mb-4 text-xs tabular-nums text-muted-foreground">{rows ? <>
+    <p role="status" className="sr-only">{rows ? <>
       {filtered ? `${rows.total} of ${rows.registered_total}` : rows.total} pull {rows.total === 1 ? "request" : "requests"}
     </> : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</p>
     <div className="mb-4"><InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} /></div>
@@ -82,12 +88,12 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
         const error = rows?.errors[group];
         return <section key={group} aria-label={titles[group]}>
           <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{titles[group]}<span className="text-xs font-normal tabular-nums text-muted-foreground">{total}</span></h2>
-          <div className="overflow-hidden rounded-lg border bg-card">
+          <div className="@container/pull-requests overflow-hidden rounded-lg border bg-card">
             <PullRequestListHeading dateLabel="Updated" />
             {items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
                 state={{ inbox: inboxReturn, repository: `/repositories/${repositoryId}${routeSearch}` }}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<PullRequestStatus reviewStatus={pr.review_status} state={pr.state} hasRunningReview={pr.has_running_review} />} />)}
+                reviewStatus={pr.review_status} prState={pr.state} hasRunningReview={pr.has_running_review} />)}
             <Pagination page={page} pageSize={rows!.page_size} total={total} loading={pulls.isFetching && (pulls.isPlaceholderData || !!error)}
               error={error ? new Error(error) : null} onRetry={pulls.refetch} label={titles[group].toLowerCase()} onPageChange={(page) => {
                 const next = new URLSearchParams(params);

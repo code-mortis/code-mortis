@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
 import { useActivityRead } from "./hooks/use-activity-read";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, History, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, ShieldCheck, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { CoverageGroup } from "./components/coverage-group";
@@ -16,7 +16,8 @@ import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/or
 import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
-import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
+import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
+import { SecurityGrade, SecurityGradeBadge, securityFreshness, securityStates } from "./components/security-grade";
 import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
@@ -28,7 +29,7 @@ import { PopoverContent } from "./components/ui/popover";
 import { Sheet, SheetContent, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "./components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Textarea } from "./components/ui/textarea";
-import { SecurityBadge, SecurityScanBadge, SecurityScanStatus, SecurityStatus } from "./components/security-badge";
+import { SecurityBadge, SecurityScanBadge, SecurityStatus } from "./components/security-badge";
 import { useUrlTab } from "./hooks/use-url-tab";
 import { useRunResource } from "./hooks/use-run-resource";
 import { findingSeverities } from "./lib/review-filters";
@@ -47,7 +48,7 @@ const text = (value: unknown) => typeof value === "string" ? value : "";
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const entries = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.map(object) : [];
 const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "Unknown";
-const metadataLink = "rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring";
+const metadataLink = "rounded-sm no-underline outline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 const disclosure = "group rounded-lg border bg-card p-4 sm:p-5";
 const disclosureSummary = "flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium outline-offset-4 focus-visible:outline-2 focus-visible:outline-ring sm:min-h-8 [&::-webkit-details-marker]:hidden";
 const stageDescriptions: Record<string, [string, string]> = {
@@ -313,27 +314,37 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
   const stateCounts = query.data.finding_state_counts;
-  const Visibility = repo.private ? LockKeyhole : Globe;
+  const hasScan = Boolean(summary.latest_scan_id);
+  const freshness = securityFreshness[summary.freshness ?? "unavailable"];
+  const currentHead = hasScan ? summary.head_sha : null;
   return <>
-    <PageTitle title="Security" actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
-      <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
-    </div>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} />{summary.latest_scan_id && <><span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span><span aria-label="Scan freshness">{securityFreshness[summary.freshness ?? "unavailable"]}</span></>}<span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
-      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `Last graded report saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
-    </PageTitle>
+    <RepositoryHeader title="Security" repository={repo} actions={(query.data.can_write !== false || user.role === "admin") && <>
+      {query.data.can_write !== false && <>
+        <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
+        <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
+      </>}
+      {user.role === "admin" && <RepositorySettingsShortcut repositoryId={repo.id} section="scan-limits" />}
+    </>}>
+      <RepositorySummaryCard label="Saved grade" icon={ShieldCheck} badgeInHeading timestamp={summary.graded_at}
+        badge={<SecurityGrade showLabel showIcon={false} repositoryId={repo.id} summary={summary} />}
+        details={summary.graded_at && summary.grade_sha ? [
+          ["Graded commit", <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code>],
+        ] : undefined}
+        note={summary.graded_at ? undefined : "A finished report establishes the first grade."} />
+      <RepositorySummaryCard label="Freshness check" icon={RefreshCw} badgeInHeading timestamp={summary.checked_at}
+        badge={hasScan && <span aria-label="Scan freshness" className="text-xs font-medium">{summary.freshness === "outdated" ? <Status value="outdated" label={freshness} /> : freshness}</span>}
+        details={currentHead ? [["Current commit", <code title={currentHead}>{currentHead.slice(0, 7)}</code>]] : undefined}>
+        {!summary.checked_at && "No check recorded"}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard label="Latest scan" icon={History} regionLabel="Latest security scan"
+        timestamp={hasScan ? summary.latest_at : undefined}
+        details={hasScan ? [["Scan status", label(summary.latest_status ?? "unknown")]] : undefined}
+        action={hasScan && <Link className={repositoryActivityLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}>
+        {!hasScan && "No scans recorded"}
+      </RepositorySummaryCard>
+    </RepositoryHeader>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
-    {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="font-medium">Latest scan</span><SecurityStatus value={summary.latest_status ?? "unknown"} />
-        <Link className={`inline-flex min-h-6 items-center gap-1 text-xs ${metadataLink}`} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        {summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}
-        {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
-      </div>
-    </section>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security" className="mb-4">
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
       {findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} state={view.state} /></TabsContent>)}
@@ -434,13 +445,13 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
     next.delete(`${state}_page`);
     setParams(next, { replace: key === "search" });
   }
-  const description = {
-    open: scanId ? "Findings open when this scan was recorded. Later status changes do not change this list." : null,
-    accepted_risk: scanId ? "Findings recorded as accepted risks in this scan." : "Real issues accepted without a fix. These still count toward the current repository grade.",
-    false_positive: scanId ? "Findings recorded as false positives in this scan." : "Reports marked as invalid. These do not count toward the current repository grade.",
-    resolved: scanId ? "Findings recorded as resolved in this scan. Later status changes do not change this list." : "Findings with verified fixes. Reopened findings return to Findings.",
+  const description = scanId && {
+    open: "Findings open when this scan was recorded. Later status changes do not change this list.",
+    accepted_risk: "Findings recorded as accepted risks in this scan.",
+    false_positive: "Findings recorded as false positives in this scan.",
+    resolved: "Findings recorded as resolved in this scan. Later status changes do not change this list.",
   }[state];
-  return <div className="pt-4">
+  return <div className={scanId ? "pt-4" : "pt-2"}>
     {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
     <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={state === "open" ? scanId ? "Search scan findings" : "Search findings" : `Search ${label(state).toLowerCase()} findings`} searchPlaceholder="Search findings…" searchInputRef={searchInput}
       ordering={{ value: ordering, defaultValue: "-severity", options: orderings, onChange: (value) => changeFilter("ordering", [value]) }}
@@ -481,7 +492,12 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
       <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ExecutionDuration run={scan} /></span>
-      <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+      <span className="inline-flex w-fit">{scan.grade ? <>
+        <span className="sr-only">Saved security grade </span>
+        <span data-slot="security-grade-letter" className="font-semibold">{scan.grade}</span>
+      </> : <span className="text-xs text-muted-foreground">Unrated</span>}</span>
+      <Status value={scan.status} label={scan.status === "partial" ? "Partial" : undefined} showSpinner={false} />
+      <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
     </Link>)}</div><Pagination {...pagination} label="scan history" /></div></div>;
 }
 
@@ -508,20 +524,40 @@ export function SecurityScan({ user }: { user: User }) {
     .filter((problem) => problem && problem !== scan.error)
     .map(engineDiagnostic);
   return <>
-    <PageTitle title="Security scan" actions={<>
+    <PageTitle title="Security scan" titleMeta={<>
+      <Status value={scan.status} label={scan.status === "partial" ? "Partial" : undefined} />
+      {scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}>
+        <SecurityGradeBadge grade={scan.grade} label={`Security ${scan.grade}`} />
+      </SecurityBadge>}
+    </>} actions={<>
       <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={!Object.keys(report).length}><Download aria-hidden="true" className="size-3.5" />Download report<ChevronDown aria-hidden="true" className="size-3.5" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">{(["markdown", "json"] as const).map((format) => <DropdownMenuItem asChild key={format}><a href={`/api/v1/security/scans/${scan.id}/report?format=${format}`} download>Download {format === "json" ? "JSON" : "Markdown"}</a></DropdownMenuItem>)}</DropdownMenuContent>
       </DropdownMenu>
       {canWrite && active(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={action.isPending} onClick={() => action.mutate({ path: `/security/scans/${scan.id}/cancel` })}>Cancel scan</Button>}
       {canWrite && ["partial", "failed", "cancelled", "blocked"].includes(scan.status) && <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("retry")}><RefreshCw aria-hidden="true" className="size-3.5" />Retry scan</Button>}
       {canWrite && !active(scan.status) && <Button size="sm" className="min-h-11 sm:min-h-8" onClick={() => setRetrying("new")}><Play aria-hidden="true" className="size-3.5" />Rescan repository</Button>}
+    </>} footer={<>
+      {retiredEngine && <p role="status" className="mt-3 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
+      <ErrorNotice error={action.error} />
+      <ScanStages scan={scan} assessment={query.data.assessment} />
+      <p aria-label="Scan statistics" className="mt-2 flex flex-col gap-x-3 gap-y-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap">
+        <span>Duration: <strong className="font-semibold text-foreground"><ExecutionDuration run={scan} /></strong></span>
+        <span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span>
+      </p>
     </>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">{scan.grade && <SecurityBadge description={scan.status === "partial" ? "Grade based on confirmed findings." : "The grade saved with this scan. Current repository risk is shown separately."}><span className="sr-only">Security grade {scan.grade}</span><SecurityGradeShield grade={scan.grade} /></SecurityBadge>}<SecurityScanStatus status={scan.status} /><span>{retiredEngine ? "Retired engine" : "Mortis"}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5 font-mono"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span><time dateTime={scan.created_at}>{date(scan.created_at)}</time></div>
-      <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>Duration: <ExecutionDuration run={scan} /></span><span>{count(work.analysis_completed)} of {count(work.analysis_total)} source files analyzed · {count(work.completed)} completed work units · {count(work.failed)} failed · {count(scan.progress.tokens)} tokens</span></p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+        <span>{retiredEngine ? "Retired engine" : "Mortis"}</span>
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <GitBranch aria-hidden="true" className="size-3.5 shrink-0" />
+          <Badge asChild variant="secondary" className="min-w-0 shrink px-1.5 py-0 font-normal wrap-anywhere whitespace-normal"><code>{scan.branch}</code></Badge>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
+          <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={scan.head_sha}>{scan.head_sha.slice(0, 7)}</code></Badge>
+        </span>
+        <time dateTime={scan.created_at}>{date(scan.created_at)}</time>
+      </div>
     </PageTitle>
-    {retiredEngine && <p role="status" className="mb-4 text-sm text-muted-foreground">This historical scan used a retired engine. Its saved results remain available. Rescan repository starts a new Mortis scan.</p>}
-    <ErrorNotice error={action.error} />
-    <ScanStages scan={scan} assessment={query.data.assessment} />
     {scanError && <div className="mb-5"><ErrorNotice error={scanError} tone={scan.status === "partial" ? "warning" : "error"} /></div>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Security scan" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.finding_state_counts?.[view.state] ?? 0}</span></TabsTrigger>)}

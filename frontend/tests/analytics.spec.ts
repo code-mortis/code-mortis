@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type { Schema } from "../src/api";
 import { analyticsCompactNumber, analyticsRange } from "../src/lib/analytics";
 import { themes } from "../src/lib/appearance";
@@ -38,7 +38,8 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
     let json: unknown;
     if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
-    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "" } }));
+    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "", automatic: true, language: "English" } }));
+    else if (/^\/repositories\/\d+\/activity$/.test(path)) json = { days: [{ date: "2026-11-20", reviews: 0, scans: 0 }] };
     else if (path.startsWith("/analytics/")) {
       requests.push(url);
       const view = path.split("/").at(-1)!;
@@ -50,17 +51,37 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
 }
 
 test("repository Overview shows daily activity before opening Analytics", async ({ page }, info) => {
-  const requests = await mock(page);
+  const requests = await mock(page, (view, params) =>
+    view === "findings" && params.get("status") === "open" ? { ...findings, total: 10 } : undefined);
+  await page.route("**/api/v1/repositories/22/pulls?**", (route) => {
+    const filters = new URL(route.request().url()).searchParams;
+    expect(filters.getAll("state")).toEqual(["open"]);
+    expect(filters.getAll("review")).toEqual(["not_reviewed", "outdated"]);
+    expect(filters.get("strict_state")).toBe("true");
+    return route.fulfill({ json: { total: 12 } });
+  });
+  await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: {
+    summary: { grade: "D", freshness: "outdated", latest_scan_id: "scan-22", latest_status: "cancelled", latest_at: "2026-11-19T12:00:00Z" },
+    finding_state_counts: { open: 7, accepted_risk: 2, resolved: 4 },
+    open_finding_severity_counts: { critical: 1, high: 3, low: 3 },
+    last_completed_scan_at: "2026-11-17T12:00:00Z",
+    finding_count: 13,
+  } }));
   const days = Array.from({ length: 365 }, (_, index) => ({
     date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10),
     reviews: index === 364 ? 6 : 0,
     scans: index === 364 ? 2 : 0,
   }));
+  const recentResults: Schema["RepositoryResult"][] = [
+    { kind: "review", at: "2026-11-20T15:00:00Z", run_id: "review-22", title: "Add repository context", pr_number: 148 },
+    { kind: "scan", at: "2026-11-20T14:00:00Z", run_id: "scan-22", title: "main", scan_status: "partial" },
+    { kind: "scan_fix", at: "2025-11-20T13:55:00Z", run_id: "scan-21", title: "Restrict access to archived records", finding_id: "verified-fix" },
+  ];
   let activityReads = 0;
   await page.route("**/api/v1/repositories/22/activity?**", async (route) => {
     expect(new URL(route.request().url()).searchParams.get("timezone")).toBeTruthy();
     activityReads++;
-    await route.fulfill({ json: { days } });
+    await route.fulfill({ json: { days, recent_results: recentResults } });
   });
   await page.goto("/repositories/22/overview");
   await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
@@ -68,11 +89,64 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(activity).toContainText("8 total runs");
   await expect(activity).toContainText("6 review runs");
   await expect(activity).toContainText("2 security scans");
+  const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
+  const securityCard = page.getByRole("region", { name: "Security", exact: true });
+  const enabledBadge = reviewCard.getByText("Enabled", { exact: true });
+  const gradeBadge = securityCard.getByText("Grade D · Outdated", { exact: true });
+  await expect(reviewCard).toContainText(/10\s*open findings/);
+  for (const badge of [enabledBadge, gradeBadge]) {
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("data-variant", "default");
+    await expect(badge).toHaveCSS("border-radius", "5px");
+    await expect(badge).toHaveCSS("padding", "3px 8px");
+    await expect(badge).toHaveCSS("line-height", "17px");
+    await expect(badge).toHaveCSS("font-weight", "600");
+  }
+  await expect(reviewCard).toContainText(/Automatic reviews\s*On/);
+  await expect(reviewCard.getByText("Review language", { exact: true })).toHaveCount(0);
+  await expect(reviewCard.getByRole("link", { name: "12 PRs needing review", exact: true })).toHaveAttribute("href", "/repositories/22?state=open&review=not_reviewed&review=outdated&strict_state=true");
+  await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveAttribute("href", "/repositories/22");
+  await expect(securityCard).toContainText(/7\s*open findings/);
+  await expect(securityCard.getByRole("link", { name: "1 open critical finding", exact: true })).toHaveAttribute("href", "/security/repositories/22?severity=critical");
+  await expect(securityCard.getByRole("link", { name: "3 open high findings", exact: true })).toHaveAttribute("href", "/security/repositories/22?severity=high");
+  await expect(securityCard.getByText("Latest completed scan", { exact: true })).toBeVisible();
+  await expect(securityCard.locator("time")).toHaveAttribute("datetime", "2026-11-17T12:00:00Z");
+  await expect(securityCard.getByText("Scan status", { exact: true })).toHaveCount(0);
+  await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
+  const [chartBox, reviewBox, securityBox] = await Promise.all([activity.boundingBox(), reviewCard.boundingBox(), securityCard.boundingBox()]);
+  expect(chartBox!.y).toBeGreaterThan(Math.max(reviewBox!.y + reviewBox!.height, securityBox!.y + securityBox!.height));
+  const results = page.getByRole("region", { name: "Recent results", exact: true });
+  await expect(results.getByRole("listitem")).toHaveCount(3);
+  expect((await results.boundingBox())!.y).toBeGreaterThan(chartBox!.y + chartBox!.height);
+  const resultLinks = results.getByRole("link");
+  await expect(resultLinks.nth(0)).toHaveAccessibleName(/Review completed.*PR #148.*Add repository context/);
+  await expect(resultLinks.nth(0)).toHaveAttribute("href", "/runs/review-22");
+  await expect(resultLinks.nth(1)).toHaveAccessibleName(/Partial security scan.*main/);
+  await expect(resultLinks.nth(1)).toHaveAttribute("href", "/security/scans/scan-22");
+  await expect(resultLinks.nth(2)).toHaveAccessibleName(/Fix verified.*Restrict access to archived records/);
+  await expect(resultLinks.nth(2)).toHaveAttribute("href", "/security/scans/scan-21?tab=resolved&finding=verified-fix");
+  await expect(resultLinks.nth(2).locator("time")).toHaveAttribute("datetime", recentResults[2].at);
+  await expect(resultLinks.nth(2).locator("time")).toHaveText(/\b2025\b/);
+  if (info.project.name === "mobile") {
+    expect(securityBox!.y).toBeGreaterThan(reviewBox!.y);
+  } else {
+    expect(securityBox!.y).toBe(reviewBox!.y);
+    expect(securityBox!.x).toBeGreaterThan(reviewBox!.x);
+  }
   const calendar = activity.getByRole("group", { name: /Daily activity/ });
   await expect(calendar.getByRole("button")).toHaveCount(365);
   await expect(calendar.locator('[tabindex="0"]')).toHaveCount(1);
   const today = calendar.getByRole("button", { name: /8 total, 6 review runs, 2 security scans/ });
+  const primaryColor = await today.evaluate((cell) => getComputedStyle(cell).backgroundColor);
+  const actionLinks = [reviewCard.getByRole("link", { name: "View reviews" }), securityCard.getByRole("link", { name: "View security" }),
+    reviewCard.getByRole("link", { name: "12 PRs needing review", exact: true })];
+  for (const link of actionLinks) {
+    await expect(link).toHaveCSS("color", primaryColor);
+    if (info.project.name === "desktop") await link.hover();
+    await expect(link).toHaveCSS("text-decoration-line", "none");
+  }
   if (info.project.name === "mobile") {
+    await today.scrollIntoViewIfNeeded();
     await expect(today).toBeInViewport({ ratio: 1 });
     await today.tap();
   } else await today.hover();
@@ -98,13 +172,43 @@ test("repository Overview shows daily activity before opening Analytics", async 
   expect(activityReads).toBe(1);
   await expect(page.getByRole("group", { name: "Analytics filters", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
-  expect(requests).toHaveLength(0);
+  expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([{ repo: "22", all_time: "true", status: "open" }]);
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Analytics", exact: true }).click();
   await expect(page).toHaveURL("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
-  await expect.poll(() => requests.length).toBeGreaterThan(0);
+  await expect.poll(() => requests.some((url) => url.pathname.endsWith("/analytics/overview"))).toBe(true);
   expect(requests.every((url) => url.searchParams.get("repo") === "22")).toBe(true);
+});
+
+test("repository cards distinguish an unscanned repository from an unavailable count", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/analytics/findings?**", (route) => route.fulfill({ status: 503, json: {} }));
+  let countsAvailable = true;
+  await page.route("**/api/v1/repositories/23/pulls?**", (route) => countsAvailable
+    ? route.fulfill({ json: { total: 0 } }) : route.fulfill({ status: 403, json: {} }));
+  await page.route("**/api/v1/security/repositories/23", (route) => route.fulfill({ json: {
+    summary: { state: "not_scanned" }, finding_state_counts: {},
+    open_finding_severity_counts: countsAvailable ? {} : undefined,
+    last_completed_scan_at: countsAvailable ? null : undefined,
+  } }));
+  await page.goto("/repositories/23/overview");
+  const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
+  await expect(reviewCard).toContainText("Finding count unavailable");
+  await expect(reviewCard.getByRole("link", { name: "0 PRs needing review", exact: true })).toBeVisible();
+  const securityCard = page.getByRole("region", { name: "Security", exact: true });
+  await expect(securityCard).toContainText("Unscanned");
+  await expect(securityCard).toContainText(/0\s*open findings/);
+  await expect(securityCard).toContainText(/Latest completed scan\s*Never/);
+  await expect(securityCard.getByRole("link", { name: "0 open critical findings", exact: true })).toBeVisible();
+  await expect(securityCard.getByRole("link", { name: "0 open high findings", exact: true })).toBeVisible();
+  countsAvailable = false;
+  await page.reload();
+  await expect(reviewCard).toContainText(/PRs needing review\s*Unavailable/);
+  await expect(securityCard).toContainText(/Priority findings\s*Unavailable/);
+  await expect(securityCard).toContainText(/Latest completed scan\s*Unavailable/);
+  await expect(reviewCard.getByRole("link", { name: /needing review/ })).toHaveCount(0);
+  await expect(securityCard.getByRole("link", { name: /open (critical|high) findings/ })).toHaveCount(0);
 });
 
 test("repository activity keeps load errors separate from empty history", async ({ page }) => {
@@ -126,6 +230,7 @@ test("repository activity keeps load errors separate from empty history", async 
   await expect(page.getByText("No review runs or security scans in this period.")).toHaveCount(0);
   await page.getByRole("button", { name: "Retry activity" }).click();
   await expect(page.getByText("No review runs or security scans in this period.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Recent results", exact: true })).toHaveCount(0);
 });
 
 test("legacy repository Overview analytics filters open Analytics", async ({ page }) => {
@@ -220,7 +325,11 @@ test("compact numbers preserve zero, missing values and magnitude boundaries", (
 
 test("compact metrics and table values expose full numbers on hover, focus and tap", async ({ page }, info) => {
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
-  await mock(page, (view) => view === "overview" ? { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] } : view === "security" ? { ...security, scans: 1200 } : undefined);
+  await mock(page, (view) => ({
+    overview: { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] },
+    usage: { ...usage, trend: [trend[1], trend[16]] },
+    security: { ...security, scans: 1200 },
+  }[view]));
   await page.goto("/repositories/22/analytics");
   const metric = page.locator("dl").getByRole("button", { name: "441,757,065", exact: true });
   await expect(metric).toHaveText("441.8M");
@@ -237,35 +346,122 @@ test("compact metrics and table values expose full numbers on hover, focus and t
   await expect(page.getByRole("tooltip")).toHaveText("441,757,065");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Critical: 1,200 findings", exact: true })).toContainText("1.2k");
-  await page.getByText("View severity data", { exact: true }).click();
-  const severityValue = page.getByRole("table", { name: "Severity data", exact: true }).getByRole("button", { name: "1,200", exact: true });
-  await expect(severityValue).toHaveText("1.2k");
-  await severityValue.focus();
-  await expect(page.getByRole("tooltip")).toHaveText("1,200");
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.locator("#analytics-panel dl dd")).toHaveText(["1.2M", "26 / 28", "43.9k", "65.1k"]);
   const modelValue = page.getByRole("table", { name: "Usage by model", exact: true }).getByRole("button", { name: "1,245,800", exact: true });
   await expect(modelValue).toHaveText("1.2M");
   await modelValue.focus();
   await expect(page.getByRole("tooltip")).toHaveText("1,245,800");
-  await page.getByText("View token usage data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Token usage data", exact: true }).getByRole("button", { name: "1,709", exact: true })).toHaveText("1.7k");
+  const usagePanel = page.getByRole("region", { name: "Token usage", exact: true });
+  const usageChart = usagePanel.getByRole("application");
+  await page.mouse.move(0, 0);
+  await usageChart.focus();
+  await expect(usagePanel.getByRole("status")).toContainText("1,709");
+  await usageChart.press("ArrowRight");
+  await expect(usagePanel.getByRole("status")).toContainText("Missing reports: 2");
   await page.getByRole("tab", { name: "Security", exact: true }).click();
   await expect(page.locator("dl").getByRole("button", { name: "1,200", exact: true })).toHaveText("1.2k");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
+test("overview loads only its endpoint and shows charts without redundant tables", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "Repository", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Categories", exact: true, level: 2 })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Repository", exact: true })).toHaveCount(0);
+  await expect(page.locator("#analytics-panel dd").filter({ hasText: "61% of findings detected" })).toContainText("19");
   expect(requests.every((url) => url.pathname.endsWith("/overview"))).toBe(true);
-  await page.getByText("View review activity data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Review activity data", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review activity", exact: true }).getByRole("application")).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("table")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("Page not found");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("one Analytics CSV includes all tabs in the current repository and date range", async ({ page }) => {
+  const requests = await mock(page, (view) => {
+    if (view === "findings") return { ...findings, total: 8 };
+    if (view === "usage") return { ...usage, repositories: usage.repositories.filter((repo) => repo.repository_id === 22) };
+    if (view === "overview") return {
+      ...overview,
+      repositories: overview.repositories.filter((repo) => repo.id === 22),
+      categories: [
+        ...Array.from({ length: 10 }, (_, index) => ({ key: `category-${index}`, count: index + 1 })),
+        { key: 'résultat, "quoted"\r\nsecond line', count: 2 },
+        { key: "  =1+1", count: 1 },
+      ],
+    };
+  });
+  await page.goto("/repositories/22/analytics?tab=reviews&period=custom&start=2026-09-19&end=2026-10-18&repo=23&severity=high&category=bug&status=open");
+  await expect(page.getByRole("heading", { name: "Review outcomes", exact: true })).toBeVisible();
+  expect(requests.map((request) => request.pathname.split("/").at(-1))).toEqual(["reviews"]);
+  const downloaded = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toBe("analytics-acme-code-mortis-2026-09-19-to-2026-10-18.csv");
+  const csv = await readFile(await file.path(), "utf8");
+  expect(csv).toMatch(/^\uFEFFrepository,repository_id,from_at,to_at_exclusive,timezone,bucket,tab,section,item,date,metric,value\r\n/);
+  expect(csv).toContain('"acme/code-mortis",22,"2026-09-19T00:00:00Z","2026-10-19T00:00:00Z","America/Santiago","day"');
+  expect(csv).toContain('"overview","activity","","2026-09-02","review_runs",7\r\n');
+  expect(csv).toContain('"overview","categories","résultat, ""quoted""\r\nsecond line","","count",2\r\n');
+  expect(csv).toContain(`"overview","categories","'  =1+1","","count",1\r\n`);
+  expect(csv).toContain('"findings","filters","","","severity","high"\r\n');
+  expect(csv).toContain('"findings","summary","","","total",8\r\n');
+  expect(csv).toContain('"reviews","summary","","","contributor_count",2\r\n');
+  expect(csv).toContain('"reviews","coverage","completed","","count",110\r\n');
+  expect(csv).toContain('"usage","activity","","2026-09-17","tokens",\r\n');
+  expect(csv).toContain('"usage","activity","","2026-09-17","missing_reports",2\r\n');
+  expect(csv).toContain('"usage","by_model","review-model","","tokens",1245800\r\n');
+  expect(csv).toContain('"security","states","accepted_risk","","count",2\r\n');
+  expect(csv).not.toContain("acme/noodle");
+  const exportRequests = requests.slice(1);
+  expect(exportRequests.map((request) => request.pathname.split("/").at(-1)).sort()).toEqual(["findings", "overview", "reviews", "security", "usage"]);
+  for (const { pathname, searchParams } of exportRequests) {
+    expect(searchParams.getAll("repo")).toEqual(["22"]);
+    for (const name of ["from_at", "to_at", "timezone"]) {
+      expect(searchParams.get(name)).toBeTruthy();
+      expect(searchParams.get(name)).toBe(requests[0].searchParams.get(name));
+    }
+    const findingsOnly = pathname.endsWith("/findings");
+    expect(searchParams.get("severity")).toBe(findingsOnly ? "high" : null);
+    expect(searchParams.get("category")).toBe(findingsOnly ? "bug" : null);
+    expect(searchParams.get("status")).toBe(findingsOnly ? "open" : null);
+  }
+  await expect(page.getByRole("tab", { name: "Reviews", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
+test("Analytics CSV waits for all sections and can be retried after a failure", async ({ page }) => {
+  await mock(page);
+  let attempts = 0;
+  let failExport!: () => void;
+  const pending = new Promise<void>((resolve) => { failExport = resolve; });
+  await page.route("**/api/v1/analytics/security?**", async (route) => {
+    if (++attempts > 1) return route.fulfill({ json: security });
+    await pending;
+    return route.fulfill({ status: 503, json: { detail: "Security analytics is temporarily unavailable." } });
+  });
+  const downloads: string[] = [];
+  page.on("download", (file) => downloads.push(file.suggestedFilename()));
+  await page.goto("/repositories/22/analytics?period=all");
+  await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
+  const button = page.getByRole("button", { name: "Download", exact: true });
+  await button.click();
+  try {
+    await expect(button).toBeDisabled();
+    await expect(page.getByRole("group", { name: "Analytics filters" }).getByRole("status")).toHaveText("Preparing Analytics CSV");
+  } finally {
+    failExport();
+  }
+  await expect(page.getByRole("alert")).toContainText("Security analytics is temporarily unavailable.");
+  expect(downloads).toEqual([]);
+  const downloaded = page.waitForEvent("download");
+  await button.click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toMatch(/^analytics-acme-code-mortis-all-time-through-\d{4}-\d{2}-\d{2}\.csv$/);
+  expect(downloads).toHaveLength(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(button).toBeEnabled();
 });
 
 test("repository overview locks scope across tabs, URL filters, reload and retries", async ({ page }) => {
@@ -329,6 +525,7 @@ test("custom dates validate before requesting and keyboard switches tabs", async
   const requests = await mock(page);
   await page.goto("/repositories/22/analytics?period=custom&start=2026-02-30&end=bad");
   await expect(page.getByRole("alert")).toContainText("Choose a valid");
+  await expect(page.getByRole("button", { name: "Download", exact: true })).toBeDisabled();
   expect(requests).toHaveLength(0);
   await page.getByRole("button", { name: "From", exact: true }).click();
   await page.getByRole("button", { name: /October 1st, 2026/ }).click();
@@ -368,11 +565,11 @@ test("security analytics preserves filters and exposes accessible scan data", as
   expect(requests.at(-1)?.searchParams.get("repo")).toBe("23");
   expect(requests.at(-1)?.searchParams.has("severity")).toBe(false);
   expect(requests.at(-1)?.searchParams.has("status")).toBe(false);
-  await page.getByText("View security activity data", { exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("table", { name: "Security activity data", exact: true }).getByRole("columnheader")).toHaveText(["Period starting", "Security scans", "Findings detected"]);
-  await page.getByText("View current resolution data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Current resolution data", exact: true })).toContainText("Accepted risk");
+  const scanPanel = page.getByRole("region", { name: "Security activity", exact: true });
+  await scanPanel.getByRole("application").focus();
+  await expect(scanPanel.getByRole("status")).toContainText("Security scans");
+  await expect(scanPanel.getByRole("status")).toContainText("Findings detected");
+  await expect(page.getByRole("region", { name: "Current resolution", exact: true }).getByRole("application")).toContainText("Accepted risk");
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Usage", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
@@ -412,10 +609,15 @@ test("date controls align, wrap and show themed calendar popovers", async ({ pag
     await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
     await expect(page.getByText("Review impact and model usage across your repositories.")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 19, 2026");
+    const download = await page.getByRole("button", { name: "Download", exact: true }).boundingBox();
+    const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
+    expect(Math.abs(download!.y - refresh!.y)).toBeLessThan(1);
+    expect(download!.x + download!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     if (info.project.name === "desktop") {
-      const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
       const from = await page.getByRole("button", { name: "From", exact: true }).boundingBox();
+      const title = await page.getByRole("heading", { level: 1, name: "Analytics" }).boundingBox();
       expect(Math.abs(refresh!.y - from!.y)).toBeLessThan(1);
+      expect(Math.abs((refresh!.y + refresh!.height / 2) - (title!.y + title!.height / 2))).toBeLessThan(2);
     }
     await page.screenshot({ path: `../.impeccable/review/analytics-filters-${info.project.name}-${mode}.png`, animations: "disabled" });
     await page.getByRole("button", { name: "From", exact: true }).click();
@@ -462,9 +664,9 @@ test("charts follow every palette and remain keyboard accessible", async ({ page
     const rgb = `rgb(${[1, 3, 5].map((start) => parseInt(muted.slice(start, start + 2), 16)).join(", ")})`;
     await expect(page.locator(".recharts-cartesian-axis-tick-value").first()).toHaveCSS("fill", rgb);
   }
-  await page.getByText("View severity data", { exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("table", { name: "Severity data", exact: true })).toBeVisible();
+  const severityPanel = page.getByRole("region", { name: "Severity", exact: true });
+  await severityPanel.getByRole("application").focus();
+  await expect(severityPanel.getByRole("status")).toContainText("Critical");
 });
 
 test("capture Analytics in each tab and theme with long labels", async ({ page }, info) => {
@@ -473,9 +675,16 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
   await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   await mkdir("../.impeccable/review", { recursive: true });
-  for (const tab of ["Overview", "Findings", "Reviews", "Usage", "Security"]) {
+  for (const [tab, lead, supporting] of [
+    ["Overview", "Review activity", "Severity"],
+    ["Findings", "Finding trends", "Current resolution"],
+    ["Reviews", "Review outcomes", "File review results"],
+    ["Usage", "Token usage", "Usage by stage"],
+    ["Security", "Security activity", "Severity"],
+  ]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator("#analytics-panel > p, #analytics-panel section > div > details")).toHaveCount(0);
     await expect(page.locator("[data-slot=chart]").first()).toBeVisible();
     await expect(page.locator("#analytics-panel dl dt")).toHaveCount(4);
     await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
@@ -487,6 +696,19 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
       const svg = chart.querySelector("svg.recharts-surface");
       return svg && Math.abs(svg.getBoundingClientRect().width - chart.getBoundingClientRect().width) < 2;
     }))).toBe(true);
+    const leadPanel = page.getByRole("heading", { name: lead, exact: true, level: 2 }).locator("..");
+    const supportingPanel = page.getByRole("heading", { name: supporting, exact: true, level: 2 }).locator("..");
+    const [leadBox, supportingBox] = await Promise.all([leadPanel.boundingBox(), supportingPanel.boundingBox()]);
+    const supportingBackground = await supportingPanel.evaluate((panel) => getComputedStyle(panel).backgroundColor);
+    await expect(leadPanel).not.toHaveCSS("background-color", supportingBackground);
+    if (info.project.name === "desktop") {
+      expect(Math.abs(leadBox!.y - supportingBox!.y)).toBeLessThan(1);
+      expect(leadBox!.width).toBeGreaterThan(supportingBox!.width);
+    } else {
+      expect(Math.abs(leadBox!.width - supportingBox!.width)).toBeLessThan(1);
+      const [first, second] = tab === "Findings" ? [supportingBox!, leadBox!] : [leadBox!, supportingBox!];
+      expect(first.y + first.height).toBeLessThan(second.y);
+    }
     if (tab === "Findings") {
       await expect(page.locator("#analytics-panel dl dt")).toHaveText(["Findings", "Open", "Resolved", "Dismissed"]);
       const metrics = await page.locator("#analytics-panel dl").boundingBox();

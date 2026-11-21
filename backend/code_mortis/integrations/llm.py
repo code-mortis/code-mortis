@@ -11,6 +11,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 from mortis_engine import gateway as engine_gateway
 from mortis_engine import llm_http as engine_http
+from mortis_engine.schemas import Request as EngineRequest
 
 from code_mortis.core import analysis, inference_admission
 from code_mortis.core.config import settings
@@ -31,6 +32,16 @@ def http_client():
 def input_fingerprint(request: Request):
     # Session IDs correlate transport calls; they do not change analysis inputs.
     return analysis.fingerprint(request.model_dump(mode="json", exclude={"session_id"}))
+
+
+def workflow_connection(connection):
+    """Use the provider settings retained in new review and scan plans."""
+    options = {key: value for key, value in connection.get("options", {}).items()
+               if key not in {"timeout_sec", "prompt_token_ceiling"}}
+    if "extra_body" in options:
+        options["extra_body"] = {key: value for key, value in options["extra_body"].items()
+                                 if key not in {"max_tokens", "max_completion_tokens", "max_output_tokens"}}
+    return {**connection, "execution_limits": analysis.EXECUTION_LIMITS, "options": options}
 
 
 def engine_connection(connection, *, preserve_cache_key_budget=False):
@@ -58,10 +69,16 @@ def engine_connection(connection, *, preserve_cache_key_budget=False):
     return {**connection, "options": options}
 
 
+def _engine_request(request):
+    if isinstance(request, EngineRequest):
+        return request
+    return EngineRequest.model_validate(request.model_dump(mode="python"))
+
+
 def reservation(connection, request):
     if connection.get("execution_limits") == analysis.EXECUTION_LIMITS:
         estimate = request if request.max_output_tokens else request.model_copy(update={"max_output_tokens": 5_000_000})
-        return engine_gateway.reservation(engine_connection(connection), estimate)
+        return engine_gateway.reservation(engine_connection(connection), _engine_request(estimate))
     protocol = connection["protocol"]
     body = llm_http.encode_request("anthropic" if protocol == "anthropic-bedrock" else protocol,
                                    connection, request)
@@ -132,7 +149,7 @@ async def send(connection, credentials, request, *, client, stopped=lambda: Fals
                 request = request.model_copy(update={"max_output_tokens": min(request.max_output_tokens, capacity)})
             transport = _EngineClient(client)
             try:
-                return await engine_gateway.send(engine_connection(connection), credentials, request,
+                return await engine_gateway.send(engine_connection(connection), credentials, _engine_request(request),
                     client=transport, stopped=stopped,
                     timeout=timeout - (time.monotonic() - started) if timeout is not None else None)
             except ValueError as exc:
@@ -314,20 +331,33 @@ async def execute_task(task_id, job_id, job_attempt, request: Request, credentia
 
 async def check_connection(connection, credentials, *, client, stopped=lambda: False):
     """Two synthetic requests; no repository content or arbitrary tool execution."""
-    deadline = time.monotonic() + connection.get("options", {}).get("timeout_sec", 120)
-    extra = connection.get("options", {}).get("extra_body", {})
+    options = connection.get("options", {})
+    deadline = time.monotonic() + options.get("timeout_sec", 120)
+    extra = options.get("extra_body", {})
     thinking = extra.get("thinking", {})
     reasoning_budget = extra.get("thinking.budget_tokens", thinking.get("budget_tokens", 0) if isinstance(thinking, dict) else 0)
     if type(reasoning_budget) is not int or reasoning_budget < 0:
         raise ValueError("Connection thinking budget must be a nonnegative whole number")
     output_limit = next((extra[key] for key in ("max_tokens", "max_completion_tokens", "max_output_tokens") if key in extra),
                         max(2048, reasoning_budget + 1024))
+    connection = workflow_connection(connection)
+    if "prompt_token_ceiling" in options:
+        connection["options"]["prompt_token_ceiling"] = options["prompt_token_ceiling"]
     request = Request(messages=[Message(role="user", content="Call mortis_probe with value 17.")],
                       tools=[Tool(name="mortis_probe", parameters={"type": "object", "properties": {
                           "value": {"type": "integer", "const": 17}}, "required": ["value"],
                           "additionalProperties": False})], max_output_tokens=output_limit)
-    first = await send(connection, credentials, request, client=client, stopped=stopped,
-                       timeout=deadline - time.monotonic())
+
+    async def probe(request):
+        try:
+            reservation(connection, request)
+        except ValueError as exc:
+            raise InferenceError("request_validation", str(exc), consumption_unknown=False) from exc
+        result = await send(connection, credentials, request, client=client, stopped=stopped,
+                            timeout=deadline - time.monotonic())
+        return Response.model_validate(result.model_dump(mode="python"))
+
+    first = await probe(request)
     if len(first.tool_calls) != 1 or first.tool_calls[0].arguments != {"value": 17}:
         raise InferenceError("tool_round_trip", "The selected model did not complete the tool probe.", usage=first.usage)
     call = first.tool_calls[0]
@@ -335,8 +365,7 @@ async def check_connection(connection, credentials, *, client, stopped=lambda: F
         Message(role="assistant", content=first.content, tool_calls=first.tool_calls, provider_data=first.provider_data),
         Message(role="tool", tool_call_id=call.id, content='{"result":"MORTIS_PROBE_OK"}'),
         Message(role="user", content="Reply with exactly MORTIS_PROBE_OK and do not call tools.")]})
-    second = await send(connection, credentials, followup, client=client, stopped=stopped,
-                        timeout=deadline - time.monotonic())
+    second = await probe(followup)
     if second.tool_calls or second.content.strip() != "MORTIS_PROBE_OK":
         raise InferenceError("tool_round_trip", "The selected model did not confirm the tool result.", usage=second.usage)
     return first, second

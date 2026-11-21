@@ -1,11 +1,13 @@
-import { GitPullRequest, ShieldCheck } from "lucide-react";
+import { ChevronRight, CircleCheck, GitPullRequest, Shield, ShieldCheck } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, useApi, type Schema } from "../api";
-import { ErrorNotice } from "./common";
+import { date, ErrorNotice } from "./common";
 import { Button } from "./ui/button";
 
 const monthFormat = new Intl.DateTimeFormat(undefined, { month: "short", timeZone: "UTC", calendar: "gregory" });
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC", calendar: "gregory" });
+const resultDateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 const numberFormat = new Intl.NumberFormat();
 const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const levels = [
@@ -23,7 +25,8 @@ export function RepositoryActivity({ repositoryId }: { repositoryId: number }) {
   const query = useApi<Schema["RepositoryActivity"]>(
     `/repositories/${repositoryId}/activity?${new URLSearchParams({ timezone })}`,
   );
-  return (
+  const results = !query.error ? query.data?.recent_results : undefined;
+  return <>
     <section aria-label="Repository activity" className="min-w-0">
       {query.isPending || query.error ? (
         <div className={cardClass}>
@@ -38,7 +41,39 @@ export function RepositoryActivity({ repositoryId }: { repositoryId: number }) {
         </div>
       ) : <ActivityCalendar days={query.data.days} />}
     </section>
-  );
+    {!!results?.length && <RecentResults results={results} />}
+  </>;
+}
+
+function RecentResults({ results }: { results: Schema["RepositoryResult"][] }) {
+  return <section aria-labelledby="repository-recent-results" className="mt-6 min-w-0">
+    <h2 id="repository-recent-results" className="mb-2 px-1 text-sm font-semibold">Recent results</h2>
+    <ol className="divide-y overflow-hidden rounded-lg border bg-card text-card-foreground">
+      {results.map((result) => {
+        const isReview = result.kind === "review" || result.kind === "review_fix";
+        const isFix = result.kind === "review_fix" || result.kind === "scan_fix";
+        const Icon = isFix ? CircleCheck : isReview ? GitPullRequest : Shield;
+        const label = isFix ? "Fix verified" : isReview ? "Review completed"
+          : result.scan_status === "partial" ? "Partial security scan" : "Security scan completed";
+        const detail = isReview && result.pr_number != null ? `PR #${result.pr_number} · ${result.title}` : result.title;
+        const path = `${isReview ? "/runs/" : "/security/scans/"}${encodeURIComponent(result.run_id)}`;
+        const to = result.finding_id ? `${path}?${new URLSearchParams({ tab: "resolved", finding: result.finding_id })}` : path;
+        return <li key={`${result.kind}:${result.run_id}:${result.finding_id ?? ""}`}>
+          <Link to={to} className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5 no-underline hover:bg-muted/50 focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring sm:gap-3 sm:px-4">
+            <Icon aria-hidden="true" className="size-4 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 space-y-0.5">
+              <span className="block text-sm font-medium">{label}</span>
+              <span className="line-clamp-2 text-xs wrap-anywhere text-muted-foreground">{detail}</span>
+            </span>
+            <time dateTime={result.at} title={date(result.at)} className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+              {resultDateFormat.format(new Date(result.at))}
+            </time>
+            <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+          </Link>
+        </li>;
+      })}
+    </ol>
+  </section>;
 }
 
 function ActivityCalendar({ days }: { days: Schema["RepositoryActivity"]["days"] }) {

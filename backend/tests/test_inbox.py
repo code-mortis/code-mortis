@@ -169,6 +169,21 @@ def test_running_reviews_stay_visible_until_finished(visible, client, state, rev
     assert not history["groups"][0]["items"][0]["has_running_review"]
 
 
+def test_repository_pulls_can_require_exact_states_for_review_backlog(visible, github_stub, client):
+    with transaction() as db:
+        run(db, pull(db, "outdated-open"), "completed", head_sha="c" * 40)
+        run(db, pull(db, "outdated-merged", "merged"), "running", head_sha="c" * 40)
+        run(db, pull(db, "outdated-closed", "closed"), "running", head_sha="c" * 40)
+    path = "/api/v1/repositories/22/pulls?state=open&review=not_reviewed&review=outdated"
+    default = client.get(path)
+    assert default.status_code == 200
+    assert default.json()["total"] == 4
+    scoped = client.get(f"{path}&strict_state=true")
+    assert scoped.status_code == 200
+    assert scoped.json()["total"] == 2
+    assert {item["id"] for group in scoped.json()["groups"] for item in group["items"]} == {"pr", "outdated-open"}
+
+
 def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, seed, client, monkeypatch):
     with transaction() as db:
         db.get(Repository, 22).enabled = False

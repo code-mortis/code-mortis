@@ -12,7 +12,7 @@ from code_mortis.schemas.common import (
 )
 
 
-def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters) -> InboxOut:
+def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters, *, strict_state: bool = False) -> InboxOut:
     permitted = [repo.id for repo in repositories]
     visibility = [] if filters.visibility == "all" else [PullRequest.ignored.is_(filters.visibility == "ignored")]
     current = and_(ReviewRun.head_sha == PullRequest.head_sha, ReviewRun.base_sha == PullRequest.base_sha)
@@ -88,7 +88,8 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         select(base.c.state, func.count()).where(*conditions).group_by(base.c.state)
     ).all()))
     if "all" not in filters.state:
-        conditions.append(or_(base.c.state.in_(filters.state), base.c.has_running_review))
+        state_matches = base.c.state.in_(filters.state)
+        conditions.append(state_matches if strict_state else or_(state_matches, base.c.has_running_review))
     filtered = select(base).where(*conditions).cte("inbox_filtered")
     totals = dict(db.execute(select(filtered.c.group, func.count()).group_by(filtered.c.group)).all())
     states = {"open", "merged", "closed"} if "all" in filters.state else set(filters.state)

@@ -2,7 +2,6 @@ import { useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronRight, FileText, GitPullRequest, LoaderCircle, Shield } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
-import { Tabs } from "radix-ui";
 import { api, ApiError, type Schema } from "../api";
 import { activityFeedQueryKey, activityQueryKey } from "../hooks/use-activity-read";
 import { reviewStatusLabel } from "../lib/inbox-filters";
@@ -10,7 +9,7 @@ import { cn } from "../lib/utils";
 import { ListDate } from "./common";
 import { Button } from "./ui/button";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTitle, PopoverTrigger } from "./ui/popover";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 
 type Activity = Schema["ActivityItem"];
 type Feed = Schema["ActivityFeed"];
@@ -64,15 +63,6 @@ function ActivityRow({ item, onOpen }: { item: Activity; onOpen: () => void }) {
     </Link>
   </li>;
 }
-
-function BrushCleaning() {
-  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m16 22-1-4M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1" />
-    <path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233zM8 22l1-4" />
-  </svg>;
-}
-
-const tabStyle = "inline-flex min-h-9 items-center gap-2 rounded-md border border-transparent px-2.5 text-[13px] text-foreground focus-visible:outline-offset-2 data-[state=active]:border-border data-[state=active]:text-primary";
 
 const denied = (error: Error | null) => error instanceof ApiError && [401, 403].includes(error.status);
 
@@ -137,26 +127,21 @@ export function NotificationInbox({ userId }: { userId: number }) {
     </PopoverAnchor>
     <PopoverContent align="end" sideOffset={8} collisionPadding={8} aria-labelledby={title}
       onOpenAutoFocus={(event) => { event.preventDefault(); runningTab.current?.focus(); }}
-      className="flex max-h-[min(62dvh,490px,var(--radix-popover-content-available-height))] w-100 max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-xl p-0 sm:max-h-[min(74dvh,var(--radix-popover-content-available-height))] motion-reduce:animate-none">
+      className="flex max-h-[min(62dvh,490px,var(--radix-popover-content-available-height))] w-100 max-w-[calc(100vw-16px)] flex-col overflow-hidden rounded-lg p-0 sm:max-h-[min(74dvh,var(--radix-popover-content-available-height))] motion-reduce:animate-none">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b p-4">
         <PopoverTitle id={title} className="text-base font-semibold">Notifications</PopoverTitle>
-        <TooltipProvider delayDuration={350}><Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground pointer-coarse:size-11 aria-disabled:opacity-50 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
-              aria-label="Mark all as read" aria-disabled={!unread || markAll.isPending}
-              onClick={() => { if (snapshot && unread && !markAll.isPending) markAll.mutate({ as_of: snapshot.as_of, snapshot: snapshot.snapshot }); }}>
-              <BrushCleaning />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent sideOffset={5}>Mark all as read</TooltipContent>
-        </Tooltip></TooltipProvider>
+        <Button variant="ghost" size="sm" className="shrink-0 text-xs text-muted-foreground pointer-coarse:min-h-11 aria-disabled:opacity-50 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
+          aria-disabled={!unread || markAll.isPending}
+          onClick={() => { if (snapshot && unread && !markAll.isPending) markAll.mutate({ as_of: snapshot.as_of, snapshot: snapshot.snapshot }); }}>
+          Mark all as read
+        </Button>
       </div>
-      <Tabs.Root value={tab} className="flex min-h-0 flex-col" onValueChange={(value) => { setTab(value === "updates" ? "updates" : "running"); setPages([]); }}>
-        <Tabs.List aria-label="Notification views" className="flex shrink-0 gap-2 border-b px-3 py-2">
-          <Tabs.Trigger ref={runningTab} value="running" className={tabStyle}>In progress <span className="tabular-nums">{inProgress}</span></Tabs.Trigger>
-          <Tabs.Trigger value="updates" className={tabStyle}>Updates <span className="tabular-nums">{unread}</span></Tabs.Trigger>
-        </Tabs.List>
-        {(["running", "updates"] as const).map((view) => <Tabs.Content value={view} key={view} className="min-h-0 overflow-y-auto overscroll-contain">
+      <Tabs value={tab} className="min-h-0 gap-0" onValueChange={(value) => { setTab(value === "updates" ? "updates" : "running"); setPages([]); }}>
+        <TabsList variant="page" aria-label="Notification views" className="shrink-0 px-4">
+          <TabsTrigger ref={runningTab} value="running">In progress <span className="tabular-nums">{inProgress}</span></TabsTrigger>
+          <TabsTrigger value="updates">Updates <span className="tabular-nums">{unread}</span></TabsTrigger>
+        </TabsList>
+        {(["running", "updates"] as const).map((view) => <TabsContent value={view} key={view} className="min-h-0 overflow-y-auto overscroll-contain">
           {view === tab && <>
             {(feed.error || pageQuery.error || markAll.error) && <div role="status" className="flex items-center justify-between gap-2 px-4 py-2 text-xs text-muted-foreground">
               <span>{markAll.error ? "Couldn’t mark results as read." : "Couldn’t refresh notifications."}</span>
@@ -174,8 +159,8 @@ export function NotificationInbox({ userId }: { userId: number }) {
               {next && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setPages((old) => [...old, next])}>Next</Button>}
             </div>}
           </>}
-        </Tabs.Content>)}
-      </Tabs.Root>
+        </TabsContent>)}
+      </Tabs>
     </PopoverContent>
   </Popover>;
 }

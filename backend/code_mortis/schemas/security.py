@@ -156,7 +156,9 @@ class SecurityRepositoryOut(StrictModel):
     can_write: bool | None = None
     finding_count: int | None = Field(default=None, ge=0)
     finding_state_counts: dict[str, int] = Field(default_factory=dict)
+    open_finding_severity_counts: dict[str, int] | None = None
     scan_count: int | None = Field(default=None, ge=0)
+    last_completed_scan_at: datetime | None = None
 
 
 class SecurityAssessmentOut(StrictModel):

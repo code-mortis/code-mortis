@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ShieldAlert, ShieldCheck, ShieldEllipsis, ShieldOff, ShieldQuestion, ShieldX, type LucideIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Status } from "./common";
+import { badgeRadius } from "./ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export const securityIcons: Record<string, LucideIcon> = {
@@ -13,7 +14,7 @@ export const securityIcons: Record<string, LucideIcon> = {
 export function SecurityBadge({ children, description }: {
   children: ReactNode; description: ReactNode;
 }) {
-  const className = "inline-flex w-fit max-w-full cursor-pointer rounded-full no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring [&_[data-slot=badge]]:whitespace-normal";
+  const className = `inline-flex w-fit max-w-full cursor-pointer ${badgeRadius} no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring [&_[data-slot=badge]]:whitespace-normal`;
   return <Tooltip><TooltipTrigger asChild><span data-security-badge tabIndex={0} className={className}>{children}</span>
   </TooltipTrigger><TooltipContent sideOffset={6} className="max-w-xs leading-relaxed">{description}</TooltipContent></Tooltip>;
 }
@@ -36,7 +37,7 @@ export function SecurityScanBadge({ status, scanId }: {
   status: string; scanId: string;
 }) {
   return <Link data-security-badge to={`/security/scans/${scanId}`} aria-label={`View latest scan: ${status.replaceAll("_", " ")}`}
-    className="inline-flex w-fit max-w-full rounded-full no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring">
+    className={`inline-flex w-fit max-w-full ${badgeRadius} no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring`}>
     <SecurityScanStatus status={status} />
   </Link>;
 }

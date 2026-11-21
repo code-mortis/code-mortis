@@ -10,7 +10,13 @@ import httpx
 import pytest
 
 from code_mortis.integrations import llm, llm_http
-from code_mortis.schemas.inference import Response, ToolCall, Usage
+from code_mortis.schemas.inference import Message, Request, Response, ToolCall, Usage
+
+
+@pytest.fixture(autouse=True)
+def mock_probe_endpoint_resolution(monkeypatch):
+    monkeypatch.setattr(llm, "safe_endpoint", lambda url: url)
+    monkeypatch.setattr(llm.engine_http, "safe_endpoint", lambda url: url)
 
 
 def configuration(protocol="openai-responses"):
@@ -24,8 +30,7 @@ def configuration(protocol="openai-responses"):
     ({"thinking.type": "enabled", "thinking.budget_tokens": 4096}, 5120),
     ({"thinking": {"type": "enabled", "budget_tokens": 4096}, "max_tokens": 8192}, 8192),
 ])
-def test_probe_preserves_configured_reasoning_and_output_budgets(monkeypatch, extra, expected):
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
+def test_probe_preserves_configured_reasoning_and_output_budgets(extra, expected):
     connection, calls = configuration("anthropic"), []
     connection["options"]["extra_body"] = extra
 
@@ -82,7 +87,6 @@ def probe_payload(protocol, turn, *, incorrect=None):
 @pytest.mark.parametrize("protocol", ["openai", "openai-responses", "anthropic"])
 def test_probe_accepts_auto_only_tools_and_replays_provider_state(monkeypatch, protocol):
     calls, sends = [], []
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
     original = llm.send
 
     async def sent(connection, credentials, request, **kwargs):
@@ -123,9 +127,8 @@ def test_probe_accepts_auto_only_tools_and_replays_provider_state(monkeypatch, p
 
 
 @pytest.mark.parametrize("incorrect,expected_calls", [("no_tool", 1), ("wrong_ack", 2), ("extra_tool", 2)])
-def test_probe_rejects_reachability_text_and_unconfirmed_tool_result(monkeypatch, incorrect, expected_calls):
+def test_probe_rejects_reachability_text_and_unconfirmed_tool_result(incorrect, expected_calls):
     calls = []
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
 
     async def handler(wire):
         calls.append(wire)
@@ -142,6 +145,48 @@ def test_probe_rejects_reachability_text_and_unconfirmed_tool_result(monkeypatch
 
     asyncio.run(run())
     assert len(calls) == expected_calls
+
+
+@pytest.mark.parametrize("reasoning", [{"effort": "medium"}, {"vendor.setting": "fixture"}, "fixture-mode"])
+def test_probe_matches_workflow_validation_for_custom_provider_settings(reasoning, monkeypatch):
+    connection = configuration("openai")
+    connection["options"]["extra_body"] = {"reasoning": reasoning}
+    request = Request(messages=[Message(role="user", content="Fixture")], max_output_tokens=2048)
+    workflow = {**connection, "execution_limits": llm.analysis.EXECUTION_LIMITS}
+    try:
+        llm.reservation(workflow, request)
+    except ValueError as exc:
+        workflow_error = str(exc)
+    else:
+        workflow_error = None
+
+    sent_connections, calls = [], []
+    send = llm.engine_gateway.send
+
+    async def engine_send(selected, *args, **kwargs):
+        sent_connections.append(selected)
+        return await send(selected, *args, **kwargs)
+
+    monkeypatch.setattr(llm.engine_gateway, "send", engine_send)
+
+    async def handler(wire):
+        calls.append(wire)
+        return httpx.Response(200, json=probe_payload("openai", len(calls)))
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False) as client:
+            if workflow_error is None:
+                await llm.check_connection(connection, {}, client=client)
+            else:
+                with pytest.raises(llm_http.InferenceError) as caught:
+                    await llm.check_connection(connection, {}, client=client)
+                assert str(caught.value) == workflow_error
+                assert caught.value.code == "request_validation"
+                assert not caught.value.consumption_unknown
+
+    asyncio.run(run())
+    assert len(sent_connections) == len(calls) == (2 if workflow_error is None else 0)
+    assert connection["options"]["extra_body"] == {"reasoning": reasoning}
 
 
 def test_probe_roundtrips_share_one_wall_deadline(monkeypatch):
@@ -164,7 +209,6 @@ def test_probe_roundtrips_share_one_wall_deadline(monkeypatch):
 @pytest.mark.parametrize("fail", [False, True])
 def test_sync_probe_reserves_capacity_and_closes_one_client(monkeypatch, fail):
     events, calls = [], []
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
 
     @contextmanager
     def reserve(identity, run_key, **kwargs):
@@ -207,7 +251,7 @@ def queued_job():
         return job.id
 
 
-def test_job_uses_direct_transport(seed, monkeypatch):
+def test_job_uses_workflow_transport(seed, monkeypatch):
     from sqlalchemy import select
 
     from code_mortis import jobs
@@ -215,7 +259,6 @@ def test_job_uses_direct_transport(seed, monkeypatch):
     from code_mortis.models import Connection, InferenceAdmission, Job
 
     calls = []
-    monkeypatch.setattr(llm_http, "safe_endpoint", lambda url: url)
     async def handler(wire):
         calls.append(wire)
         assert wire.headers["authorization"] == "Bearer provider-secret"

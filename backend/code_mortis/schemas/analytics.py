@@ -51,8 +51,19 @@ class RepositoryActivityDay(StrictModel):
     scans: int
 
 
+class RepositoryResult(StrictModel):
+    kind: Literal["review", "scan", "review_fix", "scan_fix"]
+    at: datetime
+    run_id: str
+    title: str
+    pr_number: int | None = None
+    scan_status: Literal["completed", "partial"] | None = None
+    finding_id: str | None = None
+
+
 class RepositoryActivity(StrictModel):
     days: list[RepositoryActivityDay]
+    recent_results: list[RepositoryResult] = Field(default_factory=list, max_length=3)
 
 
 class AnalyticsScope(StrictModel):

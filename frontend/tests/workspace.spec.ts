@@ -377,7 +377,8 @@ function repositoryPage(items: RepositoryPullFixture[], params: URLSearchParams)
     && (!params.has("review") || params.getAll("review").includes(item.review_status) || (params.getAll("review").includes("running") && item.has_running_review))
     && (!params.has("author") || params.getAll("author").includes(item.author.toLowerCase()))
     && (!params.has("findings") || (params.get("findings") === "open" ? item.open_findings > 0 : item.open_findings === 0)));
-  const filtered = matches.filter((item) => !params.has("state") || params.getAll("state").includes("all") || params.getAll("state").includes(item.state) || item.has_running_review);
+  const filtered = matches.filter((item) => !params.has("state") || params.getAll("state").includes("all") || params.getAll("state").includes(item.state)
+    || (params.get("strict_state") !== "true" && item.has_running_review));
   const ordering = params.get("ordering") ?? "-updated_at";
   const field = ordering.replace(/^-/, "") as "title" | "author" | "updated_at";
   filtered.sort((a, b) => Number(b.has_running_review) - Number(a.has_running_review) || a[field].localeCompare(b[field]) * (ordering.startsWith("-") ? -1 : 1));
@@ -1194,7 +1195,7 @@ test("repository activity and directory failures refresh without stale navigatio
   await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
 });
 
-test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }) => {
+test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }, info) => {
   await mock(page);
   const checked = "2026-11-18T10:30:00Z";
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
@@ -1206,11 +1207,63 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   }] }));
   await page.goto("/repositories/22?q=148&state=open&ordering=title");
   const header = page.locator('[data-slot="page-title"]');
-  await expect(header.getByText(/Last successful GitHub PR check/)).toBeVisible();
-  await expect(header.locator("time")).toHaveAttribute("datetime", checked);
-  const review = header.getByRole("link", { name: "Last completed review · PR #148 · ccccccc", exact: true });
+  const summary = header.locator('[data-slot="repository-header-summary"]');
+  const policy = summary.getByRole("region", { name: "Review configuration" });
+  const latest = summary.getByRole("region", { name: "Last completed review", exact: true });
+  const check = summary.getByRole("region", { name: "GitHub PR check", exact: true });
+  await expect(summary.getByRole("region")).toHaveCount(3);
+  const enabled = policy.getByRole("heading", { name: "Review policy" }).locator("..").getByText("Reviews enabled", { exact: true });
+  await expect(enabled).toHaveAttribute("data-variant", "default");
+  await expect(policy).toContainText("Automatic reviews");
+  await expect(policy.getByText("File limit", { exact: true })).toBeVisible();
+  await expect(policy.getByText("Comment language", { exact: true })).toHaveCount(0);
+  await expect(check.locator("time")).toHaveAttribute("datetime", checked);
+  await expect(check.getByRole("term")).toHaveText("Open PRs");
+  await expect(check.getByRole("definition")).toHaveText(String(repo.open_prs));
+  await expect(check.getByRole("definition")).toHaveCSS("font-size", "12px");
+  const [checkDate, openPrsLabel, openPrsValue] = await Promise.all([
+    check.locator("time").boundingBox(), check.getByRole("term").boundingBox(), check.getByRole("definition").boundingBox(),
+  ]);
+  expect(checkDate!.y).toBeCloseTo(openPrsLabel!.y, 0);
+  expect(checkDate!.x).toBeGreaterThan(openPrsValue!.x + openPrsValue!.width);
+  await expect(latest.locator("code")).toHaveText("ccccccc");
+  const review = latest.getByRole("link", { name: "View review for PR #148", exact: true });
   await expect(review).toHaveAttribute("href", "/runs/run");
   await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
+  await expect(latest.getByRole("heading").locator("..").getByRole("link")).toHaveCount(1);
+  const reviewedPr = latest.getByText("PR #148", { exact: true });
+  await expect(reviewedPr).toHaveCSS("font-size", "12px");
+  await expect(reviewedPr).toHaveCSS("font-weight", "400");
+  await expect(reviewedPr).toHaveCSS("color", await latest.getByRole("term").evaluate((term) => getComputedStyle(term).color));
+  for (const [lead, card] of [[policy.getByText("Automatic reviews", { exact: true }), policy], [reviewedPr, latest]]) {
+    const [leadBox, detailBox] = await Promise.all([lead.boundingBox(), card.getByRole("term").boundingBox()]);
+    expect(detailBox!.y).toBeCloseTo(leadBox!.y, 0);
+    expect(detailBox!.x).toBeGreaterThan(leadBox!.x + leadBox!.width);
+  }
+  await expect(header.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", `https://github.com/${repo.full_name}`);
+  const [policyBox, checkBox, reviewBox] = await Promise.all([policy.boundingBox(), check.boundingBox(), latest.boundingBox()]);
+  if (info.project.name === "mobile") {
+    expect(checkBox!.y).toBeGreaterThanOrEqual(policyBox!.y + policyBox!.height);
+    expect(reviewBox!.y).toBeGreaterThanOrEqual(checkBox!.y + checkBox!.height);
+  } else {
+    expect([checkBox!.y, reviewBox!.y]).toEqual([policyBox!.y, policyBox!.y]);
+    expect(checkBox!.x).toBeGreaterThan(policyBox!.x);
+    expect(reviewBox!.x).toBeGreaterThan(checkBox!.x);
+    expect(policyBox!.height).toBeLessThan(140);
+  }
+  await header.screenshot({ path: info.outputPath("pull-requests-summary-cards.png") });
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1140, height: 900 });
+    const [policyBox, checkBox, reviewBox, summaryBox] = await Promise.all([
+      policy.boundingBox(), check.boundingBox(), latest.boundingBox(), summary.boundingBox(),
+    ]);
+    expect(checkBox!.y).toBe(policyBox!.y);
+    expect(checkBox!.x).toBeGreaterThan(policyBox!.x);
+    expect(reviewBox!.y).toBeGreaterThan(policyBox!.y + policyBox!.height);
+    expect(reviewBox!.width).toBeCloseTo(summaryBox!.width);
+    await noOverflow(page);
+    await header.screenshot({ path: info.outputPath("pull-requests-summary-cards-narrow.png") });
+  }
   const returnUrl = page.url();
   await review.click();
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
@@ -1218,10 +1271,17 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(page).toHaveURL(returnUrl);
   const pulls = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(pulls.getByLabel("Search pull requests")).toHaveValue("148");
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, open_prs: 0 }] }));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
-  await expect(header.getByText(/Last successful GitHub PR check|Last completed review/)).toHaveCount(0);
+  await expect(summary.getByRole("region")).toHaveCount(3);
+  await expect(latest).toContainText("None recorded");
+  await expect(latest.getByRole("link")).toHaveCount(0);
+  await expect(check).toContainText("None recorded");
+  await expect(check.getByRole("definition")).toHaveText("0");
+  await header.getByRole("link", { name: "Review settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=reviews$/);
+  await expect(page.getByRole("heading", { name: "Pull request reviews", exact: true })).toBeVisible();
 });
 
 test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {
@@ -1363,6 +1423,55 @@ test("repository settings breadcrumbs omit Repository settings for members when 
   await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
 });
 
+test("pull request lists separate review and PR state and retain row actions", async ({ page, isMobile }) => {
+  await mock(page);
+  const title = `${pr.title} when the provider cannot deliver a response before the request deadline`;
+  const items = [
+    { ...pr, title, state: "merged", latest_run: { ...run, status: "completed" } },
+    { ...pr, id: "queued-pr", number: 149, title: "Waiting for review", latest_run: { ...run, status: "queued" } },
+  ];
+  await mockRepositoryPulls(page, 22, () => items);
+  await page.route("**/api/v1/pulls?**", (route) => {
+    const data = repositoryPage(items, new URLSearchParams("state=all"));
+    return route.fulfill({ json: { ...data, groups: [{ ...data.groups[0], group: "all", total: data.total, items: data.groups.flatMap((group) => group.items) }] } });
+  });
+
+  for (const path of ["/?state=all", "/repositories/22?state=all"]) {
+    await page.goto(path);
+    const titleLink = page.getByRole("link", { name: title, exact: true });
+    await expect(titleLink).toHaveAttribute("title", title);
+    const titleLine = titleLink.locator("..");
+    await expect(titleLine).toHaveCSS("text-overflow", "ellipsis");
+    expect(await titleLine.evaluate((element) =>
+      element.scrollWidth > element.clientWidth && element.clientHeight === parseFloat(getComputedStyle(element).lineHeight),
+    )).toBe(true);
+
+    const row = page.locator("[data-pull-row]").filter({ has: titleLink });
+    const headings = row.locator("..").locator(":scope > [aria-hidden=true]");
+    await expect(headings.getByText("Review", { exact: true })).toHaveCount(1);
+    await expect(headings.getByText("PR state", { exact: true })).toHaveCount(1);
+    if (isMobile) await expect(headings).toBeHidden();
+    else await expect(headings).toBeVisible();
+    await expect(row.getByText("Completed", { exact: true })).toBeVisible();
+    await expect(row.getByText("merged", { exact: true })).toBeVisible();
+    await expect(row.locator("[data-slot=status-group]")).toHaveCount(0);
+
+    const spinner = page.getByText("Queued", { exact: true }).locator(".lucide-loader-circle");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect(spinner).toHaveCSS("animation-name", "spin");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(spinner).toHaveCSS("animation-name", "none");
+
+    const actions = row.getByRole("button", { name: `Actions for #${pr.number}: ${title}` });
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "View pull request" })).toHaveAttribute("href", `/pulls/${pr.id}`);
+    await expect(page.getByRole("menuitem", { name: "View latest review" })).toHaveAttribute("href", `/runs/${run.id}`);
+    await page.keyboard.press("Escape");
+    await expect(actions).toBeFocused();
+    await noOverflow(page);
+  }
+});
+
 test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {
   await mock(page);
   const completed = { ...run, status: "completed", publication: "published" };
@@ -1440,7 +1549,10 @@ test("repository filters survive configuration and the pull request run round tr
   await mock(page);
   await page.goto("/repositories/22?q=148&author=maria&findings=open");
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sync", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Configure", exact: true })).toHaveCount(0);
+  await openNavigation(page);
+  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings", exact: true }).click();
   await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
   await noOverflow(page);
   await (await repositoryPullsLink(page)).click();
@@ -1529,9 +1641,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
 test("repository configuration keeps drafts and stays on the selected section after saving", async ({ page }, info) => {
   const requests = await mock(page);
   await mockRepositoryPulls(page, 22, () => Array.from({ length: 11 }, (_, index) => ({ ...pr, id: `retry-${index}` })));
-  await page.goto("/repositories/22?q=retry&state=all&active_pages=2");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
-  await expect(page).toHaveURL(/repositories\/22\/settings\?q=retry&state=all&active_pages=2$/);
+  await page.goto("/repositories/22/settings?q=retry&state=all&active_pages=2");
   const effort = page.getByRole("combobox", { name: "Review effort", exact: true });
   await expect(effort).toHaveValue("medium");
   await chooseOption(page, effort, "high");
@@ -1712,6 +1822,10 @@ test("review stage animation follows execution, visibility and reduced motion", 
   await page.goto("/runs/run");
   const card = page.getByRole("region", { name: "Review stages", exact: true });
   const divider = card.locator(".stage-divider");
+  const [outcome, statistics] = await Promise.all([
+    card.boundingBox(), page.getByLabel("Run statistics").boundingBox(),
+  ]);
+  expect(statistics!.y).toBeGreaterThan(outcome!.y + outcome!.height);
   const animation = () => divider.evaluate((element) => {
     const style = getComputedStyle(element, "::before");
     return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
@@ -2253,11 +2367,11 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
-  if (info.project.name === "desktop") {
-    const comments = await publication.getByText("GitHub comments", { exact: true }).boundingBox();
-    const stages = await page.getByRole("region", { name: "Review stages", exact: true }).boundingBox();
-    expect(stages!.y).toBeGreaterThan(comments!.y);
-  }
+  const [comments, statistics] = await Promise.all([
+    publication.getByText("GitHub comments", { exact: true }).boundingBox(),
+    page.getByLabel("Run statistics").boundingBox(),
+  ]);
+  expect(comments!.y).toBeGreaterThan(statistics!.y + statistics!.height);
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
   await trigger.focus();
@@ -2794,6 +2908,12 @@ test("repository outdated reviews remain distinct from running reviews and page 
   await page.goto("/repositories/22?review=outdated");
   await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(/outdated/i);
   await expect(page.getByRole("link", { name: /Still running/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("A review is still running");
+  const backlog = "/repositories/22?state=open&review=not_reviewed&review=outdated&strict_state=true";
+  await page.goto(backlog);
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Still running/ })).toHaveCount(0);
+  await page.getByLabel("Search pull requests").fill("retry");
+  await expect(page).toHaveURL(/q=retry&state=open&review=not_reviewed&review=outdated&strict_state=true$/);
   await page.goto("/repositories/22?state=closed&review=running");
   await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);
@@ -2820,7 +2940,8 @@ test("repository state filters retain running reviews and reset when switching r
   await chooseRepository(page, "acme/other");
   await expect(page).toHaveURL(/repositories\/23\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
-  await expect(page.getByRole("region", { name: "Review configuration" }).getByText("Paused", { exact: true })).toBeVisible();
+  const paused = page.getByRole("region", { name: "Review configuration" }).getByRole("heading", { name: "Review policy" }).locator("..").getByText("Paused", { exact: true });
+  await expect(paused).toHaveAttribute("data-variant", "outline");
 });
 
 test("repository navigation, filtering, and review workspace", async ({
@@ -3570,8 +3691,13 @@ test("review run statistics show live duration and validated progress", async ({
     progress: { selected: 8, completed: 3, failed: 1, reused: 0 } };
   await mock(page, { run: current, totalTokens: 12500 });
   await page.goto("/runs/run");
+  const header = page.locator('main [data-slot="page-title"]');
+  await expect(header.getByText("Automatic", { exact: true })).toBeVisible();
+  await expect(header.locator('code[data-slot="badge"]')).toHaveText(run.head_sha.slice(0, 7));
   const stats = page.getByLabel("Run statistics");
   await expect(stats).toHaveText("Duration: 10s elapsed0 reused · 1 failed · 12,500 tokens");
+  await expect(stats.locator("strong")).toHaveText("10s elapsed");
+  await expect(stats.locator("strong")).toHaveCSS("color", await header.getByRole("heading").evaluate((el) => getComputedStyle(el).color));
   await page.clock.setFixedTime(new Date("2026-10-05T13:20:15Z"));
   await page.clock.fastForward(5000);
   await expect(stats).toContainText("Duration: 15s elapsed");
@@ -4059,8 +4185,7 @@ test("searchable providers and protocols preserve presets and required model val
 
 test("repository language searches suggestions and preserves custom language entry", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const language = page.getByRole("combobox", { name: "Review language", exact: true });
   const trigger = page.locator('[data-slot="input-group"]').filter({ has: language }).getByRole("button", { name: "Show options" });
   await language.fill("span");
@@ -4109,8 +4234,7 @@ for (const search of ["", "   "]) {
   for (const close of ["Tab", "outside", "Save"] as const) {
     test(`${search ? "whitespace" : "empty"} language search preserves the saved value on ${close}`, async ({ page }) => {
       const requests = await mock(page);
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
       const language = page.getByRole("combobox", { name: "Review language", exact: true });
       await language.fill(search);
       if (close !== "Save") {
@@ -4127,8 +4251,7 @@ for (const search of ["", "   "]) {
 for (const commit of ["Enter", "Save"] as const) {
   test(`custom language commits a trimmed value with ${commit}`, async ({ page }) => {
     const requests = await mock(page);
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
     const language = page.getByRole("combobox", { name: "Review language", exact: true });
     await language.fill("  Mapudungun  ");
     await expect(page.getByText("Use the language you entered.", { exact: true })).toBeVisible();
@@ -4144,8 +4267,7 @@ for (const commit of ["Enter", "Save"] as const) {
 
 test("closed custom language input submits the configuration with Enter", async ({ page }) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const language = page.getByRole("combobox", { name: "Review language", exact: true });
   await language.fill("Mapudungun");
   await language.press("Enter");
@@ -4168,8 +4290,7 @@ for (const available of [true, false]) {
       await held;
       await route.fulfill({ json: available ? [connection] : [] });
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "AI defaults");
     const picker = page.getByRole("combobox", { name: "Default AI connection", exact: true });
     await expect(picker).toBeDisabled();
@@ -4201,50 +4322,33 @@ for (const available of [true, false]) {
   });
 }
 
-test("review connection stays closed after a running review disables it", async ({ page }) => {
+test("PR header review action updates as a review starts and finishes", async ({ page }) => {
   await mock(page);
   await page.clock.install();
   let status: Run["status"] = "completed";
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, runs: [{ ...run, status }], findings: [], can_write: true }));
   await page.goto("/pulls/pr");
-  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
-  await picker.fill("Team");
-  await expect(page.getByRole("listbox")).toBeVisible();
+  const header = page.locator('[data-slot="page-title"]');
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
   status = "running";
   await page.clock.fastForward(6000);
-  await expect(picker).toBeDisabled();
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await expect(page.locator('[data-slot="input-group"]').filter({ has: picker }).getByRole("button", { name: "Show options" })).toBeDisabled();
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "Latest review" }).getByRole("link", { name: "Inspect review" })).toHaveAttribute("href", "/runs/run");
   status = "completed";
   await page.clock.fastForward(6000);
-  await expect(picker).toBeEnabled();
-  await expect(picker).toHaveValue("");
-  await expect(picker).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await picker.fill("Team");
-  await expect(page.getByRole("option", { name: "Team reviews", exact: true })).toBeVisible();
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
 });
 
-test("pull request connection search preserves the default and submits the selected connection", async ({ page }, info) => {
+test("PR header runs a review using the repository default connection", async ({ page }) => {
   const requests = await mock(page);
-  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [connection, { ...connection, id: "research", name: "Research reviews" }] }));
   await page.goto("/pulls/pr");
-  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
-  await expect(picker).toHaveAttribute("placeholder", "Repository default");
-  await picker.fill("Research");
-  await expect(page.getByRole("option")).toHaveCount(1);
+  const header = page.locator('[data-slot="page-title"]');
+  const review = header.getByRole("button", { name: "Run review", exact: true });
+  await expect(review).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Review connection", exact: true })).toHaveCount(0);
   await noOverflow(page);
-  await page.screenshot({ path: `../.impeccable/review/combobox-connection-${info.project.name}.png`, animations: "disabled" });
-  await page.getByRole("option", { name: "Research reviews", exact: true }).click();
-  await expect(picker).toHaveValue("Research reviews");
-  await chooseOption(page, picker, "Repository default");
-  await expect(picker).toHaveValue("");
-  await picker.fill("Repository default");
-  await expect(page.getByRole("option", { name: "Repository default", exact: true })).toHaveAttribute("aria-selected", "true");
-  await picker.press("Escape");
-  await chooseOption(page, picker, "Research reviews");
-  await page.getByRole("button", { name: "Run review", exact: true }).click();
-  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "research" });
+  await review.click();
+  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({});
 });
 
 test("saved model selection refreshes without replacing custom IDs", async ({ page }, info) => {
@@ -4413,8 +4517,7 @@ test("repository model choices follow its selected connection", async ({ page },
   const requests = await mock(page);
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection", model: "second-model" }] }));
   await page.route("**/api/v1/connections/second/models?repository_id=22", (route) => route.fulfill({ json: { source: "provider", status: "ready", models: [{ id: "second-model", name: "Second model" }] } }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "AI defaults");
   const model = page.getByLabel("Model override (optional)");
   await expect(model).toHaveAttribute("placeholder", "review-model");
@@ -4984,8 +5087,7 @@ test("project context generation uses unsaved model selections and preserves man
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
   const requests = await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "second", name: "Second connection" }] }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await repositorySection(page, "AI defaults");
@@ -5048,8 +5150,7 @@ for (const outcome of ["done", "failed"] as const) {
     test(`project background preserves edits to ${change} when generation is ${outcome}`, async ({ page }) => {
       const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "running", background: null, error: null };
       const requests = await mock(page, { background });
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
       await repositorySection(page, "Project context");
       const field = page.getByRole("textbox", { name: "Project context", exact: true });
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5084,8 +5185,7 @@ for (const outcome of ["done", "failed"] as const) {
         error: "The provider denied model access.",
       };
       await mock(page, { background });
-      await page.goto("/repositories/22");
-      await page.getByRole("button", { name: "Configure", exact: true }).click();
+      await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
       await repositorySection(page, "Project context");
       await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5123,8 +5223,7 @@ for (const transient of ["network", "server"] as const) {
         else await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable" } });
       } else await route.fallback();
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     await repositorySection(page, "Project context");
     await page.getByRole("button", { name: "Generate context", exact: true }).click();
@@ -5148,8 +5247,7 @@ for (const phase of ["start", "poll"] as const) {
       await response;
       await route.fulfill({ status: 403, json: { detail: "Access denied for the old selections" } });
     });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     const sent = page.waitForRequest((request) => new URL(request.url()).pathname === path);
     await repositorySection(page, "Project context");
@@ -5171,8 +5269,7 @@ test("project background preserves text on failure and explains missing selectio
   const background: Schema["BackgroundJobOut"] = { id: "background-job", status: "failed", background: null, error: "Reconnect your account before retrying." };
   await mock(page, { background });
   await page.route("**/api/v1/connections?repository_id=22", (route) => route.fulfill({ json: [connection, { ...connection, id: "no-model", name: "No model", model: "" }] }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   const generate = page.getByRole("button", { name: "Generate context", exact: true });
@@ -5236,8 +5333,7 @@ for (const status of [422, 503]) {
 test("project background preserves text when starting or polling fails", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/repositories/22/background", (route) => route.fulfill({ status: 422, json: { detail: "Authorize this repository first." } }));
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await field.fill("Keep my context");
@@ -5259,8 +5355,7 @@ for (const unlimited of [false, true]) {
   test(`project background uses unsaved ${unlimited ? "unlimited" : "custom"} review limits`, async ({ page }) => {
     const background: Schema["BackgroundJobOut"] = { id: "limits-job", status: "running", background: null, error: null };
     const requests = await mock(page, { background });
-    await page.goto("/repositories/22");
-    await page.getByRole("button", { name: "Configure", exact: true }).click();
+    await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
     await repositorySection(page, "Pull request reviews");
     if (unlimited) {
@@ -5286,8 +5381,7 @@ test("project background explains missing output and displays its generation ref
   const error = "The model finished without returning a usable background draft. Generate again or choose another model. Increasing the token budget will not fix a missing result. Your background was not changed.";
   const background: Schema["BackgroundJobOut"] = { id: "ab31f162-abb3-4ce5-bc85-e6af43be6ba6", status: "failed", background: null, error };
   const requests = await mock(page, { background });
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Project context");
   const field = page.getByRole("textbox", { name: "Project context", exact: true });
   await field.fill("Keep my existing project background.");
@@ -5351,8 +5445,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
     current = { ...current, ...route.request().postDataJSON() };
     await route.fulfill({ json: current });
   });
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   await repositorySection(page, "Pull request reviews");
   const time = page.getByLabel("Time limit (seconds)", { exact: true });
   const tokens = page.getByLabel("Analysis token budget", { exact: true });
@@ -5766,8 +5859,8 @@ test("assessment result tooltips preserve card activation and keyboard access", 
   for (const [index, { label, description, status }] of outcomes.entries()) {
     const card = page.getByRole("button", { name: new RegExp(`Proposal ${index}`) });
     const badge = card.getByText(label, { exact: true });
-    if (status === "running") await expect(badge).toHaveClass(/bg-primary/);
-    if (status === "queued") await expect(badge).not.toHaveClass(/bg-primary/);
+    if (status === "running") await expect(badge).toHaveAttribute("data-variant", "default");
+    if (status === "queued") await expect(badge).toHaveAttribute("data-variant", "outline");
     await expect(badge).toHaveCSS("cursor", "pointer");
     await expect(card.locator("button, a, input, [tabindex]")).toHaveCount(0);
     await expect(card).toHaveAccessibleName(new RegExp(description));
@@ -7079,8 +7172,7 @@ test("run omits verification summary and orders assessment before coverage", asy
 
 test("automatic resolution is opt-in and available for manual reviews", async ({ page }, info) => {
   const requests = await mock(page);
-  await page.goto("/repositories/22");
-  await page.getByRole("button", { name: "Configure", exact: true }).click();
+  await page.goto("/repositories/22/settings");
   const automatic = page.getByRole("switch", { name: "Automatically review new commits", exact: true });
   const resolution = page.getByRole("switch", { name: "Automatically resolve verified fixes", exact: true });
   await expect(resolution).not.toBeChecked();
@@ -8569,9 +8661,14 @@ test("pull detail searches evidence and separates severity, status, and run hist
     ],
   }));
   await page.goto("/pulls/pr");
+  const title = page.getByRole("heading", { level: 1 });
+  await expect(title.locator("..").getByText(/^open$/i)).toBeVisible();
+  await expect(page.locator('main [data-slot="page-title"] code[data-slot="badge"]')).toHaveText([pr.head_ref, pr.head_sha.slice(0, 7)]);
   const summary = page.getByRole("region", { name: "Latest review" });
   await expect(summary).toContainText("Earlier commit");
-  await expect(summary).toContainText("ccccccc");
+  await expect(summary.locator('code[data-slot="badge"]')).toHaveText("ccccccc");
+  await expect(summary.locator("time")).toHaveAttribute("datetime", latest.created_at);
+  await expect(summary.getByRole("link", { name: "Inspect review", exact: true })).toHaveAttribute("href", `/runs/${latest.id}`);
   await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   const list = page.getByRole("region", { name: "Findings", exact: true });
   await expect(list.getByRole("region")).toHaveCount(1);
@@ -8699,7 +8796,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   });
   await page.goto("/pulls/pr");
   await expect(page.getByRole("tab", { name: "Run history 23" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Review in progress" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
   await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
   expect(requests).toEqual([]);
   await page.getByRole("tab", { name: "Run history 23" }).click();
@@ -8946,21 +9043,20 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
     }));
     await page.goto("/pulls/pr");
     const summary = page.getByRole("region", { name: "Latest review" });
+    const header = page.locator('[data-slot="page-title"]');
     const messages = {
       merged: "Reviews can only run on open pull requests.", closed: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
     if (["running", "merged", "closed"].includes(state)) await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
-    else await expect(summary).toContainText(messages[state]);
+    else await expect(header).toContainText(messages[state]);
+    await expect(summary.getByRole("button")).toHaveCount(0);
     if (["viewer", "merged", "closed"].includes(state)) {
-      await expect(summary.getByRole("button")).toHaveCount(0);
-      await expect(page.getByLabel("Review connection")).toHaveCount(0);
-    } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
+      await expect(header.getByRole("button")).toHaveCount(0);
+    } else if (state === "fork") await expect(header.getByRole("button", { name: "Run review" })).toBeEnabled();
     else {
-      await expect(summary.getByRole("button", { name: state === "running" ? "Review in progress" : "Run review", exact: true })).toBeDisabled();
-      await expect(summary.getByRole("button", { name: "Show options" })).toBeDisabled();
-      await expect(page.getByLabel("Review connection")).toBeDisabled();
+      await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
     }
     if (state === "merged" || state === "closed") {
       await expect(page.locator("#review-unavailable")).toHaveCount(0);
@@ -9522,17 +9618,13 @@ test("retired repository connections require explicit shared selection and use M
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ connection_id: "connection", settings: { analysis_engine: "mortis" } });
 });
 
-test("retired review default blocks inference until an explicit shared override", async ({ page }) => {
-  const requests = await mock(page);
+test("retired review default directs users to repository settings", async ({ page }) => {
+  await mock(page);
   await mockPullDetail(page, () => ({ pull_request: pr, repository: { ...repo, connection_requires_setup: true }, runs: [run], findings: [], can_write: true }));
   await page.goto("/pulls/pr");
   const review = page.getByRole("button", { name: "Run review", exact: true });
   await expect(review).toBeDisabled();
-  await expect(page.getByText("The repository's connection is retired.", { exact: false })).toBeVisible();
-  await chooseOption(page, page.getByRole("combobox", { name: "Review connection", exact: true }), "Team reviews");
-  await expect(review).toBeEnabled();
-  await review.click();
-  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "connection" });
+  await expect(review).toHaveAccessibleDescription("The repository's connection is retired. Update the default AI connection in repository settings.");
 });
 
 test("native review history stays readable after subscription setup is retired", async ({ page }) => {

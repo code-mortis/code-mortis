@@ -548,7 +548,11 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
   const list = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(list.locator('[data-slot=badge]').filter({ hasText: /^open$/ })).toHaveCount(6);
-  await expect(list.getByRole("link", { name: /Add repository context/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Completed", { exact: true })).toBeVisible();
+  const completed = list.getByRole("link", { name: /Add repository context/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Completed", { exact: true });
+  await expect(completed).toBeVisible();
+  await expect(completed).toHaveCSS("font-weight", "600");
+  await expect(completed).toHaveCSS("line-height", "17px");
+  await expect(completed.locator('xpath=ancestor::*[@data-slot="status-group"]')).toHaveCSS("border-radius", "5px");
   await page.evaluate(() => document.fonts.ready);
   if (info.project.name === "mobile") {
     const search = await page.getByRole("textbox", { name: "Search pull requests", exact: true }).boundingBox();
@@ -561,6 +565,7 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
     if (await toggle.isVisible()) await toggle.click();
     if (theme === "dark") await expect(page.locator("html")).toHaveClass("dark");
     else await expect(page.locator("html")).not.toHaveClass("dark");
+    await expect(completed).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await noOverflow(page);
     await page.screenshot({ path: `../.impeccable/review/inbox-${info.project.name}-${theme}.png`, fullPage: true, animations: "disabled" });
     await page.getByRole("button", { name: "Filters", exact: true }).click();

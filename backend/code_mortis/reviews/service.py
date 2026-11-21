@@ -24,7 +24,7 @@ from code_mortis.core.shared_execution import (
     is_shared,
     require_shared,
 )
-from code_mortis.integrations import github
+from code_mortis.integrations import github, llm
 from code_mortis.models import (
     Activity,
     Connection,
@@ -111,15 +111,7 @@ def connection_snapshot(connection: Connection, *, workflow=False) -> dict:
         "owner_id": connection.owner_id,
         "client_version": {"chatgpt": "0.160.1", "claude_code": "2.1.292"}.get(connection.kind),
     }
-    if workflow:
-        snapshot["execution_limits"] = EXECUTION_LIMITS
-        options = {key: value for key, value in connection.options.items()
-                   if key not in {"timeout_sec", "prompt_token_ceiling"}}
-        if "extra_body" in options:
-            options["extra_body"] = {key: value for key, value in options["extra_body"].items()
-                                     if key not in {"max_tokens", "max_completion_tokens", "max_output_tokens"}}
-        snapshot["options"] = options
-    return snapshot
+    return llm.workflow_connection(snapshot) if workflow else snapshot
 
 
 def create_run(

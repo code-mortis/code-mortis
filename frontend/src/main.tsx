@@ -35,6 +35,7 @@ import { AppHeader } from "./components/app-header";
 import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
 import { AppBreadcrumb } from "./components/app-breadcrumb";
 import { RepositoryActivity } from "./components/repository-activity";
+import { RepositoryQuickView } from "./components/repository-quick-view";
 import { RepositorySummary } from "./components/repository-summary";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
@@ -77,6 +78,7 @@ function RepositoryOverview({ analytics = false, admin = false }: { analytics?: 
   if (!analytics) return <>
     {directoryError && <div className="mb-4">{directoryError}</div>}
     <RepositorySummary key={`summary-${repository.id}`} repository={repository} admin={admin} />
+    <RepositoryQuickView repository={repository} />
     <RepositoryActivity key={repository.id} repositoryId={repository.id} />
   </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;

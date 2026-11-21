@@ -3,7 +3,7 @@ import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
-import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./components/pull-request-row";
+import { PullRequestListHeading, PullRequestRow } from "./components/pull-request-row";
 import { InboxFilters } from "./components/inbox-filters";
 import { useRefreshQueuedReviews } from "./hooks/use-refresh-queued-reviews";
 import { fetchGroupedPages, type GroupedData } from "./lib/grouped-pagination";
@@ -88,12 +88,12 @@ export function Inbox({ admin }: { admin: boolean }) {
       {!data.registered_total && <>Registered pull requests will appear here. <Link to="/repositories" className="underline">Manage repositories</Link> to connect or sync a repository.</>}
       {!!data.registered_total && <>Try another search or <button className="underline" onClick={() => setParams({ state: "all" })}>view all pull requests</button>.</>}
     </Empty>}
-    {list && list.total > 0 && <section aria-label="Pull requests" aria-busy={query.isPlaceholderData} className="overflow-hidden rounded-lg border bg-card">
+    {list && list.total > 0 && <section aria-label="Pull requests" aria-busy={query.isPlaceholderData} className="@container/pull-requests overflow-hidden rounded-lg border bg-card">
       <PullRequestListHeading />
       {list.items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.created_at}
         state={{ inbox: `${location.pathname}${location.search}` }}
         metadata={<><span>#{pr.number} ·</span><span className="break-all">{pr.repository_name}</span><span className="break-all">@{pr.author}</span>{pr.publication === "failed" && <span className="text-destructive">Publication failed</span>}{pr.publication === "partially_published" && <span className="text-amber-800 dark:text-amber-300">Partially published</span>}{pr.draft && <span>Draft</span>}</>}
-        status={<PullRequestStatus reviewStatus={pr.review_status} state={pr.state} hasRunningReview={pr.has_running_review} />} />)}
+        reviewStatus={pr.review_status} prState={pr.state} hasRunningReview={pr.has_running_review} />)}
       <Pagination page={list.page} pageSize={data.page_size} total={list.total} loading={query.isFetching && (query.isPlaceholderData || !!query.error)}
         error={query.error} onRetry={query.refetch} label="pull requests" onPageChange={(page) => {
           const next = new URLSearchParams(params);

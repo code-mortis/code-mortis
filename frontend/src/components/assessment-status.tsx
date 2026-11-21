@@ -1,5 +1,6 @@
 import type { Schema } from "../api";
 import { Status, active } from "./common";
+import { badgeRadius } from "./ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type Assessment = {
@@ -35,7 +36,7 @@ export function AssessmentStatus({ candidate, inCard = false, securityOutcome }:
   else if (candidate.result?.verdict === "rejected") value = "rejected";
   else if (active(candidate.status)) value = candidate.status;
   return <Tooltip>
-    <TooltipTrigger asChild><span tabIndex={inCard ? undefined : 0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring">
+    <TooltipTrigger asChild><span tabIndex={inCard ? undefined : 0} className={`inline-flex cursor-pointer ${badgeRadius} outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring`}>
       <Status value={securityResult?.value ?? value} label={detail.label} />
       {inCard && <span className="sr-only">{detail.description}</span>}
     </span></TooltipTrigger>

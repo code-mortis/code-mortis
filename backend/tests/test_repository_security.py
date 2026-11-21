@@ -777,6 +777,8 @@ def test_security_detail_counts_include_empty_lists(seed, security_github, clien
     detail = client.get("/api/v1/security/repositories/22").json()
     assert detail["finding_count"] == detail["scan_count"] == 0
     assert detail["finding_state_counts"] == {}
+    assert detail["open_finding_severity_counts"] == {}
+    assert detail["last_completed_scan_at"] is None
     with transaction() as db:
         scan_id = saved_scan(db, seed, status="completed").id
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
@@ -784,12 +786,16 @@ def test_security_detail_counts_include_empty_lists(seed, security_github, clien
 
 
 def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filters(seed, security_github, client):
+    completed_at = now().replace(microsecond=0) - timedelta(days=2)
     with transaction() as db:
-        scan = saved_scan(db, seed, status="completed")
-        other = saved_scan(db, seed, status="partial")
+        scan = saved_scan(db, seed, status="completed", created_at=completed_at - timedelta(minutes=1), finished_at=completed_at)
+        other = saved_scan(db, seed, status="partial", created_at=completed_at + timedelta(days=1),
+                           finished_at=completed_at + timedelta(days=1, minutes=1))
+        saved_scan(db, seed, status="cancelled", finished_at=now())
         scan_id = scan.id
         for index in range(25):
-            finding = saved_finding(db, seed, scan, state=["open", "resolved", "false_positive", "accepted_risk"][index % 4])
+            finding = saved_finding(db, seed, scan, severity=["critical", "high", "low"][index % 3],
+                                    state=["open", "resolved", "false_positive", "accepted_risk"][index % 4])
             db.add(SecurityOccurrence(scan_id=scan.id if index < 21 else other.id, finding_id=finding.id,
                                       outcome="present", snapshot=security.finding_snapshot(finding)))
         db.add_all([SecurityActivity(scan_id=scan.id, action="scan_stage") for _ in range(205)])
@@ -797,13 +803,20 @@ def test_security_detail_counts_are_scoped_totals_independent_of_pages_and_filte
         repo = Repository(id=23, installation_id=10, full_name="team/other", enabled=True)
         db.add(repo)
         db.flush()
-        unrelated = saved_scan(db, {**seed, "repo": repo}, status="completed")
+        unrelated = saved_scan(db, {**seed, "repo": repo}, status="completed", finished_at=now())
         saved_finding(db, {**seed, "repo": repo}, unrelated)
     detail = client.get("/api/v1/security/repositories/22").json()
-    assert detail["finding_count"] == 25 and detail["scan_count"] == 2
+    assert detail["finding_count"] == 25 and detail["scan_count"] == 3
+    assert detail["last_completed_scan_at"] == completed_at.isoformat().replace("+00:00", "Z")
+    assert detail["summary"]["latest_status"] == "cancelled"
     assert detail["finding_state_counts"] == {"open": 7, "resolved": 6, "false_positive": 6, "accepted_risk": 6}
-    page = client.get("/api/v1/security/repositories/22/findings?state=open").json()
+    assert detail["open_finding_severity_counts"] == {"critical": 3, "high": 2, "low": 2}
+    path = "/api/v1/security/repositories/22/findings"
+    page = client.get(path, params={"state": "open"}).json()
     assert page["total"] == 7
+    for severity in ("critical", "high"):
+        filtered = client.get(path, params={"state": "open", "severity": severity}).json()
+        assert filtered["total"] == detail["open_finding_severity_counts"][severity]
     assert client.get("/api/v1/security/repositories/22").json() == detail
     detail = client.get(f"/api/v1/security/scans/{scan_id}").json()
     assert detail["finding_count"] == 21 and detail["activity_count"] == 205

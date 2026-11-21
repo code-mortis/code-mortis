@@ -415,7 +415,12 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toHaveCount(0);
   await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toHaveCount(0);
-  await expect(page.getByText(/^Last graded report saved .* for aaaaaaa\. Freshness checked/)).toBeVisible();
+  const gradeSummary = page.getByRole("region", { name: "Saved grade", exact: true });
+  await expect(gradeSummary.getByText("Report saved", { exact: true })).toHaveCount(0);
+  await expect(gradeSummary.locator("code")).toHaveText("aaaaaaa");
+  await expect(gradeSummary.locator("time")).toHaveAttribute("datetime", at);
+  await expect(gradeSummary.locator("time")).toHaveCSS("font-size", "12px");
+  await expect(page.getByRole("region", { name: "Freshness check", exact: true }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
@@ -423,7 +428,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   } }));
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
-  await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveText(grade);
+  await expect(row.locator('[data-slot="security-grade-letter"]')).toHaveText(grade);
   await expect(row.getByText("Partial", { exact: true })).toBeVisible();
   await page.goto("/security/scans/scan");
   await expect(page.getByText(grade, { exact: true })).toBeVisible();
@@ -465,14 +470,13 @@ for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "D"], ["outd
     const explanation = { current: "current default-branch commit", incomplete: "latest assessment is incomplete", outdated: "Current changes have not been scanned", not_scanned: "No security scan has been recorded", unavailable: "freshness could not be verified" }[state];
     await expect(page.getByRole("tooltip")).toContainText(explanation);
     if (["outdated", "unavailable"].includes(state)) {
-      await expect(badge.locator(state === "outdated" ? ".lucide-history" : ".lucide-shield-question")).toBeVisible();
       await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
       await expect(page.getByText(state === "outdated" ? "Security Outdated" : "Security Unverified", { exact: true })).toHaveCount(0);
     }
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toBeHidden();
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
-      await expect(page.getByText(/Last graded report saved/)).toBeVisible();
+      await expect(page.getByRole("region", { name: "Saved grade", exact: true }).locator("time")).toHaveAttribute("datetime", at);
     }
   });
 }
@@ -491,25 +495,25 @@ for (const incomplete of [false, true]) test(`triage immediately updates the rep
   await expect(sheet.locator('[data-slot="security-finding-status"]')).toContainText("false positive");
   await sheet.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.getByRole("link", { name: "Security A", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Scan coverage", { exact: true })).toHaveText(incomplete ? "Coverage incomplete" : "Coverage complete");
+  await expect(page.getByRole("region", { name: "Saved grade", exact: true }).getByText(/^Coverage (?:in)?complete$/i)).toHaveCount(0);
   await expect(page.getByLabel("Scan freshness", { exact: true })).toHaveText(incomplete ? "Outdated scan" : "Current commit");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Security A", exact: true }).focus();
   await expect(page.getByRole("tooltip")).toContainText("Based on current findings and triage decisions");
+  await expect(page.getByRole("tooltip")).toContainText(incomplete ? "The latest assessment is incomplete" : "Coverage is complete.");
   if (incomplete) {
-    await expect(page.getByRole("tooltip")).toContainText("The latest assessment is incomplete");
     await expect(page.getByRole("tooltip")).toContainText("Current changes have not been scanned");
   }
   await page.keyboard.press("Escape");
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
-  await expect(page.locator('[data-slot="security-scan-row"] [data-slot="security-grade-shield"]')).toHaveText("D");
+  await expect(page.locator('[data-slot="security-scan-row"] [data-slot="security-grade-letter"]')).toHaveText("D");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath(`triaged-grade-${incomplete ? "incomplete" : "complete"}.png`), fullPage: true });
   expect(writes).toHaveLength(1);
   expect(writes[0].body.state).toBe("false_positive");
 });
 
-test("repository security badges put the state shield before Security and the grade", async ({ page }, info) => {
+test("repository saved grade badges use text without an icon", async ({ page }, info) => {
   const writes = await mock(page);
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   let current = { ...summary };
@@ -518,36 +522,29 @@ test("repository security badges put the state shield before Security and the gr
     page_size: 10, groups: [], total: 0, registered_total: 0, repository_count: 1, repositories: [], authors: [], state_counts: {},
   } }));
   await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: { repository, summary: current, can_write: true, finding_count: 1, scan_count: 1 } }));
-  const cases: { change: Partial<Schema["SecuritySummary"]>; label: string; icon: string }[] = [
-    { change: {}, label: "D", icon: "shield-check" },
-    { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
-    { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned", icon: "shield-question" },
-    { change: { state: "outdated" }, label: "D", icon: "history" },
-    { change: { state: "unavailable" }, label: "D", icon: "shield-question" },
-    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "D",
-      icon: ["shield-x", "shield-off", "shield-ellipsis", "shield-ellipsis", "shield-alert", "shield-alert"][index] })),
+  await page.goto("/repositories/22?state=open");
+  await expect(page.getByRole("link", { name: "View on GitHub" })).toBeVisible();
+  await expect(page.locator("[data-security-badge]")).toHaveCount(0);
+  const cases: { change: Partial<Schema["SecuritySummary"]>; label: string }[] = [
+    { change: {}, label: "D" },
+    { change: { state: "incomplete", latest_status: "partial" }, label: "D" },
+    { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned" },
+    { change: { state: "outdated" }, label: "D" },
+    { change: { state: "unavailable" }, label: "D" },
+    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status) => ({ change: { state: "incomplete", latest_status: status }, label: "D" })),
   ];
   for (const [index, item] of cases.entries()) {
     current = { ...summary, ...item.change,
       coverage: item.change.state === "incomplete" ? "incomplete" : "complete",
       freshness: item.change.state === "outdated" ? "outdated" : item.change.state === "unavailable" ? "unavailable" : "current" };
-    await page.goto("/repositories/22?state=open");
+    await page.goto("/security/repositories/22");
     const name = item.label === "Unscanned" ? item.label : `Security ${item.label}`;
-    const badge = page.getByRole("link", { name, exact: true });
+    const badge = page.getByRole("heading", { name: "Saved grade", exact: true }).locator("..").getByRole("link", { name, exact: true });
     await expect(badge).toHaveAttribute("href", "/security/repositories/22");
-    await expect(badge.locator("svg")).toHaveCount(1);
-    await expect(badge.locator(`.lucide-${item.icon}`)).toBeVisible();
+    await expect(badge.locator("svg")).toHaveCount(0);
     if (item.label === "D") await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
     else await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-(red|amber|emerald)-/);
-    const beforeText = await badge.evaluate((element) => {
-      const content = element.querySelector('[data-slot="badge"]')!;
-      const text = [...content.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())!;
-      const range = document.createRange(); range.selectNodeContents(text);
-      const icon = content.querySelector("svg")!.getBoundingClientRect();
-      return icon.right <= range.getBoundingClientRect().left;
-    });
-    expect(beforeText).toBe(true);
-    if (item.icon === "history") {
+    if (item.change.state === "outdated") {
       await badge.hover();
       await expect(page.getByRole("tooltip")).toContainText("The report covers an earlier commit or default branch.");
       await expect(page.getByRole("tooltip")).toContainText("Grade D:");
@@ -564,17 +561,8 @@ test("repository security badges put the state shield before Security and the gr
       await page.screenshot({ path: `/private/tmp/code-mortis-unverified-grade-${info.project.name}.png` });
       await page.keyboard.press("Escape");
       await expect(page.getByRole("tooltip")).toBeHidden();
-      await badge.click();
-      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
-      await expect(page.getByRole("link", { name: "Security D", exact: true }).locator(".lucide-shield-question")).toBeVisible();
     }
     if (index < 3) await badge.screenshot({ path: `/private/tmp/code-mortis-security-label-${index}-${info.project.name}.png` });
-    if (index < 3) {
-      await badge.click();
-      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
-      await expect(page.getByRole("link", { name, exact: true }).locator(`.lucide-${item.icon}`)).toBeVisible();
-      if (item.label === "D") await expect(page.getByRole("link", { name: "Security D", exact: true }).locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
-    }
   }
   expect(writes).toHaveLength(0);
 });
@@ -1126,6 +1114,16 @@ test("read-only repository security keeps scan inspection without offering execu
   expect(writes).toHaveLength(0);
 });
 
+test("repository Security header links directly to scan settings", async ({ page }) => {
+  const writes = await mock(page);
+  await page.goto("/security/repositories/22");
+  await expect(page.getByRole("button", { name: "Run scan", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Scan settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=scan-limits$/);
+  await expect(page.getByRole("heading", { name: "Security scans", exact: true })).toBeVisible();
+  expect(writes).toHaveLength(0);
+});
+
 for (const status of ["queued", "running", "blocked"]) {
   test(`repository prevents a competing ${status} scan`, async ({ page }) => {
     const writes = await mock(page, { latestStatus: status });
@@ -1145,16 +1143,15 @@ for (const status of ["queued", "running", "blocked", "completed", "partial", "f
     const writes = await mock(page, { latestStatus: status, running: status === "running" });
     await page.goto("/security/repositories/22");
     const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
-    await expect(latest.getByText(status, { exact: true })).toBeVisible();
+    await expect(latest.getByText("Scan status", { exact: true })).toBeVisible();
+    await expect(latest.getByRole("definition")).toHaveText(new RegExp(`^${status}$`, "i"));
     const inspect = latest.getByRole("link", { name: "Inspect scan", exact: true });
     await expect(inspect).toHaveAttribute("href", "/security/scans/scan");
     const run = page.getByRole("button", { name: "Run scan", exact: true });
     if (["queued", "running", "blocked"].includes(status)) await expect(run).toBeDisabled();
     else await expect(run).toBeEnabled();
-    if (info.project.name === "desktop") {
-      await inspect.hover();
-      await expect(inspect).toHaveCSS("text-decoration-line", "underline");
-    }
+    if (info.project.name === "desktop") await inspect.hover();
+    await expect(inspect).toHaveCSS("text-decoration-line", "none");
     await inspect.focus();
     await expect(inspect).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1166,28 +1163,71 @@ for (const status of ["queued", "running", "blocked", "completed", "partial", "f
   });
 }
 
-for (const head of ["b".repeat(40), null]) test(`latest scan metadata uses the current commit when ${head ? "known" : "unavailable"}`, async ({ page }, info) => {
+for (const head of ["b".repeat(40), null]) test(`repository freshness shows the current commit when ${head ? "known" : "unavailable"}`, async ({ page }, info) => {
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
-  const writes = await mock(page, { summary: { state: head ? "outdated" : "unavailable", head_sha: head } });
+  const state = head ? "outdated" : "unavailable";
+  const writes = await mock(page, { summary: { state, freshness: state, head_sha: head } });
   await page.goto("/security/repositories/22");
-  const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
+  const summary = page.locator('[data-slot="repository-header-summary"]');
+  const grade = summary.getByRole("region", { name: "Saved grade", exact: true });
+  const latest = summary.getByRole("region", { name: "Latest security scan", exact: true });
+  const freshness = summary.getByRole("region", { name: "Freshness check", exact: true });
+  await expect(summary.getByRole("region")).toHaveCount(3);
   await expect(latest.locator("time")).toHaveAttribute("datetime", at);
+  await expect(latest.getByRole("definition")).toHaveCSS("font-size", "12px");
+  await expect(latest.locator("code")).toHaveCount(0);
+  await expect(latest.getByRole("heading").locator("..").getByRole("link", { name: "Inspect scan" })).toBeVisible();
+  await expect(freshness.locator("time")).toHaveAttribute("datetime", at);
+  await expect(freshness.locator("time")).toHaveCSS("font-size", "12px");
+  await expect(freshness.getByRole("heading").locator("..").getByLabel("Scan freshness")).toHaveText(head ? "Outdated scan" : "Freshness unverified");
   if (head) {
-    await expect(latest.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
-    await expect(latest.locator("code")).toHaveAttribute("title", head);
-    await expect(latest.locator("code")).toHaveCSS("font-size", "12px");
-    await latest.screenshot({ path: `/private/tmp/code-mortis-latest-scan-commit-${info.project.name}.png` });
-  } else await expect(latest.locator("code")).toHaveCount(0);
+    await expect(freshness.getByText("Current commit", { exact: true })).toBeVisible();
+    await expect(freshness.locator("code")).toHaveText("bbbbbbb");
+    await expect(freshness.locator("code")).toHaveAttribute("title", head);
+    await expect(freshness.locator("code")).toHaveCSS("font-size", "12px");
+    for (const card of [grade, freshness, latest]) {
+      const [timestamp, term, value] = await Promise.all([
+        card.locator("time").boundingBox(), card.getByRole("term").boundingBox(), card.getByRole("definition").boundingBox(),
+      ]);
+      expect(timestamp!.y).toBeCloseTo(term!.y, 0);
+      expect(timestamp!.x).toBeGreaterThan(value!.x + value!.width);
+    }
+    const [gradeBox, freshnessBox, scanBox] = await Promise.all([grade.boundingBox(), freshness.boundingBox(), latest.boundingBox()]);
+    if (info.project.name === "mobile") {
+      expect(freshnessBox!.y).toBeGreaterThanOrEqual(gradeBox!.y + gradeBox!.height);
+      expect(scanBox!.y).toBeGreaterThanOrEqual(freshnessBox!.y + freshnessBox!.height);
+    } else {
+      expect([freshnessBox!.y, scanBox!.y]).toEqual([gradeBox!.y, gradeBox!.y]);
+      expect(freshnessBox!.x).toBeGreaterThan(gradeBox!.x);
+      expect(scanBox!.x).toBeGreaterThan(freshnessBox!.x);
+      expect(gradeBox!.height).toBeLessThan(140);
+    }
+    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-summary-cards.png") });
+    if (info.project.name === "desktop") {
+      await page.setViewportSize({ width: 1140, height: 900 });
+      const [gradeBox, freshnessBox, scanBox, summaryBox] = await Promise.all([
+        grade.boundingBox(), freshness.boundingBox(), latest.boundingBox(), summary.boundingBox(),
+      ]);
+      expect(freshnessBox!.y).toBe(gradeBox!.y);
+      expect(freshnessBox!.x).toBeGreaterThan(gradeBox!.x);
+      expect(scanBox!.y).toBeGreaterThan(gradeBox!.y + gradeBox!.height);
+      expect(scanBox!.width).toBeCloseTo(summaryBox!.width);
+      await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-summary-cards-narrow.png") });
+    }
+  } else await expect(freshness.locator("code")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
 
-test("repository without a scan does not show an inspection link", async ({ page }) => {
-  const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null } });
+test("repository without a scan keeps three summary cards and omits the inspection link", async ({ page }) => {
+  const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null, checked_at: null } });
   await page.goto("/security/repositories/22");
   await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Inspect scan", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Latest security scan", exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-slot="repository-header-summary"]').getByRole("region")).toHaveCount(3);
+  await expect(page.getByRole("region", { name: "Latest security scan", exact: true })).toContainText("No scans recorded");
+  await expect(page.getByText("Scan status", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Freshness check", exact: true })).toContainText("No check recorded");
   expect(writes).toHaveLength(0);
 });
 
@@ -1205,6 +1245,12 @@ test("running scan stages explain validated file progress without changing the s
   await page.goto("/security/scans/scan");
   await expect(page.getByRole("tab", { name: "Resolved 0", exact: true })).toBeVisible();
   const stages = page.getByRole("region", { name: "Scan stages" });
+  const title = page.getByRole("heading", { name: "Security scan", exact: true });
+  await expect(title.locator("..").getByText(/^running$/i).locator(".lucide-loader-circle")).toBeVisible();
+  const [outcome, statistics] = await Promise.all([
+    stages.boundingBox(), page.getByLabel("Scan statistics").boundingBox(),
+  ]);
+  expect(statistics!.y).toBeGreaterThan(outcome!.y + outcome!.height);
   const animation = () => stages.locator(".stage-divider").evaluate((element) => {
     const style = getComputedStyle(element, "::before");
     return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
@@ -1426,18 +1472,21 @@ test("focus strip preserves terminal states and rejects invalid counts", async (
   expect(writes).toHaveLength(0);
 });
 
-test("security grades and scan stages keep their help while finding and scan status badges stay informational", async ({ page }, info) => {
+test("security grades and scan stages keep their help while finding and scan statuses stay informational", async ({ page }, info) => {
   const writes = await mock(page, { partial: true, latestStatus: "running" });
   await page.goto("/security/repositories/22");
+  const repoGrade = page.getByRole("region", { name: "Saved grade", exact: true }).getByText("Security D", { exact: true });
+  const gradeBackground = await repoGrade.evaluate((element) => getComputedStyle(element).backgroundColor);
   const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
-  await expect(latest.getByText("running", { exact: true })).toBeVisible();
+  const status = latest.getByText("Running", { exact: true });
+  await expect(status).toBeVisible();
   const card = page.locator('[data-slot="finding-card"]');
   await expect(card).toBeVisible();
   await expect(card.locator('[data-slot="badge"]')).toHaveCount(3);
   await expect(page.locator('main [data-slot="tooltip-trigger"]')).toHaveCount(1);
   await expect(page.locator('main [data-slot="badge"][tabindex="0"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
-    await latest.getByText("running", { exact: true }).hover();
+    await status.hover();
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     for (const badge of await card.locator('[data-slot="badge"]').all()) {
       await badge.hover();
@@ -1460,7 +1509,8 @@ test("security grades and scan stages keep their help while finding and scan sta
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const history = page.locator('[data-slot="security-scan-row"]');
   await expect(history.locator('[data-slot="badge"]')).toHaveCount(1);
-  await expect(history.getByRole("img", { name: "Saved security grade D", exact: true })).toBeVisible();
+  await expect(history.locator('[data-slot="security-grade-letter"]')).toHaveText("D");
+  await expect(history).toHaveAccessibleName(/Saved security grade D/);
   await expect(history.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
     for (const badge of await history.locator('[data-slot="badge"]').all()) {
@@ -1470,6 +1520,18 @@ test("security grades and scan stages keep their help while finding and scan sta
     }
   }
   await page.goto("/security/scans/scan");
+  const header = page.locator('main [data-slot="page-title"]');
+  const completed = header.getByText(/^completed$/i);
+  await expect(completed).toBeVisible();
+  await expect(completed.locator("svg")).toHaveCount(0);
+  const grade = header.locator("[data-security-badge]");
+  await expect(grade).toHaveText("Security D");
+  await expect(grade.locator('[data-slot="badge"]')).toHaveCSS("background-color", gradeBackground);
+  await expect(grade.locator("svg")).toHaveCount(0);
+  await grade.focus();
+  await expect(page.getByRole("tooltip")).toContainText("The grade saved with this scan.");
+  await page.keyboard.press("Escape");
+  await expect(header.locator('code[data-slot="badge"]')).toHaveText(["main", sha.slice(0, 7)]);
   await page.getByRole("button", { name: "Scan stage details", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Scan stage details", exact: true })).toContainText("A file counts only after its result passes validation");
   expect(writes).toHaveLength(0);
@@ -1489,7 +1551,10 @@ test("security finding sheet separates evidence and activity while keeping actio
   await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(footer.getByRole("button", { name: "Create GitHub issue", exact: true })).toBeInViewport();
   await expect(footer.getByRole("button", { name: "Change status", exact: true })).toBeInViewport();
-  await sheet.getByRole("button", { name: "View activity", exact: true }).click();
+  const viewActivity = sheet.getByRole("button", { name: "View activity", exact: true });
+  if (info.project.name === "desktop") await viewActivity.hover();
+  await expect(viewActivity).toHaveCSS("text-decoration-line", "none");
+  await viewActivity.click();
   const activity = sheet.getByRole("tab", { name: "Activity 2", exact: true });
   await expect(activity).toBeFocused();
   await expect(activity).toHaveAttribute("aria-selected", "true");
@@ -1662,10 +1727,9 @@ test("security finding sheet hides evidence and mutations after access is denied
 test("scan history fills missing grades without substituting a previous grade", async ({ page }, info) => {
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page);
-  const statuses = [["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"],
-    ["blocked", "shield-alert"], ["running", "loader-circle"], ["queued", "loader-circle"]];
+  const statuses = ["partial", "failed", "cancelled", "blocked", "running", "queued"];
   const otherGrades = ["A", "B", "C", "F"];
-  const rows = [...statuses.map(([status]) => ({ ...scanRow, id: status, status, grade: null })), { ...scanRow, id: "warnings", status: "partial" }, scanRow,
+  const rows = [...statuses.map((status) => ({ ...scanRow, id: status, status, grade: null })), { ...scanRow, id: "warnings", status: "partial" }, scanRow,
     ...otherGrades.map((grade) => ({ ...scanRow, id: `grade-${grade}`, grade }))];
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
@@ -1674,14 +1738,13 @@ test("scan history fills missing grades without substituting a previous grade", 
     return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: rows.length, page: pageNumber, page_size: 10 } });
   });
   await page.goto("/security/repositories/22?tab=history");
-  for (const [status, icon] of statuses) {
+  for (const status of statuses) {
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${status}"]`);
-    await expect(row.locator('[data-slot="badge"]').first()).toHaveText("Unrated");
-    await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
-    const badge = row.locator('[data-slot="badge"]').last();
+    await expect(row.getByText("Unrated", { exact: true })).toBeVisible();
+    await expect(row.locator('[data-slot="security-grade-letter"]')).toHaveCount(0);
+    const badge = row.locator('[data-slot="badge"]');
     await expect(badge).toHaveText(status === "partial" ? "Partial" : status);
-    await expect(badge.locator("svg")).toHaveCount(1);
-    await expect(badge.locator(`.lucide-${icon}`)).toBeVisible();
+    await expect(badge.locator("svg")).toHaveCount(0);
     await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
     await expect(row.locator("a")).toHaveCount(0);
   }
@@ -1694,21 +1757,21 @@ test("scan history fills missing grades without substituting a previous grade", 
       currentPage = targetPage;
     }
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${grade === "D" ? "scan" : `grade-${grade}`}"]`);
-    const shield = row.getByRole("img", { name: `Saved security grade ${grade}`, exact: true }).locator('[data-slot="security-grade-shield"]');
-    await expect(shield).toHaveText(grade);
-    await expect(shield).toHaveCSS("width", "24px");
-    await expect(shield).toHaveCSS("height", "24px");
-    await expect(shield).toHaveClass(grade === "A" ? /text-emerald-800/ : ["D", "F"].includes(grade) ? /text-red-700/ : /text-amber-800/);
+    const letter = row.locator('[data-slot="security-grade-letter"]');
+    await expect(letter).toHaveText(grade);
+    await expect(letter).toHaveCSS("color", await row.evaluate((element) => getComputedStyle(element).color));
+    await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
+    await expect(row).toHaveAccessibleName(new RegExp(`Saved security grade ${grade}`));
     await expect(row.locator("a")).toHaveCount(0);
   }
   await page.getByRole("button", { name: "Previous scan history", exact: true }).click();
   await expect(completed.locator('[data-slot="badge"]').last()).toHaveClass(/text-emerald-800/);
-  await expect(completed.locator(".lucide-shield-check")).toBeVisible();
+  await expect(completed.locator('[data-slot="badge"] svg')).toHaveCount(0);
   const warning = page.locator('[data-slot="security-scan-row"][href="/security/scans/warnings"]');
-  await expect(warning.getByRole("img", { name: "Saved security grade D", exact: true }).locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
+  await expect(warning.locator('[data-slot="security-grade-letter"]')).toHaveText("D");
   await expect(warning.locator('[data-slot="badge"]').last()).toHaveText("Partial");
   await expect(warning.locator('[data-slot="badge"]').last()).toHaveClass(/text-amber-800/);
-  await expect(warning.locator(".lucide-shield-alert")).toBeVisible();
+  await expect(warning.locator('[data-slot="badge"] svg')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-history-badges-${info.project.name}.png`, fullPage: true });
   await completed.focus();
@@ -2049,6 +2112,9 @@ test("security history and details show recorded durations and live elapsed time
   await page.screenshot({ path: info.outputPath("security-history-duration-dark.png"), fullPage: true });
   await history.locator('a[href="/security/scans/scan"]').click();
   await expect(page.locator("main header")).toContainText("Duration: 29m 42s");
+  const duration = page.getByLabel("Scan statistics").locator("strong");
+  await expect(duration).toHaveText("29m 42s");
+  await expect(duration).toHaveCSS("color", await page.getByRole("heading", { name: "Security scan", exact: true }).evaluate((el) => getComputedStyle(el).color));
   await page.goto("/security/scans/running");
   await expect(page.locator("main header")).toContainText("Duration: 15s elapsed");
   await page.clock.setFixedTime(new Date("2026-10-18T23:08:10Z"));
@@ -2110,11 +2176,11 @@ test("security assessment tab shares PR status tooltips, evidence, filters and f
   for (const id of [4, 6]) {
     const assessing = list.getByRole("button", { name: new RegExp(`Security candidate ${id}`) }).getByText("Assessing", { exact: true });
     await expect(assessing).toBeVisible();
-    await expect(assessing).toHaveClass(/bg-primary/);
+    await expect(assessing).toHaveAttribute("data-variant", "default");
   }
   const queued = list.getByRole("button", { name: /Security candidate 5/ }).getByText("Awaiting assessment", { exact: true });
   await expect(queued).toBeVisible();
-  await expect(queued).not.toHaveClass(/bg-primary/);
+  await expect(queued).toHaveAttribute("data-variant", "outline");
   const rejected = list.getByRole("button", { name: /Security candidate 1/ });
   await rejected.getByText("Not supported", { exact: true }).hover();
   await expect(page.getByRole("tooltip")).toHaveText("The evidence did not support this proposed issue.");
@@ -2154,12 +2220,12 @@ test("security assessments and open drawer update live through validation withou
   await page.goto("/security/scans/scan?tab=assessment&assessment=4");
   const drawer = page.getByRole("dialog", { name: "Assessment details" });
   await expect(drawer.getByText("Assessment is being checked against source evidence and finding history.")).toBeVisible();
-  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveAttribute("data-variant", "default");
   state.rows[4] = securityAssessment("4", { status: "running", progress_phase: "validating", outcome: "pending", result: { verdict: "confirmed", explanation: "Validated response", evidence: finding.evidence.evidence } });
   state.revision++;
   await page.clock.fastForward(5100);
   await expect(drawer.getByText("Response received; validating against the current source and finding history.")).toBeVisible();
-  await expect(drawer.getByText("Assessing", { exact: true })).toHaveClass(/bg-primary/);
+  await expect(drawer.getByText("Assessing", { exact: true })).toHaveAttribute("data-variant", "default");
   await expect(drawer.getByRole("button", { name: "Open finding" })).toHaveCount(0);
   await drawer.getByRole("tab", { name: "Evidence 1", exact: true }).click();
   state.rows[4] = securityAssessment("4", { outcome: "confirmed", finding_id: "finding", result: { verdict: "confirmed", finding_id: null, explanation: "Accepted", evidence: [{ revision: "current", path: "src/orders.ts", start_line: 14, end_line: 14, quote: "return acceptedOrder;" }] } });
@@ -2812,7 +2878,7 @@ for (const state of ["current", "unavailable"] as const) test(`unrated security 
   await page.goto("/security/repositories/22");
   await page.getByRole("link", { name: "Security Unrated", exact: true }).focus();
   await expect(page.getByRole("tooltip")).toContainText("No security grade is available.");
-  await expect(page.getByLabel("Scan coverage", { exact: true })).toHaveText("Coverage complete");
+  await expect(page.getByRole("tooltip")).toContainText("Coverage is complete.");
   await expect(page.getByLabel("Scan freshness", { exact: true })).toHaveText(state === "current" ? "Current commit" : "Freshness unverified");
 });
 
