@@ -342,7 +342,7 @@ export function SecurityRepository({ user }: { user: User }) {
       </RepositoryHeaderFact>}
     </RepositoryHeader>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
-    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security" className="mb-4">
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>
       {findingViews.map((view) => <TabsContent key={view.value} value={view.value}><Findings repositoryId={repo.id} state={view.state} /></TabsContent>)}
@@ -443,13 +443,13 @@ function Findings({ repositoryId, scanId, state }: { repositoryId: number; scanI
     next.delete(`${state}_page`);
     setParams(next, { replace: key === "search" });
   }
-  const description = {
-    open: scanId ? "Findings open when this scan was recorded. Later status changes do not change this list." : null,
-    accepted_risk: scanId ? "Findings recorded as accepted risks in this scan." : "Real issues accepted without a fix. These still count toward the current repository grade.",
-    false_positive: scanId ? "Findings recorded as false positives in this scan." : "Reports marked as invalid. These do not count toward the current repository grade.",
-    resolved: scanId ? "Findings recorded as resolved in this scan. Later status changes do not change this list." : "Findings with verified fixes. Reopened findings return to Findings.",
+  const description = scanId && {
+    open: "Findings open when this scan was recorded. Later status changes do not change this list.",
+    accepted_risk: "Findings recorded as accepted risks in this scan.",
+    false_positive: "Findings recorded as false positives in this scan.",
+    resolved: "Findings recorded as resolved in this scan. Later status changes do not change this list.",
   }[state];
-  return <div className="pt-4">
+  return <div className={scanId ? "pt-4" : "pt-2"}>
     {description && <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{description}</p>}
     <div className="mb-4"><FilterBar query={filters.get("search") ?? ""} searchLabel={state === "open" ? scanId ? "Search scan findings" : "Search findings" : `Search ${label(state).toLowerCase()} findings`} searchPlaceholder="Search findings…" searchInputRef={searchInput}
       ordering={{ value: ordering, defaultValue: "-severity", options: orderings, onChange: (value) => changeFilter("ordering", [value]) }}
@@ -490,7 +490,12 @@ function ScanHistory({ repositoryId }: { repositoryId: number }) {
     <div className="divide-y">{items.map((scan) => <Link key={scan.id} to={`/security/scans/${scan.id}`} data-slot="security-scan-row" className="group grid grid-cols-[minmax(0,1fr)_auto] items-center no-underline hover:no-underline gap-3 px-4 py-4 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_8rem_7rem_7rem_1rem] md:gap-6 md:px-5">
       <div className="min-w-0"><span className="font-medium group-hover:text-primary">{date(scan.created_at)}</span><span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground"><span className="inline-flex items-center gap-1.5"><GitBranch aria-hidden="true" className="size-3.5" />{scan.branch}</span><span className="inline-flex items-center gap-1.5"><GitCommitHorizontal aria-hidden="true" className="size-3.5" />{scan.head_sha.slice(0, 7)}</span></span></div>
       <span className="text-xs text-muted-foreground"><span className="md:sr-only">Duration: </span><ExecutionDuration run={scan} /></span>
-      <span className="inline-flex w-fit" role={scan.grade ? "img" : undefined} aria-label={scan.grade ? `Saved security grade ${scan.grade}` : undefined}>{scan.grade ? <SecurityGradeShield grade={scan.grade} /> : <Badge variant="outline" className="text-muted-foreground">Unrated</Badge>}</span><SecurityScanStatus status={scan.status} /><ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+      <span className="inline-flex w-fit">{scan.grade ? <>
+        <span className="sr-only">Saved security grade </span>
+        <span data-slot="security-grade-letter" className="font-semibold">{scan.grade}</span>
+      </> : <span className="text-xs text-muted-foreground">Unrated</span>}</span>
+      <Status value={scan.status} label={scan.status === "partial" ? "Partial" : undefined} showSpinner={false} />
+      <ChevronRight aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
     </Link>)}</div><Pagination {...pagination} label="scan history" /></div></div>;
 }
 

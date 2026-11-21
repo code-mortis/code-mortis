@@ -426,7 +426,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   } }));
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const row = page.locator('[data-slot="security-scan-row"]');
-  await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveText(grade);
+  await expect(row.locator('[data-slot="security-grade-letter"]')).toHaveText(grade);
   await expect(row.getByText("Partial", { exact: true })).toBeVisible();
   await page.goto("/security/scans/scan");
   await expect(page.getByText(grade, { exact: true })).toBeVisible();
@@ -505,7 +505,7 @@ for (const incomplete of [false, true]) test(`triage immediately updates the rep
   }
   await page.keyboard.press("Escape");
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
-  await expect(page.locator('[data-slot="security-scan-row"] [data-slot="security-grade-shield"]')).toHaveText("D");
+  await expect(page.locator('[data-slot="security-scan-row"] [data-slot="security-grade-letter"]')).toHaveText("D");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath(`triaged-grade-${incomplete ? "incomplete" : "complete"}.png`), fullPage: true });
   expect(writes).toHaveLength(1);
@@ -1462,7 +1462,8 @@ test("security grades and scan stages keep their help while finding and scan sta
   await page.getByRole("tab", { name: "Scan history 1", exact: true }).click();
   const history = page.locator('[data-slot="security-scan-row"]');
   await expect(history.locator('[data-slot="badge"]')).toHaveCount(1);
-  await expect(history.getByRole("img", { name: "Saved security grade D", exact: true })).toBeVisible();
+  await expect(history.locator('[data-slot="security-grade-letter"]')).toHaveText("D");
+  await expect(history).toHaveAccessibleName(/Saved security grade D/);
   await expect(history.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
   if (info.project.name === "desktop") {
     for (const badge of await history.locator('[data-slot="badge"]').all()) {
@@ -1664,10 +1665,9 @@ test("security finding sheet hides evidence and mutations after access is denied
 test("scan history fills missing grades without substituting a previous grade", async ({ page }, info) => {
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   const writes = await mock(page);
-  const statuses = [["partial", "shield-alert"], ["failed", "shield-x"], ["cancelled", "shield-off"],
-    ["blocked", "shield-alert"], ["running", "loader-circle"], ["queued", "loader-circle"]];
+  const statuses = ["partial", "failed", "cancelled", "blocked", "running", "queued"];
   const otherGrades = ["A", "B", "C", "F"];
-  const rows = [...statuses.map(([status]) => ({ ...scanRow, id: status, status, grade: null })), { ...scanRow, id: "warnings", status: "partial" }, scanRow,
+  const rows = [...statuses.map((status) => ({ ...scanRow, id: status, status, grade: null })), { ...scanRow, id: "warnings", status: "partial" }, scanRow,
     ...otherGrades.map((grade) => ({ ...scanRow, id: `grade-${grade}`, grade }))];
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => {
     const params = new URL(route.request().url()).searchParams;
@@ -1676,14 +1676,13 @@ test("scan history fills missing grades without substituting a previous grade", 
     return route.fulfill({ json: { items: rows.slice((pageNumber - 1) * 10, pageNumber * 10), total: rows.length, page: pageNumber, page_size: 10 } });
   });
   await page.goto("/security/repositories/22?tab=history");
-  for (const [status, icon] of statuses) {
+  for (const status of statuses) {
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${status}"]`);
-    await expect(row.locator('[data-slot="badge"]').first()).toHaveText("Unrated");
-    await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
-    const badge = row.locator('[data-slot="badge"]').last();
+    await expect(row.getByText("Unrated", { exact: true })).toBeVisible();
+    await expect(row.locator('[data-slot="security-grade-letter"]')).toHaveCount(0);
+    const badge = row.locator('[data-slot="badge"]');
     await expect(badge).toHaveText(status === "partial" ? "Partial" : status);
-    await expect(badge.locator("svg")).toHaveCount(1);
-    await expect(badge.locator(`.lucide-${icon}`)).toBeVisible();
+    await expect(badge.locator("svg")).toHaveCount(0);
     await expect(row.locator('[data-slot="tooltip-trigger"]')).toHaveCount(0);
     await expect(row.locator("a")).toHaveCount(0);
   }
@@ -1696,21 +1695,21 @@ test("scan history fills missing grades without substituting a previous grade", 
       currentPage = targetPage;
     }
     const row = page.locator(`[data-slot="security-scan-row"][href="/security/scans/${grade === "D" ? "scan" : `grade-${grade}`}"]`);
-    const shield = row.getByRole("img", { name: `Saved security grade ${grade}`, exact: true }).locator('[data-slot="security-grade-shield"]');
-    await expect(shield).toHaveText(grade);
-    await expect(shield).toHaveCSS("width", "24px");
-    await expect(shield).toHaveCSS("height", "24px");
-    await expect(shield).toHaveClass(grade === "A" ? /text-emerald-800/ : ["D", "F"].includes(grade) ? /text-red-700/ : /text-amber-800/);
+    const letter = row.locator('[data-slot="security-grade-letter"]');
+    await expect(letter).toHaveText(grade);
+    await expect(letter).toHaveCSS("color", await row.evaluate((element) => getComputedStyle(element).color));
+    await expect(row.locator('[data-slot="security-grade-shield"]')).toHaveCount(0);
+    await expect(row).toHaveAccessibleName(new RegExp(`Saved security grade ${grade}`));
     await expect(row.locator("a")).toHaveCount(0);
   }
   await page.getByRole("button", { name: "Previous scan history", exact: true }).click();
   await expect(completed.locator('[data-slot="badge"]').last()).toHaveClass(/text-emerald-800/);
-  await expect(completed.locator(".lucide-shield-check")).toBeVisible();
+  await expect(completed.locator('[data-slot="badge"] svg')).toHaveCount(0);
   const warning = page.locator('[data-slot="security-scan-row"][href="/security/scans/warnings"]');
-  await expect(warning.getByRole("img", { name: "Saved security grade D", exact: true }).locator('[data-slot="security-grade-shield"]')).toHaveClass(/text-red-700/);
+  await expect(warning.locator('[data-slot="security-grade-letter"]')).toHaveText("D");
   await expect(warning.locator('[data-slot="badge"]').last()).toHaveText("Partial");
   await expect(warning.locator('[data-slot="badge"]').last()).toHaveClass(/text-amber-800/);
-  await expect(warning.locator(".lucide-shield-alert")).toBeVisible();
+  await expect(warning.locator('[data-slot="badge"] svg')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `/private/tmp/code-mortis-security-history-badges-${info.project.name}.png`, fullPage: true });
   await completed.focus();

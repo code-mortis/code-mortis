@@ -29,7 +29,7 @@ export function StatusGroup({ children }: { children: ReactNode }) {
 export function FindingCount({ count }: { count: number }) {
   return <Badge variant="outline" className={count ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{count} unresolved<span className="sr-only"> findings</span></Badge>;
 }
-export function Status({ value, label, icon }: { value: string; label?: string; icon?: ReactNode }) {
+export function Status({ value, label, icon, showSpinner = true }: { value: string; label?: string; icon?: ReactNode; showSpinner?: boolean }) {
   const good = ["completed", "published", "resolved", "connected", "success", "active"].includes(
     value,
   );
@@ -51,7 +51,7 @@ export function Status({ value, label, icon }: { value: string; label?: string; 
       )}
     >
       {label || words(value)}
-      {["queued", "running"].includes(value) && (
+      {showSpinner && ["queued", "running"].includes(value) && (
         <LoaderCircle className="size-3 motion-safe:animate-spin" />
       )}
       {icon}
