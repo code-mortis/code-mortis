@@ -63,11 +63,16 @@ test("repository Overview shows daily activity before opening Analytics", async 
     reviews: index === 364 ? 6 : 0,
     scans: index === 364 ? 2 : 0,
   }));
+  const recentResults: Schema["RepositoryResult"][] = [
+    { kind: "review", at: "2026-11-20T15:00:00Z", run_id: "review-22", title: "Add repository context", pr_number: 148 },
+    { kind: "scan", at: "2026-11-20T14:00:00Z", run_id: "scan-22", title: "main", scan_status: "partial" },
+    { kind: "scan_fix", at: "2025-11-20T13:55:00Z", run_id: "scan-21", title: "Restrict access to archived records", finding_id: "verified-fix" },
+  ];
   let activityReads = 0;
   await page.route("**/api/v1/repositories/22/activity?**", async (route) => {
     expect(new URL(route.request().url()).searchParams.get("timezone")).toBeTruthy();
     activityReads++;
-    await route.fulfill({ json: { days } });
+    await route.fulfill({ json: { days, recent_results: recentResults } });
   });
   await page.goto("/repositories/22/overview");
   await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
@@ -97,6 +102,18 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
   const [chartBox, reviewBox, securityBox] = await Promise.all([activity.boundingBox(), reviewCard.boundingBox(), securityCard.boundingBox()]);
   expect(chartBox!.y).toBeGreaterThan(Math.max(reviewBox!.y + reviewBox!.height, securityBox!.y + securityBox!.height));
+  const results = page.getByRole("region", { name: "Recent results", exact: true });
+  await expect(results.getByRole("listitem")).toHaveCount(3);
+  expect((await results.boundingBox())!.y).toBeGreaterThan(chartBox!.y + chartBox!.height);
+  const resultLinks = results.getByRole("link");
+  await expect(resultLinks.nth(0)).toHaveAccessibleName(/Review completed.*PR #148.*Add repository context/);
+  await expect(resultLinks.nth(0)).toHaveAttribute("href", "/runs/review-22");
+  await expect(resultLinks.nth(1)).toHaveAccessibleName(/Partial security scan.*main/);
+  await expect(resultLinks.nth(1)).toHaveAttribute("href", "/security/scans/scan-22");
+  await expect(resultLinks.nth(2)).toHaveAccessibleName(/Fix verified.*Restrict access to archived records/);
+  await expect(resultLinks.nth(2)).toHaveAttribute("href", "/security/scans/scan-21?tab=resolved&finding=verified-fix");
+  await expect(resultLinks.nth(2).locator("time")).toHaveAttribute("datetime", recentResults[2].at);
+  await expect(resultLinks.nth(2).locator("time")).toHaveText(/\b2025\b/);
   if (info.project.name === "mobile") {
     expect(securityBox!.y).toBeGreaterThan(reviewBox!.y);
   } else {
@@ -179,6 +196,7 @@ test("repository activity keeps load errors separate from empty history", async 
   await expect(page.getByText("No review runs or security scans in this period.")).toHaveCount(0);
   await page.getByRole("button", { name: "Retry activity" }).click();
   await expect(page.getByText("No review runs or security scans in this period.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Recent results", exact: true })).toHaveCount(0);
 });
 
 test("legacy repository Overview analytics filters open Analytics", async ({ page }) => {

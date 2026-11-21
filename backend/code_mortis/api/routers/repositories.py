@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import Date, cast, func, select
+from sqlalchemy.orm import Session
 
 from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
 from code_mortis.api.presenters import latest_repository_reviews, repo_out
@@ -16,15 +17,25 @@ from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
     CodeGraphRepository,
     Connection,
+    Finding,
+    FindingVerification,
     Job,
     PullRequest,
     Repository,
     ReviewRun,
+    SecurityActivity,
+    SecurityFinding,
+    SecurityOccurrence,
     SecurityScan,
 )
 from code_mortis.reviews import background, inbox
 from code_mortis.reviews.service import enqueue
-from code_mortis.schemas.analytics import RepositoryActivity, RepositoryActivityDay, RepositoryActivityFilters
+from code_mortis.schemas.analytics import (
+    RepositoryActivity,
+    RepositoryActivityDay,
+    RepositoryActivityFilters,
+    RepositoryResult,
+)
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
     BackgroundCancelInput,
@@ -54,6 +65,45 @@ def repositories(db: DB, user: USER):
     return result
 
 
+def _recent_results(db: Session, repository_id: int, end: datetime) -> list[RepositoryResult]:
+    reviews = db.execute(select(ReviewRun.id, ReviewRun.finished_at, PullRequest.number, PullRequest.title)
+        .join(PullRequest, PullRequest.id == ReviewRun.pr_id).where(
+            PullRequest.repository_id == repository_id, ReviewRun.status == "completed", ReviewRun.finished_at <= end,
+        ).order_by(ReviewRun.finished_at.desc(), ReviewRun.id.desc()).limit(3))
+    results = [RepositoryResult(kind="review", at=at, run_id=run_id, title=title, pr_number=number)
+               for run_id, at, number, title in reviews]
+    scans = db.execute(select(SecurityScan.id, SecurityScan.finished_at, SecurityScan.branch, SecurityScan.status)
+        .where(SecurityScan.repository_id == repository_id, SecurityScan.status.in_(["completed", "partial"]),
+               SecurityScan.finished_at <= end)
+        .order_by(SecurityScan.finished_at.desc(), SecurityScan.id.desc()).limit(3))
+    results.extend(RepositoryResult(kind="scan", at=at, run_id=run_id, title=branch, scan_status=status)
+                   for run_id, at, branch, status in scans)
+    review_fixes = db.execute(select(FindingVerification.run_id, FindingVerification.finished_at, Finding.id,
+                                    Finding.path, PullRequest.number)
+        .join(ReviewRun, ReviewRun.id == FindingVerification.run_id)
+        .join(PullRequest, PullRequest.id == ReviewRun.pr_id)
+        .join(Finding, (Finding.id == FindingVerification.finding_id) & (Finding.pr_id == PullRequest.id))
+        .where(PullRequest.repository_id == repository_id, FindingVerification.status == "completed",
+               FindingVerification.verdict == "fixed", FindingVerification.resolution == "resolved",
+               FindingVerification.finished_at <= end)
+        .order_by(FindingVerification.finished_at.desc(), FindingVerification.run_id.desc(), Finding.id.desc()).limit(3))
+    results.extend(RepositoryResult(kind="review_fix", at=at, run_id=run_id, title=path, pr_number=number, finding_id=finding_id)
+                   for run_id, at, finding_id, path, number in review_fixes)
+    scan_fixes = db.execute(select(SecurityActivity.scan_id, SecurityActivity.created_at, SecurityFinding.id,
+                                  func.coalesce(SecurityOccurrence.snapshot["title"].as_string(), SecurityFinding.title))
+        .join(SecurityScan, SecurityScan.id == SecurityActivity.scan_id)
+        .join(SecurityFinding, SecurityFinding.id == SecurityActivity.finding_id)
+        .join(SecurityOccurrence, (SecurityOccurrence.scan_id == SecurityScan.id)
+              & (SecurityOccurrence.finding_id == SecurityFinding.id))
+        .where(SecurityScan.repository_id == repository_id, SecurityFinding.repository_id == repository_id,
+               SecurityActivity.action == "finding_resolved", SecurityActivity.created_at <= end,
+               SecurityOccurrence.outcome == "fixed")
+        .order_by(SecurityActivity.created_at.desc(), SecurityActivity.scan_id.desc(), SecurityFinding.id.desc()).limit(3))
+    results.extend(RepositoryResult(kind="scan_fix", at=at, run_id=run_id, title=title, finding_id=finding_id)
+                   for run_id, at, finding_id, title in scan_fixes)
+    return sorted(results, key=lambda result: (result.at, result.kind, result.run_id, result.finding_id or ""), reverse=True)[:3]
+
+
 @router.get("/repositories/{repository_id}/activity", response_model=RepositoryActivity)
 def repository_activity(
     repository_id: int, db: DB, user: SESSION_USER, filters: Annotated[RepositoryActivityFilters, Query()],
@@ -79,9 +129,10 @@ def repository_activity(
         ).group_by(scan_day)
     ).all())
     dates = (first + timedelta(days=offset) for offset in range(365))
-    return RepositoryActivity(days=[
-        RepositoryActivityDay(date=day, reviews=reviews.get(day, 0), scans=scans.get(day, 0)) for day in dates
-    ])
+    return RepositoryActivity(
+        days=[RepositoryActivityDay(date=day, reviews=reviews.get(day, 0), scans=scans.get(day, 0)) for day in dates],
+        recent_results=_recent_results(db, repo.id, end),
+    )
 
 
 @router.put("/repositories/{repository_id}", response_model=RepositoryOut)
