@@ -38,7 +38,8 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
     let json: unknown;
     if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
-    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "" } }));
+    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "", automatic: true, language: "English" } }));
+    else if (/^\/repositories\/\d+\/activity$/.test(path)) json = { days: [{ date: "2026-11-20", reviews: 0, scans: 0 }] };
     else if (path.startsWith("/analytics/")) {
       requests.push(url);
       const view = path.split("/").at(-1)!;
@@ -50,7 +51,13 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
 }
 
 test("repository Overview shows daily activity before opening Analytics", async ({ page }, info) => {
-  const requests = await mock(page);
+  const requests = await mock(page, (view, params) =>
+    view === "findings" && params.get("status") === "open" ? { ...findings, total: 10 } : undefined);
+  await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: {
+    summary: { grade: "B", freshness: "current", latest_scan_id: "scan-22", latest_status: "completed", latest_at: "2026-11-19T12:00:00Z" },
+    finding_state_counts: { open: 7, accepted_risk: 2, resolved: 4 },
+    finding_count: 13,
+  } }));
   const days = Array.from({ length: 365 }, (_, index) => ({
     date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10),
     reviews: index === 364 ? 6 : 0,
@@ -68,10 +75,35 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(activity).toContainText("8 total runs");
   await expect(activity).toContainText("6 review runs");
   await expect(activity).toContainText("2 security scans");
+  const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
+  const securityCard = page.getByRole("region", { name: "Security", exact: true });
+  await expect(reviewCard).toContainText(/10\s*open findings/);
+  await expect(reviewCard.getByText("Enabled", { exact: true })).toBeVisible();
+  await expect(reviewCard).toContainText(/Automatic reviews\s*On/);
+  await expect(reviewCard).toContainText(/Review language\s*English/);
+  await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveAttribute("href", "/repositories/22");
+  await expect(securityCard).toContainText(/7\s*open findings/);
+  await expect(securityCard).toContainText("Grade B");
+  await expect(securityCard.locator("time")).toHaveAttribute("datetime", "2026-11-19T12:00:00Z");
+  await expect(securityCard).toContainText(/Scan status\s*completed/i);
+  await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
+  const [chartBox, reviewBox, securityBox] = await Promise.all([activity.boundingBox(), reviewCard.boundingBox(), securityCard.boundingBox()]);
+  expect(reviewBox!.y).toBeGreaterThan(chartBox!.y + chartBox!.height);
+  if (info.project.name === "mobile") {
+    expect(securityBox!.y).toBeGreaterThan(reviewBox!.y);
+  } else {
+    expect(securityBox!.y).toBe(reviewBox!.y);
+    expect(securityBox!.x).toBeGreaterThan(reviewBox!.x);
+  }
   const calendar = activity.getByRole("group", { name: /Daily activity/ });
   await expect(calendar.getByRole("button")).toHaveCount(365);
   await expect(calendar.locator('[tabindex="0"]')).toHaveCount(1);
   const today = calendar.getByRole("button", { name: /8 total, 6 review runs, 2 security scans/ });
+  const primaryColor = await today.evaluate((cell) => getComputedStyle(cell).backgroundColor);
+  await expect(reviewCard.getByText("Enabled", { exact: true })).toHaveCSS("color", primaryColor);
+  await expect(securityCard.getByText("Grade B", { exact: true })).toHaveCSS("color", primaryColor);
+  await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveCSS("color", primaryColor);
+  await expect(securityCard.getByRole("link", { name: "View security" })).toHaveCSS("color", primaryColor);
   if (info.project.name === "mobile") {
     await expect(today).toBeInViewport({ ratio: 1 });
     await today.tap();
@@ -98,13 +130,27 @@ test("repository Overview shows daily activity before opening Analytics", async 
   expect(activityReads).toBe(1);
   await expect(page.getByRole("group", { name: "Analytics filters", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
-  expect(requests).toHaveLength(0);
+  expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([{ repo: "22", all_time: "true", status: "open" }]);
   if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Analytics", exact: true }).click();
   await expect(page).toHaveURL("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
-  await expect.poll(() => requests.length).toBeGreaterThan(0);
+  await expect.poll(() => requests.some((url) => url.pathname.endsWith("/analytics/overview"))).toBe(true);
   expect(requests.every((url) => url.searchParams.get("repo") === "22")).toBe(true);
+});
+
+test("repository cards distinguish an unscanned repository from an unavailable count", async ({ page }) => {
+  await mock(page);
+  await page.route("**/api/v1/analytics/findings?**", (route) => route.fulfill({ status: 503, json: {} }));
+  await page.route("**/api/v1/security/repositories/23", (route) => route.fulfill({ json: {
+    summary: { state: "not_scanned" }, finding_state_counts: {},
+  } }));
+  await page.goto("/repositories/23/overview");
+  await expect(page.getByRole("region", { name: "Reviews", exact: true })).toContainText("Finding count unavailable");
+  const securityCard = page.getByRole("region", { name: "Security", exact: true });
+  await expect(securityCard).toContainText("Unscanned");
+  await expect(securityCard).toContainText(/0\s*open findings/);
+  await expect(securityCard).toContainText(/Latest scan\s*Never/);
 });
 
 test("repository activity keeps load errors separate from empty history", async ({ page }) => {
