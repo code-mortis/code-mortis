@@ -1209,7 +1209,7 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   const summary = header.locator('[data-slot="repository-header-summary"]');
   const policy = summary.getByRole("region", { name: "Review configuration" });
   const latest = summary.getByRole("region", { name: "Last completed review", exact: true });
-  const check = summary.getByRole("region", { name: "Last successful GitHub PR check", exact: true });
+  const check = summary.getByRole("region", { name: "GitHub PR check", exact: true });
   await expect(summary.getByRole("region")).toHaveCount(3);
   const enabled = policy.getByRole("heading", { name: "Review policy" }).locator("..").getByText("Reviews enabled", { exact: true });
   await expect(enabled).toHaveAttribute("data-variant", "default");

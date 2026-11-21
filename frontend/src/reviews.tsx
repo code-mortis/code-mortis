@@ -174,7 +174,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         note={selected.enabled ? undefined : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
         {selected.enabled && (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only")}
       </RepositorySummaryCard>
-      <RepositorySummaryCard label="Last successful GitHub PR check"
+      <RepositorySummaryCard label="GitHub PR check"
         details={!repos.error && selected.open_prs != null ? [["Open PRs", selected.open_prs.toLocaleString()]] : undefined}>
         {lastCheck ? <time dateTime={lastCheck}>{date(lastCheck)}</time> : missingActivity}
       </RepositorySummaryCard>
