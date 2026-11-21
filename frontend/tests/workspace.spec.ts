@@ -1208,21 +1208,29 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   const header = page.locator('[data-slot="page-title"]');
   const summary = header.locator('[data-slot="repository-header-summary"]');
   const policy = summary.getByRole("region", { name: "Review configuration" });
-  const activity = summary.getByRole("region", { name: "Review activity", exact: true });
-  const latest = activity.getByRole("region", { name: "Last completed review", exact: true });
-  const check = activity.getByRole("region", { name: "Last successful GitHub PR check" });
+  const latest = summary.getByRole("region", { name: "Last completed review", exact: true });
+  const check = summary.getByRole("region", { name: "Last successful GitHub PR check", exact: true });
+  await expect(summary.getByRole("region")).toHaveCount(3);
   await expect(policy).toContainText("Automatic reviews");
-  await expect(policy.getByText("Comment language", { exact: true })).toBeVisible();
-  await expect(policy.getByText("English", { exact: true })).toBeVisible();
+  await expect(policy.getByText("File limit", { exact: true })).toBeVisible();
+  await expect(policy.getByText("Comment language", { exact: true })).toHaveCount(0);
   await expect(check.locator("time")).toHaveAttribute("datetime", checked);
   await expect(latest.locator("code")).toHaveText("ccccccc");
   const review = latest.getByRole("link", { name: "View review for PR #148", exact: true });
   await expect(review).toHaveAttribute("href", "/runs/run");
   await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
+  await expect(latest.getByRole("heading").locator("..").getByRole("link")).toHaveCount(1);
+  await expect(latest.getByText("PR #148", { exact: true })).toHaveCSS("font-size", "16px");
   await expect(header.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", `https://github.com/${repo.full_name}`);
-  const columns = await summary.locator(":scope > div").evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
-  expect(columns).toBe(info.project.name === "mobile" ? 1 : 2);
-  await header.screenshot({ path: info.outputPath("pull-requests-status-and-activity.png") });
+  const [policyBox, reviewBox, checkBox] = await Promise.all([policy.boundingBox(), latest.boundingBox(), check.boundingBox()]);
+  if (info.project.name === "mobile") {
+    expect(reviewBox!.y).toBeGreaterThanOrEqual(policyBox!.y + policyBox!.height);
+    expect(checkBox!.y).toBeGreaterThanOrEqual(reviewBox!.y + reviewBox!.height);
+  } else {
+    expect([reviewBox!.y, checkBox!.y]).toEqual([policyBox!.y, policyBox!.y]);
+    expect(policyBox!.height).toBeLessThan(140);
+  }
+  await header.screenshot({ path: info.outputPath("pull-requests-summary-cards.png") });
   const returnUrl = page.url();
   await review.click();
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
@@ -1233,8 +1241,10 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
-  await expect(header.getByText(/Last successful GitHub PR check|Last completed review/)).toHaveCount(0);
-  await expect(activity).toHaveCount(0);
+  await expect(summary.getByRole("region")).toHaveCount(3);
+  await expect(latest).toContainText("None recorded");
+  await expect(latest.getByRole("link")).toHaveCount(0);
+  await expect(check).toContainText("None recorded");
 });
 
 test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {

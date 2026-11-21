@@ -13,27 +13,36 @@ import {
 import { applyAppearance } from "../lib/appearance";
 import "../index.css";
 
-const options = [
+const legacyOptions = [
   { id: "three", name: "Three cards", description: "Give each fact its own Overview-style card, with room for labels and links." },
   { id: "activity", name: "Status and activity", description: "Put review policy or saved grade in the lead card. Keep the last run and freshness together." },
   { id: "compact", name: "Compact summary", description: "Keep the familiar three-column summary inside one low-profile card." },
 ] as const;
 
-type Option = (typeof options)[number]["id"];
+const compactOptions = [
+  { id: "aligned", name: "Aligned details", description: "Equal-width cards with a consistent title, main value, and a compact detail area." },
+  { id: "value-first", name: "Value first", description: "Larger key values, muted labels, and actions alongside the card titles." },
+  { id: "lead", name: "Lead card", description: "A wider, softly tinted card for the review policy or saved grade, with two quieter cards beside it." },
+] as const;
+
+type CompactOption = (typeof compactOptions)[number]["id"];
+type Option = CompactOption | (typeof legacyOptions)[number]["id"];
 type Action = { title: string; description: string };
 type Fact = {
   label: string;
   icon: LucideIcon;
   value?: ReactNode;
   badge?: ReactNode;
+  badgeInHeading?: boolean;
   details?: [string, ReactNode][];
   action?: Action & { label: string };
 };
 
-const checkedAt = <time dateTime="2026-11-21T10:28:00">Nov 21, 2026, 10:28 AM</time>;
-const scanAt = <time dateTime="2026-10-19T12:41:00">Oct 19, 2026, 12:41 PM</time>;
+const checkedAt = <time dateTime="2026-11-21T11:58:00">Nov 21, 2026, 11:58 AM</time>;
+const scanAt = <time dateTime="2026-11-21T10:42:00">Nov 21, 2026, 10:42 AM</time>;
 const reportAt = <time dateTime="2026-10-19T13:06:00">Oct 19, 2026, 1:06 PM</time>;
 const commit = (id: string) => <code className="text-xs">{id}</code>;
+const currentCommit = commit("a02847e");
 
 const reviewFacts: [Fact, Fact, Fact] = [
   {
@@ -50,18 +59,30 @@ const reviewFacts: [Fact, Fact, Fact] = [
 
 const securityFacts: [Fact, Fact, Fact] = [
   {
-    label: "Saved grade", icon: ShieldCheck, value: "Coverage complete",
+    label: "Saved grade", icon: ShieldCheck, value: "Coverage incomplete",
     badge: <Status value="failed" label="Security D" />,
     details: [["Report saved", reportAt], ["Graded commit", commit("b1c2c09")]],
   },
   {
-    label: "Latest scan", icon: History, value: scanAt, badge: <Status value="completed" />,
-    action: { label: "Inspect scan", title: "Latest security scan", description: "Completed Oct 19, 2026 at 12:41 PM. The saved grade applies to commit b1c2c09." },
+    label: "Latest scan", icon: History, value: scanAt, badge: <Status value="cancelled" />,
+    action: { label: "Inspect scan", title: "Latest security scan", description: "Cancelled Nov 21, 2026 at 10:42 AM. The saved grade applies to commit b1c2c09." },
   },
   {
     label: "Freshness", icon: RefreshCw,
     badge: <Status value="outdated" label="Outdated scan" />,
-    details: [["Checked", checkedAt], ["Current commit", commit("a02847e")]],
+    details: [["Freshness checked", checkedAt], ["Current commit", currentCommit]],
+  },
+];
+
+const valueFirstSecurityFacts: Fact[] = [
+  securityFacts[0],
+  securityFacts[1],
+  {
+    ...securityFacts[2],
+    label: "Freshness check",
+    value: checkedAt,
+    badgeInHeading: true,
+    details: [["Current commit", currentCommit]],
   },
 ];
 
@@ -84,7 +105,7 @@ function PreviewDialog({ action, trigger }: { action: Action; trigger: ReactNode
 
 function FactLink({ action }: { action: NonNullable<Fact["action"]> }) {
   return <PreviewDialog action={action} trigger={
-    <button className={`${repositoryHeaderLink} w-fit text-xs font-semibold text-primary sm:min-h-8`}>
+    <button className={`${repositoryHeaderLink} w-fit text-xs font-semibold text-primary`}>
       {action.label}<ChevronRight aria-hidden="true" className="size-3.5" />
     </button>
   } />;
@@ -96,10 +117,10 @@ function CardTitle({ icon: Icon, children }: { icon: LucideIcon; children: React
   </h3>;
 }
 
-function FactDetails({ details, aligned = false }: { details: NonNullable<Fact["details"]>; aligned?: boolean }) {
-  return <dl className="space-y-1 text-xs leading-[18px] tabular-nums">
+function FactDetails({ details, aligned = false, compact = false }: { details: NonNullable<Fact["details"]>; aligned?: boolean; compact?: boolean }) {
+  return <dl className={`text-xs tabular-nums ${compact ? "space-y-0.5 leading-4" : "space-y-1 leading-[18px]"}`}>
     {details.map(([label, value]) => <div key={label}
-      className={aligned ? "grid grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] items-baseline gap-2" : "flex flex-wrap items-baseline gap-x-2"}>
+      className={aligned ? "grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-2" : "flex flex-wrap items-baseline gap-x-2"}>
       <dt className="text-muted-foreground">{label}</dt>
       <dd className={aligned ? "text-right wrap-anywhere" : undefined}>{value}</dd>
     </div>)}
@@ -121,8 +142,51 @@ function FactCard({ fact, lead = false }: { fact: Fact; lead?: boolean }) {
   );
 }
 
+function CompactCards({ option, facts }: { option: CompactOption; facts: readonly Fact[] }) {
+  const valueFirst = option === "value-first";
+  const aligned = option === "aligned";
+  return <div className="@container">
+    <div data-layout={option} className={`grid gap-3 ${option === "lead"
+      ? "@min-[47rem]:grid-cols-[minmax(0,1.22fr)_repeat(2,minmax(0,1fr))]"
+      : "@min-[47rem]:grid-cols-3"}`}>
+      {facts.map((fact, index) => {
+        const lead = option === "lead" && index === 0;
+        const inlineBadge = valueFirst && !fact.badgeInHeading;
+        const action = fact.action && <FactLink action={fact.action} />;
+        const details = valueFirst ? fact.details?.filter(([label]) => label !== "Comment language") : fact.details;
+        const Icon = fact.icon;
+        return <section key={fact.label} data-slot="demo-summary-card" aria-label={fact.label}
+          className={`flex min-w-0 flex-col gap-1 rounded-lg border px-3.5 py-2.5 text-card-foreground ${lead
+            ? "bg-[color-mix(in_srgb,var(--card)_94%,var(--primary))]"
+            : "bg-card"}`}>
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2.5 gap-y-1">
+            <h3 className={`flex min-w-0 items-center gap-1.5 leading-5 ${valueFirst ? "text-xs font-medium text-muted-foreground" : "text-sm font-semibold"}`}>
+              {(aligned || lead) && <Icon aria-hidden="true" strokeWidth={1.65} className={`size-4 shrink-0 ${lead ? "text-primary" : "text-muted-foreground"}`} />}
+              {fact.label}
+            </h3>
+            {valueFirst && action}
+            {!inlineBadge && fact.badge}
+          </div>
+          {(fact.value || (inlineBadge && fact.badge) || (!valueFirst && action)) && <div className="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1">
+            <div className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 leading-5 font-semibold tabular-nums ${valueFirst || lead ? "text-base" : "text-sm"}`}>
+              {fact.value && <span className="min-w-0 wrap-anywhere">{fact.value}</span>}
+              {inlineBadge && fact.badge}
+            </div>
+            {!valueFirst && action}
+          </div>}
+          {details && details.length > 0 && <div className={aligned ? "border-t pt-1" : undefined}>
+            <FactDetails details={details} aligned={aligned || lead} compact />
+          </div>}
+        </section>;
+      })}
+    </div>
+  </div>;
+}
+
 function SummaryCards({ option, security }: { option: Option; security: boolean }) {
+  if (security && option === "value-first") return <CompactCards option={option} facts={valueFirstSecurityFacts} />;
   const facts = security ? securityFacts : reviewFacts;
+  if (option === "aligned" || option === "value-first" || option === "lead") return <CompactCards option={option} facts={facts} />;
   const [lead, ...activity] = facts;
   if (option === "three") return <div className="grid gap-3.5 lg:grid-cols-3">
     {facts.map((fact) => <FactCard key={fact.label} fact={fact} />)}
@@ -195,7 +259,10 @@ function RepositoryExample({ option, security = false }: { option: Option; secur
 function Preview() {
   const [params] = useSearchParams();
   const [dark, setDark] = useState(true);
-  const option = options.find((item) => item.id === params.get("option")) ?? options[0];
+  const requested = params.get("option");
+  const legacy = legacyOptions.find((item) => item.id === requested);
+  const option = legacy ?? compactOptions.find((item) => item.id === requested) ?? compactOptions[0];
+  const options = legacy ? legacyOptions : compactOptions;
   const ThemeIcon = dark ? Sun : Moon;
   return <>
     <div className="border-b">

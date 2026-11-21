@@ -33,7 +33,6 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
-  GitPullRequest,
 } from "lucide-react";
 import {
   ApiError,
@@ -50,7 +49,7 @@ import { Badge } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
-import { RepositoryActivityCard, RepositoryActivityRow, RepositoryHeader, RepositoryStatusCard, repositoryActivityLink } from "./components/repository-header";
+import { RepositoryHeader, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
@@ -159,6 +158,7 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const latestReview = !repos.error ? selected?.latest_completed_review : null;
   const lastCheck = !repos.error ? selected?.last_pr_sync_check_at : null;
   const reviewInProgress = !repos.error && selected?.has_running_review;
+  const missingActivity = repos.error ? "Unavailable" : "None recorded";
   return <>
     {selected ? <RepositoryHeader title="Pull requests" repository={selected}
       headingProps={{ id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } }}
@@ -168,34 +168,27 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
       </Button>}
     >
-      <RepositoryStatusCard label="Review policy" regionLabel="Review configuration" icon={GitPullRequest}
+      <RepositorySummaryCard label="Review policy" regionLabel="Review configuration"
         badge={<Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Reviews enabled" : "Paused"} />}
-        details={selected.enabled ? [
-          ["File limit", selected.settings.max_files == null ? "No limit" : `${selected.settings.max_files} files per review`],
-          ["Comment language", selected.settings.language],
-        ] : undefined}
+        details={selected.enabled ? [["File limit", selected.settings.max_files == null ? "No limit" : `${selected.settings.max_files} files per review`]] : undefined}
         note={selected.enabled ? undefined : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
-        {selected.enabled && <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>}
-      </RepositoryStatusCard>
-      {(latestReview || reviewInProgress || lastCheck) && <RepositoryActivityCard label="Review activity">
-        {(latestReview || reviewInProgress) && <RepositoryActivityRow
-          label={latestReview ? "Last completed review" : "Current review"}
-          detail={latestReview && <>
-            <div>Reviewed commit · <code>{latestReview.head_sha.slice(0, 7)}</code></div>
-            {reviewInProgress && <div>Review in progress</div>}
-          </>}
-          action={latestReview && <Link className={repositoryActivityLink} to={`/runs/${latestReview.run_id}`}
-            state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
-            aria-label={`View review for PR #${latestReview.number}`} title={`Reviewed commit ${latestReview.head_sha}`}>
-            View review<ChevronRight aria-hidden="true" className="size-3.5" />
-          </Link>}
-        >
-          {latestReview ? `PR #${latestReview.number}` : "Review in progress"}
-        </RepositoryActivityRow>}
-        {lastCheck && <RepositoryActivityRow label="Last successful GitHub PR check">
-          <time dateTime={lastCheck}>{date(lastCheck)}</time>
-        </RepositoryActivityRow>}
-      </RepositoryActivityCard>}
+        {selected.enabled && (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only")}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard
+        label={reviewInProgress && !latestReview ? "Current review" : "Last completed review"}
+        details={latestReview ? [["Reviewed commit", <code>{latestReview.head_sha.slice(0, 7)}</code>]] : undefined}
+        note={latestReview && reviewInProgress ? "Review in progress" : undefined}
+        action={latestReview && <Link className={repositoryActivityLink} to={`/runs/${latestReview.run_id}`}
+          state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
+          aria-label={`View review for PR #${latestReview.number}`} title={`Reviewed commit ${latestReview.head_sha}`}>
+          View review<ChevronRight aria-hidden="true" className="size-3.5" />
+        </Link>}
+      >
+        {latestReview ? `PR #${latestReview.number}` : reviewInProgress ? "Review in progress" : missingActivity}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard label="Last successful GitHub PR check">
+        {lastCheck ? <time dateTime={lastCheck}>{date(lastCheck)}</time> : missingActivity}
+      </RepositorySummaryCard>
     </RepositoryHeader> : <PageTitle title="Repositories">Follow each pull request from first review to final resolution.</PageTitle>}
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
     {repos.error && <Button variant="outline" className="mb-4" onClick={() => repos.refetch()}>Retry repositories</Button>}

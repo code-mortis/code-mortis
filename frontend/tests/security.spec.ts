@@ -419,7 +419,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(gradeSummary.getByText("Report saved", { exact: true })).toBeVisible();
   await expect(gradeSummary.locator("code")).toHaveText("aaaaaaa");
   await expect(gradeSummary.locator("time")).toHaveAttribute("datetime", at);
-  await expect(page.getByRole("region", { name: "Freshness", exact: true }).getByText(/Freshness checked/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Freshness check", exact: true }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
@@ -1158,29 +1158,44 @@ for (const head of ["b".repeat(40), null]) test(`repository freshness shows the 
   const state = head ? "outdated" : "unavailable";
   const writes = await mock(page, { summary: { state, freshness: state, head_sha: head } });
   await page.goto("/security/repositories/22");
-  const activity = page.getByRole("region", { name: "Scan activity", exact: true });
-  const latest = activity.getByRole("region", { name: "Latest security scan", exact: true });
-  const freshness = activity.getByRole("region", { name: "Freshness", exact: true });
+  const summary = page.locator('[data-slot="repository-header-summary"]');
+  const grade = summary.getByRole("region", { name: "Saved grade", exact: true });
+  const latest = summary.getByRole("region", { name: "Latest security scan", exact: true });
+  const freshness = summary.getByRole("region", { name: "Freshness check", exact: true });
+  await expect(summary.getByRole("region")).toHaveCount(3);
   await expect(latest.locator("time")).toHaveAttribute("datetime", at);
   await expect(latest.locator("code")).toHaveCount(0);
+  await expect(latest.getByRole("heading").locator("..").getByRole("link", { name: "Inspect scan" })).toBeVisible();
   await expect(freshness.locator("time")).toHaveAttribute("datetime", at);
-  await expect(freshness.getByLabel("Scan freshness")).toHaveText(head ? "Outdated scan" : "Freshness unverified");
+  await expect(freshness.locator("time")).toHaveCSS("font-size", "16px");
+  await expect(freshness.getByRole("heading").locator("..").getByLabel("Scan freshness")).toHaveText(head ? "Outdated scan" : "Freshness unverified");
   if (head) {
-    await expect(freshness.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
+    await expect(freshness.getByText("Current commit", { exact: true })).toBeVisible();
+    await expect(freshness.locator("code")).toHaveText("bbbbbbb");
     await expect(freshness.locator("code")).toHaveAttribute("title", head);
     await expect(freshness.locator("code")).toHaveCSS("font-size", "12px");
-    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-status-and-activity.png") });
+    const [gradeBox, scanBox, freshnessBox] = await Promise.all([grade.boundingBox(), latest.boundingBox(), freshness.boundingBox()]);
+    if (info.project.name === "mobile") {
+      expect(scanBox!.y).toBeGreaterThanOrEqual(gradeBox!.y + gradeBox!.height);
+      expect(freshnessBox!.y).toBeGreaterThanOrEqual(scanBox!.y + scanBox!.height);
+    } else {
+      expect([scanBox!.y, freshnessBox!.y]).toEqual([gradeBox!.y, gradeBox!.y]);
+      expect(gradeBox!.height).toBeLessThan(140);
+    }
+    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-summary-cards.png") });
   } else await expect(freshness.locator("code")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
 
-test("repository without a scan does not show an inspection link", async ({ page }) => {
-  const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null } });
+test("repository without a scan keeps three summary cards and omits the inspection link", async ({ page }) => {
+  const writes = await mock(page, { canWrite: false, summary: { latest_scan_id: null, latest_status: null, latest_at: null, checked_at: null } });
   await page.goto("/security/repositories/22");
   await expect(page.getByRole("heading", { level: 1, name: "Security", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Inspect scan", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Latest security scan", exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-slot="repository-header-summary"]').getByRole("region")).toHaveCount(3);
+  await expect(page.getByRole("region", { name: "Latest security scan", exact: true })).toContainText("No scans recorded");
+  await expect(page.getByRole("region", { name: "Freshness check", exact: true })).toContainText("No check recorded");
   expect(writes).toHaveLength(0);
 });
 
