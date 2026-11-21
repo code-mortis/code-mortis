@@ -4614,6 +4614,25 @@ test("repository summary generation retries and displays the saved paragraph on 
   await expect(page).toHaveURL("/repositories/22/overview");
 });
 
+test("Overview allows a new generation after a rejected start with a configured connection", async ({ page }) => {
+  const background: Schema["BackgroundJobOut"] = { id: "overview-retry", status: "queued" };
+  await mock(page, { background });
+  const attempts: string[] = [];
+  await page.route("**/api/v1/repositories/22/background", (route) => {
+    attempts.push(route.request().postDataJSON().generation_id);
+    return attempts.length === 1
+      ? route.fulfill({ status: 422, json: { detail: "The selected model is unavailable." } })
+      : route.fallback();
+  });
+  await page.goto("/repositories/22/overview");
+  await page.getByRole("button", { name: "Generate context", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("The selected model is unavailable.");
+  await page.getByRole("button", { name: "Retry generation", exact: true }).click();
+  await expect(page).toHaveURL("/repositories/22/settings?tab=context");
+  expect(attempts).toHaveLength(2);
+  expect(attempts[0]).not.toBe(attempts[1]);
+});
+
 test("repository summary and context started from Overview require a Settings save", async ({ page }) => {
   const draft = "Payment workers dispatch callbacks and retry transient failures.";
   await mock(page);
@@ -5179,6 +5198,40 @@ test("project background preserves text on failure and explains missing selectio
   await repositorySection(page, "Project context");
   await expect(generate).toBeEnabled();
 });
+
+for (const status of [422, 503]) {
+  test(`project background retry after editing limits distinguishes a ${status} start error`, async ({ page }) => {
+    const background: Schema["BackgroundJobOut"] = {
+      id: "replay-context", status: "done", background: "Generated context", project_summary: paymentsSummary,
+    };
+    await mock(page, { background });
+    const attempts: Schema["BackgroundInput"][] = [];
+    await page.route("**/api/v1/repositories/22/background", (route) => {
+      attempts.push(route.request().postDataJSON());
+      return attempts.length === 1
+        ? route.fulfill({ status, json: { detail: "Generation could not be started." } })
+        : route.fallback();
+    });
+    await page.goto("/repositories/22/settings?tab=context");
+    const generate = page.getByRole("button", { name: "Generate context", exact: true });
+    await generate.click();
+    await expect(page.getByRole("alert")).toContainText("Generation could not be started.");
+    await repositorySection(page, "Pull request reviews");
+    await page.getByLabel("Time limit (seconds)", { exact: true }).fill("1200");
+    await repositorySection(page, "Project context");
+    await generate.click();
+    if (status === 503) {
+      await expect(page.getByRole("status", { name: "Context generation status" })).toContainText("Your selections or context changed.");
+      expect(attempts).toEqual([attempts[0], attempts[0]]);
+      await expect(page.getByText("Project context and repository summary saved.")).toHaveCount(0);
+    } else {
+      await expect(page.getByText("Project context and repository summary saved.")).toBeVisible();
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1].generation_id).not.toBe(attempts[0].generation_id);
+      expect(attempts[1].limits?.timeout_seconds).toBe(1200);
+    }
+  });
+}
 
 test("project background preserves text when starting or polling fails", async ({ page }) => {
   await mock(page);

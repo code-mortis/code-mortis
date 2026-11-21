@@ -86,8 +86,7 @@ function GenerateRepositorySummary({ repository }: { repository: Repository }) {
   const lostStatus = !!activeJobId && !!result.error && isBackgroundConnectionError(result.error) && !finished;
   const pending = !error && (start.isPending || ((!!activeJobId || !!contextGeneration) && !finished));
   const readyContext = !error && result.data?.status !== "cancelled" ? deferredContext : undefined;
-  const needsSetup = !repository.connection_id || repository.connection_requires_setup
-    || (start.error instanceof ApiError && start.error.status === 422);
+  const needsSetup = !repository.connection_id || repository.connection_requires_setup;
   const actionVariant = savedSummary ? "ghost" : "outline";
   const actionSize = savedSummary ? "icon" : "sm";
   const actionClass = savedSummary ? headerActionClass : undefined;

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import type { Repository } from "../api";
+import type { Repository, Schema } from "../api";
 import { backgroundFinished, isBackgroundConnectionError, useBackgroundStatus, useStartBackground } from "../hooks/use-background-generation";
 import { ErrorNotice, Field } from "./common";
 import { useContextGenerationGuard } from "./context-generation-guard";
@@ -42,7 +42,9 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
   const [undo, setUndo] = useState<ContextDraft>();
   const completedJob = useRef<string>(undefined);
   const revision = useRef(0);
-  const request = useRef({ revision: initialContextChanged ? -1 : 0, previous: value });
+  const request = useRef<{ revision: number; previous: ContextDraft; body?: Schema["BackgroundInput"] }>({
+    revision: initialContextChanged ? -1 : 0, previous: value,
+  });
   const selection = JSON.stringify([repositoryId, connectionId, model, tokenBudget, timeoutSeconds, value.background, value.project_summary]);
   const previousSelection = useRef(selection);
   const previousDefaultModel = useRef(defaultModel);
@@ -157,16 +159,20 @@ export function BackgroundField({ repositoryId, connectionId, model, defaultMode
                 setSummaryDraft(false);
                 setUndo(undefined);
                 setGenerationId(attemptId);
-                if (attemptId !== generationId) request.current = { revision: revision.current, previous: value };
+                // A lost response may have created the job, so replay its original inputs and revision.
+                const body: Schema["BackgroundInput"] =
+                  (attemptId === generationId && request.current.body) || {
+                    mode: "context_refresh", generation_id: attemptId, connection_id: connectionId, model,
+                    limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
+                  };
+                if (body !== request.current.body) {
+                  request.current = { revision: revision.current, previous: value, body };
+                }
                 setError(undefined);
                 setFailedJob(undefined);
                 setMessage("");
                 try {
-                  const created = await start.mutateAsync({
-                    mode: "context_refresh",
-                    generation_id: attemptId, connection_id: connectionId, model,
-                    limits: { token_budget: tokenBudget, timeout_seconds: timeoutSeconds },
-                  });
+                  const created = await start.mutateAsync(body);
                   sessionStorage.setItem(jobKey, created.id);
                   if (mounted.current) setJobId(created.id);
                 } catch (error) {
