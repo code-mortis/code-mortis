@@ -33,6 +33,7 @@ import {
   UserRound,
   GitBranch,
   GitCommitHorizontal,
+  GitPullRequest,
 } from "lucide-react";
 import {
   ApiError,
@@ -49,7 +50,7 @@ import { Badge, badgeRadius } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
-import { RepositoryHeader, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
+import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
@@ -162,23 +163,23 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   return <>
     {selected ? <RepositoryHeader title="Pull requests" repository={selected}
       headingProps={{ id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } }}
-      actions={<Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
+      actions={<><Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
         onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
       })}>
         <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
-      </Button>}
+      </Button>{admin && <RepositorySettingsShortcut repositoryId={selected.id} section="reviews" />}</>}
     >
-      <RepositorySummaryCard label="Review policy" regionLabel="Review configuration" badgeInHeading
+      <RepositorySummaryCard label="Review policy" icon={GitPullRequest} regionLabel="Review configuration" badgeInHeading
         badge={<Badge variant={selected.enabled ? "default" : "outline"}>{selected.enabled ? "Reviews enabled" : "Paused"}</Badge>}
         details={selected.enabled ? [["File limit", selected.settings.max_files == null ? "No limit" : `${selected.settings.max_files} files per review`]] : undefined}
         note={selected.enabled ? undefined : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
         {selected.enabled && (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only")}
       </RepositorySummaryCard>
-      <RepositorySummaryCard label="GitHub PR check"
+      <RepositorySummaryCard label="GitHub PR check" icon={RefreshCw} timestamp={lastCheck}
         details={!repos.error && selected.open_prs != null ? [["Open PRs", selected.open_prs.toLocaleString()]] : undefined}>
-        {lastCheck ? <time dateTime={lastCheck}>{date(lastCheck)}</time> : missingActivity}
+        {!lastCheck && missingActivity}
       </RepositorySummaryCard>
-      <RepositorySummaryCard
+      <RepositorySummaryCard icon={History}
         label={reviewInProgress && !latestReview ? "Current review" : "Last completed review"}
         details={latestReview ? [["Reviewed commit", <code>{latestReview.head_sha.slice(0, 7)}</code>]] : undefined}
         note={latestReview && reviewInProgress ? "Review in progress" : undefined}

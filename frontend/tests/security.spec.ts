@@ -419,7 +419,7 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(gradeSummary.getByText("Report saved", { exact: true })).toHaveCount(0);
   await expect(gradeSummary.locator("code")).toHaveText("aaaaaaa");
   await expect(gradeSummary.locator("time")).toHaveAttribute("datetime", at);
-  await expect(gradeSummary.locator("time")).toHaveCSS("font-size", "16px");
+  await expect(gradeSummary.locator("time")).toHaveCSS("font-size", "12px");
   await expect(page.getByRole("region", { name: "Freshness check", exact: true }).locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
@@ -1114,6 +1114,16 @@ test("read-only repository security keeps scan inspection without offering execu
   expect(writes).toHaveLength(0);
 });
 
+test("repository Security header links directly to scan settings", async ({ page }) => {
+  const writes = await mock(page);
+  await page.goto("/security/repositories/22");
+  await expect(page.getByRole("button", { name: "Run scan", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Scan settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=scan-limits$/);
+  await expect(page.getByRole("heading", { name: "Security scans", exact: true })).toBeVisible();
+  expect(writes).toHaveLength(0);
+});
+
 for (const status of ["queued", "running", "blocked"]) {
   test(`repository prevents a competing ${status} scan`, async ({ page }) => {
     const writes = await mock(page, { latestStatus: status });
@@ -1170,13 +1180,20 @@ for (const head of ["b".repeat(40), null]) test(`repository freshness shows the 
   await expect(latest.locator("code")).toHaveCount(0);
   await expect(latest.getByRole("heading").locator("..").getByRole("link", { name: "Inspect scan" })).toBeVisible();
   await expect(freshness.locator("time")).toHaveAttribute("datetime", at);
-  await expect(freshness.locator("time")).toHaveCSS("font-size", "16px");
+  await expect(freshness.locator("time")).toHaveCSS("font-size", "12px");
   await expect(freshness.getByRole("heading").locator("..").getByLabel("Scan freshness")).toHaveText(head ? "Outdated scan" : "Freshness unverified");
   if (head) {
     await expect(freshness.getByText("Current commit", { exact: true })).toBeVisible();
     await expect(freshness.locator("code")).toHaveText("bbbbbbb");
     await expect(freshness.locator("code")).toHaveAttribute("title", head);
     await expect(freshness.locator("code")).toHaveCSS("font-size", "12px");
+    for (const card of [grade, freshness, latest]) {
+      const [timestamp, term, value] = await Promise.all([
+        card.locator("time").boundingBox(), card.getByRole("term").boundingBox(), card.getByRole("definition").boundingBox(),
+      ]);
+      expect(timestamp!.y).toBeCloseTo(term!.y, 0);
+      expect(timestamp!.x).toBeGreaterThan(value!.x + value!.width);
+    }
     const [gradeBox, freshnessBox, scanBox] = await Promise.all([grade.boundingBox(), freshness.boundingBox(), latest.boundingBox()]);
     if (info.project.name === "mobile") {
       expect(freshnessBox!.y).toBeGreaterThanOrEqual(gradeBox!.y + gradeBox!.height);

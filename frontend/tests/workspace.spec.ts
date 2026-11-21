@@ -1221,12 +1221,25 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(check.getByRole("term")).toHaveText("Open PRs");
   await expect(check.getByRole("definition")).toHaveText(String(repo.open_prs));
   await expect(check.getByRole("definition")).toHaveCSS("font-size", "12px");
+  const [checkDate, openPrsLabel, openPrsValue] = await Promise.all([
+    check.locator("time").boundingBox(), check.getByRole("term").boundingBox(), check.getByRole("definition").boundingBox(),
+  ]);
+  expect(checkDate!.y).toBeCloseTo(openPrsLabel!.y, 0);
+  expect(checkDate!.x).toBeGreaterThan(openPrsValue!.x + openPrsValue!.width);
   await expect(latest.locator("code")).toHaveText("ccccccc");
   const review = latest.getByRole("link", { name: "View review for PR #148", exact: true });
   await expect(review).toHaveAttribute("href", "/runs/run");
   await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
   await expect(latest.getByRole("heading").locator("..").getByRole("link")).toHaveCount(1);
-  await expect(latest.getByText("PR #148", { exact: true })).toHaveCSS("font-size", "16px");
+  const reviewedPr = latest.getByText("PR #148", { exact: true });
+  await expect(reviewedPr).toHaveCSS("font-size", "12px");
+  await expect(reviewedPr).toHaveCSS("font-weight", "400");
+  await expect(reviewedPr).toHaveCSS("color", await latest.getByRole("term").evaluate((term) => getComputedStyle(term).color));
+  for (const [lead, card] of [[policy.getByText("Automatic reviews", { exact: true }), policy], [reviewedPr, latest]]) {
+    const [leadBox, detailBox] = await Promise.all([lead.boundingBox(), card.getByRole("term").boundingBox()]);
+    expect(detailBox!.y).toBeCloseTo(leadBox!.y, 0);
+    expect(detailBox!.x).toBeGreaterThan(leadBox!.x + leadBox!.width);
+  }
   await expect(header.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", `https://github.com/${repo.full_name}`);
   const [policyBox, checkBox, reviewBox] = await Promise.all([policy.boundingBox(), check.boundingBox(), latest.boundingBox()]);
   if (info.project.name === "mobile") {
@@ -1254,6 +1267,9 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(latest.getByRole("link")).toHaveCount(0);
   await expect(check).toContainText("None recorded");
   await expect(check.getByRole("definition")).toHaveText("0");
+  await header.getByRole("link", { name: "Review settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=reviews$/);
+  await expect(page.getByRole("heading", { name: "Pull request reviews", exact: true })).toBeVisible();
 });
 
 test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {

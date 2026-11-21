@@ -3,6 +3,7 @@ import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useApi, type Repository, type Schema } from "../api";
 import { date } from "./common";
+import { RepositoryCardHeading } from "./repository-header";
 import { Badge } from "./ui/badge";
 
 const numberFormat = new Intl.NumberFormat();
@@ -68,7 +69,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
   </div>;
 }
 
-function QuickViewCard({ title, icon: Icon, to, badge, count, pending, details }: {
+function QuickViewCard({ title, icon, to, badge, count, pending, details }: {
   title: string;
   icon: LucideIcon;
   to: string;
@@ -79,12 +80,9 @@ function QuickViewCard({ title, icon: Icon, to, badge, count, pending, details }
 }) {
   const heading = useId();
   return <section aria-labelledby={heading} className="flex min-w-0 flex-col rounded-lg border border-[#dce1d9] bg-card px-[17px] pt-3.5 text-[#202c26] [--quick-view-muted:#606a62] dark:border-border dark:text-foreground dark:[--quick-view-muted:var(--muted-foreground)]">
-    <div className="flex min-h-[26px] flex-wrap items-center justify-between gap-2">
-      <h2 id={heading} className="flex items-center gap-2 text-[15px] font-[650]">
-        <Icon aria-hidden="true" className="size-[18px] text-primary" strokeWidth={1.65} />{title}
-      </h2>
+    <RepositoryCardHeading label={title} icon={icon} id={heading}>
       {badge}
-    </div>
+    </RepositoryCardHeading>
     <p className="mt-[7px] mb-[11px] flex min-h-[42px] flex-wrap items-baseline gap-x-2 text-sm text-(--quick-view-muted)">
       {count === undefined ? pending ? "Loading findings…" : "Finding count unavailable" : <>
         <strong className="text-4xl leading-[1.18] font-[650] tracking-[-0.04em] text-[#202c26] tabular-nums dark:text-foreground">{numberFormat.format(count)}</strong>
