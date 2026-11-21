@@ -113,12 +113,22 @@ def repository(repository_id: int, db: DB, user: USER):
     repo, remote = repo_access(db, user, repository_id)
     summary = repository_security.summaries(db, [repo.id])[repo.id]
     summary.default_branch = remote.get("default_branch") or summary.default_branch
-    finding_counts = dict(db.execute(select(SecurityFinding.state, func.count())
-        .where(SecurityFinding.repository_id == repo.id).group_by(SecurityFinding.state)).all())
+    finding_counts: Counter[str] = Counter()
+    open_severities: dict[str, int] = {}
+    counts = db.execute(select(SecurityFinding.state, SecurityFinding.severity, func.count())
+        .where(SecurityFinding.repository_id == repo.id).group_by(SecurityFinding.state, SecurityFinding.severity))
+    for state, severity, count in counts:
+        finding_counts[state] += count
+        if state == "open":
+            open_severities[severity] = count
+    scan_count, last_completed_scan_at = db.execute(select(
+        func.count(), func.max(SecurityScan.finished_at).filter(SecurityScan.status == "completed"),
+    ).where(SecurityScan.repository_id == repo.id)).one()
     return SecurityRepositoryOut(repository=repo_out(db, repo), summary=summary,
         can_write=bool(remote.get("permissions", {}).get("push")),
         finding_count=sum(finding_counts.values()), finding_state_counts=finding_counts,
-        scan_count=db.scalar(select(func.count()).select_from(SecurityScan).where(SecurityScan.repository_id == repo.id)))
+        open_finding_severity_counts=open_severities,
+        scan_count=scan_count, last_completed_scan_at=last_completed_scan_at)
 
 
 @router.get("/repositories/{repository_id}/scans", response_model=SecurityScanPage | SecurityScanSummaryPage)

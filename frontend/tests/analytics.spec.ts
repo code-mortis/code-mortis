@@ -53,9 +53,18 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
 test("repository Overview shows daily activity before opening Analytics", async ({ page }, info) => {
   const requests = await mock(page, (view, params) =>
     view === "findings" && params.get("status") === "open" ? { ...findings, total: 10 } : undefined);
+  await page.route("**/api/v1/repositories/22/pulls?**", (route) => {
+    const filters = new URL(route.request().url()).searchParams;
+    expect(filters.getAll("state")).toEqual(["open"]);
+    expect(filters.getAll("review")).toEqual(["not_reviewed", "outdated"]);
+    expect(filters.get("strict_state")).toBe("true");
+    return route.fulfill({ json: { total: 12 } });
+  });
   await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: {
-    summary: { grade: "B", freshness: "current", latest_scan_id: "scan-22", latest_status: "completed", latest_at: "2026-11-19T12:00:00Z" },
+    summary: { grade: "D", freshness: "outdated", latest_scan_id: "scan-22", latest_status: "cancelled", latest_at: "2026-11-19T12:00:00Z" },
     finding_state_counts: { open: 7, accepted_risk: 2, resolved: 4 },
+    open_finding_severity_counts: { critical: 1, high: 3, low: 3 },
+    last_completed_scan_at: "2026-11-17T12:00:00Z",
     finding_count: 13,
   } }));
   const days = Array.from({ length: 365 }, (_, index) => ({
@@ -83,7 +92,7 @@ test("repository Overview shows daily activity before opening Analytics", async 
   const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
   const securityCard = page.getByRole("region", { name: "Security", exact: true });
   const enabledBadge = reviewCard.getByText("Enabled", { exact: true });
-  const gradeBadge = securityCard.getByText("Grade B", { exact: true });
+  const gradeBadge = securityCard.getByText("Grade D · Outdated", { exact: true });
   await expect(reviewCard).toContainText(/10\s*open findings/);
   for (const badge of [enabledBadge, gradeBadge]) {
     await expect(badge).toBeVisible();
@@ -94,11 +103,15 @@ test("repository Overview shows daily activity before opening Analytics", async 
     await expect(badge).toHaveCSS("font-weight", "600");
   }
   await expect(reviewCard).toContainText(/Automatic reviews\s*On/);
-  await expect(reviewCard).toContainText(/Review language\s*English/);
+  await expect(reviewCard.getByText("Review language", { exact: true })).toHaveCount(0);
+  await expect(reviewCard.getByRole("link", { name: "12 PRs needing review", exact: true })).toHaveAttribute("href", "/repositories/22?state=open&review=not_reviewed&review=outdated&strict_state=true");
   await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveAttribute("href", "/repositories/22");
   await expect(securityCard).toContainText(/7\s*open findings/);
-  await expect(securityCard.locator("time")).toHaveAttribute("datetime", "2026-11-19T12:00:00Z");
-  await expect(securityCard).toContainText(/Scan status\s*completed/i);
+  await expect(securityCard.getByRole("link", { name: "1 open critical finding", exact: true })).toHaveAttribute("href", "/security/repositories/22?severity=critical");
+  await expect(securityCard.getByRole("link", { name: "3 open high findings", exact: true })).toHaveAttribute("href", "/security/repositories/22?severity=high");
+  await expect(securityCard.getByText("Latest completed scan", { exact: true })).toBeVisible();
+  await expect(securityCard.locator("time")).toHaveAttribute("datetime", "2026-11-17T12:00:00Z");
+  await expect(securityCard.getByText("Scan status", { exact: true })).toHaveCount(0);
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
   const [chartBox, reviewBox, securityBox] = await Promise.all([activity.boundingBox(), reviewCard.boundingBox(), securityCard.boundingBox()]);
   expect(chartBox!.y).toBeGreaterThan(Math.max(reviewBox!.y + reviewBox!.height, securityBox!.y + securityBox!.height));
@@ -166,15 +179,31 @@ test("repository Overview shows daily activity before opening Analytics", async 
 test("repository cards distinguish an unscanned repository from an unavailable count", async ({ page }) => {
   await mock(page);
   await page.route("**/api/v1/analytics/findings?**", (route) => route.fulfill({ status: 503, json: {} }));
+  let countsAvailable = true;
+  await page.route("**/api/v1/repositories/23/pulls?**", (route) => countsAvailable
+    ? route.fulfill({ json: { total: 0 } }) : route.fulfill({ status: 403, json: {} }));
   await page.route("**/api/v1/security/repositories/23", (route) => route.fulfill({ json: {
     summary: { state: "not_scanned" }, finding_state_counts: {},
+    open_finding_severity_counts: countsAvailable ? {} : undefined,
+    last_completed_scan_at: countsAvailable ? null : undefined,
   } }));
   await page.goto("/repositories/23/overview");
-  await expect(page.getByRole("region", { name: "Reviews", exact: true })).toContainText("Finding count unavailable");
+  const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
+  await expect(reviewCard).toContainText("Finding count unavailable");
+  await expect(reviewCard.getByRole("link", { name: "0 PRs needing review", exact: true })).toBeVisible();
   const securityCard = page.getByRole("region", { name: "Security", exact: true });
   await expect(securityCard).toContainText("Unscanned");
   await expect(securityCard).toContainText(/0\s*open findings/);
-  await expect(securityCard).toContainText(/Latest scan\s*Never/);
+  await expect(securityCard).toContainText(/Latest completed scan\s*Never/);
+  await expect(securityCard.getByRole("link", { name: "0 open critical findings", exact: true })).toBeVisible();
+  await expect(securityCard.getByRole("link", { name: "0 open high findings", exact: true })).toBeVisible();
+  countsAvailable = false;
+  await page.reload();
+  await expect(reviewCard).toContainText(/PRs needing review\s*Unavailable/);
+  await expect(securityCard).toContainText(/Priority findings\s*Unavailable/);
+  await expect(securityCard).toContainText(/Latest completed scan\s*Unavailable/);
+  await expect(reviewCard.getByRole("link", { name: /needing review/ })).toHaveCount(0);
+  await expect(securityCard.getByRole("link", { name: /open (critical|high) findings/ })).toHaveCount(0);
 });
 
 test("repository activity keeps load errors separate from empty history", async ({ page }) => {

@@ -2,23 +2,31 @@ import { ChevronRight, GitPullRequest, ShieldCheck, type LucideIcon } from "luci
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useApi, type Repository, type Schema } from "../api";
-import { date, words } from "./common";
+import { date } from "./common";
 import { Badge } from "./ui/badge";
 
 const numberFormat = new Intl.NumberFormat();
 const scanDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const countLink = "inline-flex min-h-6 min-w-6 items-center justify-end rounded-sm whitespace-nowrap text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 export function RepositoryQuickView({ repository }: { repository: Repository }) {
   const { id, enabled, settings } = repository;
   const reviews = useApi<Schema["AnalyticsFindings"]>(`/analytics/findings?repo=${id}&all_time=true&status=open`);
+  const reviewsPath = `/repositories/${id}`;
+  const needsReviewFilters = "state=open&review=not_reviewed&review=outdated&strict_state=true";
+  const needsReview = useApi<Pick<Schema["InboxOut"], "total">>(`${reviewsPath}/pulls?${needsReviewFilters}`);
+  const needsReviewCount = needsReview.error ? undefined : needsReview.data?.total;
   const securityPath = `/security/repositories/${id}`;
   const security = useApi<Schema["SecurityRepositoryOut"]>(securityPath);
   const summary = security.error ? undefined : security.data?.summary;
   const counts = security.error ? undefined : security.data?.finding_state_counts;
+  const openSeverities = security.error ? undefined : security.data?.open_finding_severity_counts;
+  const lastCompletedScan = security.error ? undefined : security.data?.last_completed_scan_at;
+  const outdatedGrade = summary?.grade && summary.freshness === "outdated";
 
   return <div className="mb-6 grid gap-3.5 md:grid-cols-2">
     <QuickViewCard
-      title="Reviews" icon={GitPullRequest} to={`/repositories/${id}`}
+      title="Reviews" icon={GitPullRequest} to={reviewsPath}
       badge={<Badge variant={enabled ? "default" : "outline"}>
         {enabled ? "Enabled" : "Paused"}
       </Badge>}
@@ -26,23 +34,35 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
       pending={reviews.isPending}
       details={[
         ["Automatic reviews", enabled && settings.automatic ? "On" : "Off"],
-        ["Review language", settings.language || "—"],
+        ["PRs needing review", needsReviewCount === undefined ? needsReview.isPending ? "Loading…" : "Unavailable"
+          : <Link className={`${countLink} underline decoration-primary/45 underline-offset-4 hover:decoration-current`} to={`${reviewsPath}?${needsReviewFilters}`}
+            aria-label={`${numberFormat.format(needsReviewCount)} ${needsReviewCount === 1 ? "PR" : "PRs"} needing review`}>
+            {numberFormat.format(needsReviewCount)}
+          </Link>],
       ]}
     />
     <QuickViewCard
       title="Security" icon={ShieldCheck} to={securityPath}
       badge={summary && <Badge variant={summary.grade ? "default" : "outline"}
-        title={summary.grade && summary.freshness === "outdated" ? "Grade is from an older revision" : undefined}>
+        title={outdatedGrade ? "Grade is from an older revision" : undefined}>
         {summary.grade ? `Grade ${summary.grade}` : summary.latest_scan_id ? "Unrated" : "Unscanned"}
-        {summary.grade && summary.freshness === "outdated" && <span className="sr-only"> (outdated)</span>}
+        {outdatedGrade && " · Outdated"}
       </Badge>}
       count={counts ? counts.open ?? 0 : undefined}
       pending={security.isPending}
       details={[
-        ["Latest scan", summary?.latest_at
-          ? <time dateTime={summary.latest_at} title={date(summary.latest_at)}>{scanDateFormat.format(new Date(summary.latest_at))}</time>
-          : summary && !summary.latest_scan_id ? "Never" : "—"],
-        ["Scan status", summary?.latest_status ? <span className="capitalize">{words(summary.latest_status)}</span> : "—"],
+        ["Priority findings", openSeverities ? <span className="flex flex-wrap justify-end gap-x-2 gap-y-1">
+          {(["critical", "high"] as const).map((severity) => {
+            const count = openSeverities[severity] ?? 0;
+            return <Link key={severity} className={`${countLink} no-underline hover:text-foreground`} to={`${securityPath}?severity=${severity}`}
+              aria-label={`${numberFormat.format(count)} open ${severity} ${count === 1 ? "finding" : "findings"}`}>
+              {numberFormat.format(count)} {severity}
+            </Link>;
+          })}
+        </span> : security.isPending ? "Loading…" : "Unavailable"],
+        ["Latest completed scan", lastCompletedScan
+          ? <time dateTime={lastCompletedScan} title={date(lastCompletedScan)}>{scanDateFormat.format(new Date(lastCompletedScan))}</time>
+          : lastCompletedScan === null ? "Never" : security.isPending ? "Loading…" : "Unavailable"],
       ]}
     />
   </div>;

@@ -377,7 +377,8 @@ function repositoryPage(items: RepositoryPullFixture[], params: URLSearchParams)
     && (!params.has("review") || params.getAll("review").includes(item.review_status) || (params.getAll("review").includes("running") && item.has_running_review))
     && (!params.has("author") || params.getAll("author").includes(item.author.toLowerCase()))
     && (!params.has("findings") || (params.get("findings") === "open" ? item.open_findings > 0 : item.open_findings === 0)));
-  const filtered = matches.filter((item) => !params.has("state") || params.getAll("state").includes("all") || params.getAll("state").includes(item.state) || item.has_running_review);
+  const filtered = matches.filter((item) => !params.has("state") || params.getAll("state").includes("all") || params.getAll("state").includes(item.state)
+    || (params.get("strict_state") !== "true" && item.has_running_review));
   const ordering = params.get("ordering") ?? "-updated_at";
   const field = ordering.replace(/^-/, "") as "title" | "author" | "updated_at";
   filtered.sort((a, b) => Number(b.has_running_review) - Number(a.has_running_review) || a[field].localeCompare(b[field]) * (ordering.startsWith("-") ? -1 : 1));
@@ -2826,6 +2827,12 @@ test("repository outdated reviews remain distinct from running reviews and page 
   await page.goto("/repositories/22?review=outdated");
   await expect(page.getByRole("link", { name: /Add retry handling/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText(/outdated/i);
   await expect(page.getByRole("link", { name: /Still running/ }).locator("xpath=ancestor::*[@data-pull-row]")).toContainText("A review is still running");
+  const backlog = "/repositories/22?state=open&review=not_reviewed&review=outdated&strict_state=true";
+  await page.goto(backlog);
+  await expect(page.getByRole("link", { name: /Add retry handling/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Still running/ })).toHaveCount(0);
+  await page.getByLabel("Search pull requests").fill("retry");
+  await expect(page).toHaveURL(/q=retry&state=open&review=not_reviewed&review=outdated&strict_state=true$/);
   await page.goto("/repositories/22?state=closed&review=running");
   await expect(page.getByRole("link", { name: /Still running/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Add retry handling/ })).toHaveCount(0);

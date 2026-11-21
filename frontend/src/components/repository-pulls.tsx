@@ -13,12 +13,18 @@ import { Pagination } from "./pagination";
 
 const titles = { active: "Open", merged: "Merged", closed: "Closed", all: "Pull requests" };
 
+function normalizeRepositoryFilters(input: URLSearchParams) {
+  const params = normalizeFilters(input, "open");
+  if (input.get("strict_state") === "true") params.set("strict_state", "true");
+  return params;
+}
+
 export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number; admin: boolean }) {
   const [raw, setParams] = useSearchParams();
   const { search: routeSearch, state } = useLocation();
   const inboxReturn = getInboxReturn(state) ?? undefined;
   const navigate = useNavigate();
-  const params = normalizeFilters(raw, "open");
+  const params = normalizeRepositoryFilters(raw);
   params.delete("repo");
   params.delete("all_pages");
   if (["created_at", "repository"].includes(params.get("ordering")?.replace(/^-/, "") ?? "")) params.delete("ordering");
@@ -54,13 +60,13 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
   const search = useCallback((value: string) => {
     const next = new URLSearchParams(filters);
     if (value.trim()) next.set("q", value); else next.delete("q");
-    navigate({ search: withConfiguration(normalizeFilters(next, "open")).toString() }, { replace: true, state });
+    navigate({ search: withConfiguration(normalizeRepositoryFilters(next)).toString() }, { replace: true, state });
   }, [filters, navigate, state, withConfiguration]);
   function change(key: Property | "ordering", values: string[]) {
     const next = withoutPages(params);
     next.delete(key);
     values.forEach((value) => next.append(key, value));
-    setParams(withConfiguration(normalizeFilters(next, "open")), { state });
+    setParams(withConfiguration(normalizeRepositoryFilters(next)), { state });
   }
   const denied = pulls.error && [401, 403].includes(pulls.error.status);
   const rows = denied ? undefined : pulls.data;

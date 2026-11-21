@@ -4714,8 +4714,14 @@ export interface components {
             finding_state_counts?: {
                 [key: string]: number;
             };
+            /** Open Finding Severity Counts */
+            open_finding_severity_counts?: {
+                [key: string]: number;
+            } | null;
             /** Scan Count */
             scan_count?: number | null;
+            /** Last Completed Scan At */
+            last_completed_scan_at?: string | null;
         };
         /** SecurityRepositoryPage */
         SecurityRepositoryPage: {
@@ -5843,6 +5849,7 @@ export interface operations {
                 ordering?: "created_at" | "-created_at" | "updated_at" | "-updated_at" | "title" | "-title" | "repository" | "-repository" | "author" | "-author";
                 group?: ("active" | "merged" | "closed" | "all") | null;
                 page?: number;
+                strict_state?: boolean;
             };
             header?: never;
             path: {

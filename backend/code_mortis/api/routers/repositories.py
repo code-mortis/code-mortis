@@ -278,7 +278,7 @@ def background_status(repository_id: int, job_id: str, db: DB, user: ADMIN):
 @router.get("/repositories/{repository_id}/pulls", response_model=InboxOut)
 def pull_requests(repository_id: int, db: DB, user: USER, filters: Annotated[RepositoryPullFilters, Query()]):
     repo, _ = repo_access(db, user, repository_id)
-    result = inbox.list_pulls(db, [repo], filters)
+    result = inbox.list_pulls(db, [repo], filters, strict_state=filters.strict_state)
     run_ids = {item.run_id for page in result.groups for item in page.items if item.run_id}
     runs = {run.id: run for run in db.scalars(select(ReviewRun).where(ReviewRun.id.in_(run_ids)))}
     for page in result.groups:
