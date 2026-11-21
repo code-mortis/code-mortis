@@ -251,11 +251,19 @@
   }
 }
 
-.inbox-row-grid {
+.inbox-row-grid, .pull-request-row-grid {
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 1rem;
 }
-.inbox-row-grid > :first-child { grid-column: 1 / -1; }
+.inbox-row-grid > :first-child, .pull-request-row-grid > :first-child { grid-column: 1 / -1; }
+@container pull-requests (min-width: 42rem) {
+  .pull-request-row-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 7.5rem 5.5rem 6.5rem 6rem 2rem;
+  }
+  .pull-request-row-grid > :first-child { grid-column: auto; padding-inline-end: 0; }
+  .pull-request-row-actions { position: static; justify-self: end; }
+}
 .settings-content, .settings-container { container-type: inline-size; container-name: settings; }
 .settings-record {
   display: grid;

@@ -1252,6 +1252,18 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
     expect(policyBox!.height).toBeLessThan(140);
   }
   await header.screenshot({ path: info.outputPath("pull-requests-summary-cards.png") });
+  if (info.project.name === "desktop") {
+    await page.setViewportSize({ width: 1140, height: 900 });
+    const [policyBox, checkBox, reviewBox, summaryBox] = await Promise.all([
+      policy.boundingBox(), check.boundingBox(), latest.boundingBox(), summary.boundingBox(),
+    ]);
+    expect(checkBox!.y).toBe(policyBox!.y);
+    expect(checkBox!.x).toBeGreaterThan(policyBox!.x);
+    expect(reviewBox!.y).toBeGreaterThan(policyBox!.y + policyBox!.height);
+    expect(reviewBox!.width).toBeCloseTo(summaryBox!.width);
+    await noOverflow(page);
+    await header.screenshot({ path: info.outputPath("pull-requests-summary-cards-narrow.png") });
+  }
   const returnUrl = page.url();
   await review.click();
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
@@ -1409,6 +1421,55 @@ test("repository settings breadcrumbs omit Repository settings for members when 
   await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText("Repositories");
   await expect(breadcrumb.getByText("Repository settings", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("form", { name: "Repository settings" })).toHaveCount(0);
+});
+
+test("pull request lists separate review and PR state and retain row actions", async ({ page, isMobile }) => {
+  await mock(page);
+  const title = `${pr.title} when the provider cannot deliver a response before the request deadline`;
+  const items = [
+    { ...pr, title, state: "merged", latest_run: { ...run, status: "completed" } },
+    { ...pr, id: "queued-pr", number: 149, title: "Waiting for review", latest_run: { ...run, status: "queued" } },
+  ];
+  await mockRepositoryPulls(page, 22, () => items);
+  await page.route("**/api/v1/pulls?**", (route) => {
+    const data = repositoryPage(items, new URLSearchParams("state=all"));
+    return route.fulfill({ json: { ...data, groups: [{ ...data.groups[0], group: "all", total: data.total, items: data.groups.flatMap((group) => group.items) }] } });
+  });
+
+  for (const path of ["/?state=all", "/repositories/22?state=all"]) {
+    await page.goto(path);
+    const titleLink = page.getByRole("link", { name: title, exact: true });
+    await expect(titleLink).toHaveAttribute("title", title);
+    const titleLine = titleLink.locator("..");
+    await expect(titleLine).toHaveCSS("text-overflow", "ellipsis");
+    expect(await titleLine.evaluate((element) =>
+      element.scrollWidth > element.clientWidth && element.clientHeight === parseFloat(getComputedStyle(element).lineHeight),
+    )).toBe(true);
+
+    const row = page.locator("[data-pull-row]").filter({ has: titleLink });
+    const headings = row.locator("..").locator(":scope > [aria-hidden=true]");
+    await expect(headings.getByText("Review", { exact: true })).toHaveCount(1);
+    await expect(headings.getByText("PR state", { exact: true })).toHaveCount(1);
+    if (isMobile) await expect(headings).toBeHidden();
+    else await expect(headings).toBeVisible();
+    await expect(row.getByText("Completed", { exact: true })).toBeVisible();
+    await expect(row.getByText("merged", { exact: true })).toBeVisible();
+    await expect(row.locator("[data-slot=status-group]")).toHaveCount(0);
+
+    const spinner = page.getByText("Queued", { exact: true }).locator(".lucide-loader-circle");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await expect(spinner).toHaveCSS("animation-name", "spin");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(spinner).toHaveCSS("animation-name", "none");
+
+    const actions = row.getByRole("button", { name: `Actions for #${pr.number}: ${title}` });
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: "View pull request" })).toHaveAttribute("href", `/pulls/${pr.id}`);
+    await expect(page.getByRole("menuitem", { name: "View latest review" })).toHaveAttribute("href", `/runs/${run.id}`);
+    await page.keyboard.press("Escape");
+    await expect(actions).toBeFocused();
+    await noOverflow(page);
+  }
 });
 
 test("repository workspace shares inbox filters, groups, and bounded pagination", async ({ page }, info) => {

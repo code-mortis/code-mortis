@@ -7,7 +7,7 @@ import { useRefreshQueuedReviews } from "../hooks/use-refresh-queued-reviews";
 import { getInboxReturn, groups, normalizeFilters, withoutPages, type Property } from "../lib/inbox-filters";
 import { Empty, ErrorNotice, Loading } from "./common";
 import { InboxFilters } from "./inbox-filters";
-import { PullRequestListHeading, PullRequestRow, PullRequestStatus } from "./pull-request-row";
+import { PullRequestListHeading, PullRequestRow } from "./pull-request-row";
 import { Button } from "./ui/button";
 import { Pagination } from "./pagination";
 
@@ -88,12 +88,12 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
         const error = rows?.errors[group];
         return <section key={group} aria-label={titles[group]}>
           <h2 className="mb-2.5 ml-0.5 flex items-baseline gap-2 text-sm font-semibold">{titles[group]}<span className="text-xs font-normal tabular-nums text-muted-foreground">{total}</span></h2>
-          <div className="overflow-hidden rounded-lg border bg-card">
+          <div className="@container/pull-requests overflow-hidden rounded-lg border bg-card">
             <PullRequestListHeading dateLabel="Updated" />
             {items.map((pr) => <PullRequestRow key={pr.id} id={pr.id} number={pr.number} repositoryId={pr.repository_id} admin={admin} ignored={pr.ignored} title={pr.title} findings={pr.open_findings} timestamp={pr.updated_at}
                 state={{ inbox: inboxReturn, repository: `/repositories/${repositoryId}${routeSearch}` }}
                 metadata={<><span>#{pr.number} ·</span><span className="break-all">@{pr.author}</span><span className="max-w-full truncate font-mono" title={pr.head_ref}>{pr.head_ref}</span>{pr.draft && <span>Draft</span>}{pr.fork && <span>Fork · manual review</span>}</>}
-                status={<PullRequestStatus reviewStatus={pr.review_status} state={pr.state} hasRunningReview={pr.has_running_review} />} />)}
+                reviewStatus={pr.review_status} prState={pr.state} hasRunningReview={pr.has_running_review} />)}
             <Pagination page={page} pageSize={rows!.page_size} total={total} loading={pulls.isFetching && (pulls.isPlaceholderData || !!error)}
               error={error ? new Error(error) : null} onRetry={pulls.refetch} label={titles[group].toLowerCase()} onPageChange={(page) => {
                 const next = new URLSearchParams(params);

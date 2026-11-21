@@ -28,8 +28,10 @@ export function RepositoryHeader({
   const Visibility = repository.private ? LockKeyhole : Globe;
   return (
     <PageTitle {...titleProps} footer={
-      <div data-slot="repository-header-summary" className="mt-3.5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] gap-3">
-        {children}
+      <div className="@container/repository-summary mt-3.5">
+        <div data-slot="repository-header-summary" className="grid grid-cols-1 gap-3 @min-[39rem]/repository-summary:grid-cols-2 @min-[63rem]/repository-summary:grid-cols-3">
+          {children}
+        </div>
       </div>
     }>
       <div className="flex flex-wrap items-center gap-x-4 text-xs">
@@ -56,7 +58,7 @@ export function RepositoryCardHeading({ label, icon: Icon, id, children }: {
       <Icon aria-hidden="true" className="size-[18px] shrink-0 text-primary" strokeWidth={1.65} />
       <span className="min-w-0 wrap-anywhere">{label}</span>
     </h2>
-    <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 empty:hidden">{children}</div>
+    <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 empty:hidden @max-[17.5rem]/repository-card:ml-0">{children}</div>
   </div>;
 }
 
@@ -76,12 +78,12 @@ export function RepositorySummaryCard({
 }) {
   const detailsOnRight = children && !timestamp;
   return (
-    <section aria-label={regionLabel ?? label} className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card px-3.5 py-2.5 text-card-foreground">
+    <section aria-label={regionLabel ?? label} className="@container/repository-card flex min-w-0 flex-col gap-2 rounded-lg border bg-card px-3.5 py-2.5 text-card-foreground @min-[39rem]/repository-summary:@max-[63rem]/repository-summary:last:col-span-full">
       <RepositoryCardHeading label={label} icon={icon}>
         {action}
         {badgeInHeading && badge}
       </RepositoryCardHeading>
-      {(children || details || timestamp || (!badgeInHeading && badge)) && <div className="flex min-w-0 items-baseline gap-2 text-xs leading-4 tabular-nums">
+      {(children || details || timestamp || (!badgeInHeading && badge)) && <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-xs leading-4 tabular-nums">
         {children && <span className="min-w-0 wrap-anywhere text-muted-foreground">{children}</span>}
         {!badgeInHeading && badge}
         {details && <dl className={`min-w-0 space-y-0.5 ${detailsOnRight ? "ml-auto text-right" : ""}`}>

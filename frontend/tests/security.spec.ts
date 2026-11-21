@@ -1205,6 +1205,17 @@ for (const head of ["b".repeat(40), null]) test(`repository freshness shows the 
       expect(gradeBox!.height).toBeLessThan(140);
     }
     await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-summary-cards.png") });
+    if (info.project.name === "desktop") {
+      await page.setViewportSize({ width: 1140, height: 900 });
+      const [gradeBox, freshnessBox, scanBox, summaryBox] = await Promise.all([
+        grade.boundingBox(), freshness.boundingBox(), latest.boundingBox(), summary.boundingBox(),
+      ]);
+      expect(freshnessBox!.y).toBe(gradeBox!.y);
+      expect(freshnessBox!.x).toBeGreaterThan(gradeBox!.x);
+      expect(scanBox!.y).toBeGreaterThan(gradeBox!.y + gradeBox!.height);
+      expect(scanBox!.width).toBeCloseTo(summaryBox!.width);
+      await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-summary-cards-narrow.png") });
+    }
   } else await expect(freshness.locator("code")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
