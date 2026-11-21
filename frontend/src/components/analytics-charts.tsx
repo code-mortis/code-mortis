@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { cn } from "cn";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, XAxis, YAxis } from "recharts";
 import type { Schema } from "../api";
 import { analyticsCompactNumber, analyticsLabel, analyticsNumber } from "../lib/analytics";
@@ -22,11 +23,11 @@ export function AnalyticsNumber({ value }: { value: number | null | undefined })
   </Tooltip>;
 }
 
-export function AnalyticsPanel({ title, description, children, className = "" }: { title: string; description?: ReactNode; children: ReactNode; className?: string }) {
-  return <section aria-label={title} className={`min-w-0 rounded-lg border bg-card p-4 sm:p-5 ${className}`}>
-    <h2 className="text-sm font-semibold">{title}</h2>
+export function AnalyticsPanel({ title, description, children, className }: { title: string; description?: ReactNode; children: ReactNode; className?: string }) {
+  return <section aria-label={title} className={cn("min-w-0 rounded-lg border bg-card p-4 sm:p-5", className)}>
+    <h2 className="text-base leading-snug font-semibold">{title}</h2>
     {description && <p className="mt-1 max-w-[75ch] text-xs leading-relaxed text-muted-foreground">{description}</p>}
-    <div className="mt-5">{children}</div>
+    <div className="mt-3.5">{children}</div>
   </section>;
 }
 
@@ -41,35 +42,34 @@ export function DataTable({ label, headings, rows }: { label: string; headings: 
   </div>;
 }
 
-export function TrendChart({ title, description, data, keys, runLabel = "Review runs" }: {
-  title: string; description: string; data: Schema["AnalyticsPoint"][]; keys: (keyof typeof series)[]; runLabel?: string;
+export function TrendChart({ title, description, data, keys, runLabel = "Review runs", className }: {
+  title: string; description: string; data: Schema["AnalyticsPoint"][]; keys: (keyof typeof series)[]; runLabel?: string; className?: string;
 }) {
   const config = { ...series, runs: { ...series.runs, label: runLabel } };
-  return <AnalyticsPanel title={title} description={description}>
-    <ChartContainer config={config} className="h-64 w-full aspect-auto sm:h-72">
+  const showMissingReports = keys.includes("tokens");
+  return <AnalyticsPanel title={title} description={description} className={className}>
+    <ChartContainer config={config} className="h-[clamp(13rem,25cqi,18rem)] w-full aspect-auto">
       <LineChart accessibilityLayer data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis dataKey="date" tickFormatter={dateLabel} tickLine={false} axisLine={false} minTickGap={36} tickMargin={10} />
         <YAxis tickFormatter={analyticsCompactNumber} tickLine={false} axisLine={false} width={42} allowDecimals={false} />
-        <ChartTooltip content={<ChartTooltipContent labelFormatter={(label) => String(label)} />} />
+        <ChartTooltip filterNull={!showMissingReports} content={<ChartTooltipContent labelFormatter={(label, payload) => {
+          const missingReports = showMissingReports ? payload[0]?.payload?.missing_reports : undefined;
+          return <>{String(label)}{typeof missingReports === "number" && <span className="mt-1 block font-normal text-muted-foreground">Missing reports: {analyticsNumber(missingReports)}</span>}</>;
+        }} />} />
         <ChartLegend content={<ChartLegendContent />} />
         {keys.map((key) => <Line key={key} dataKey={key} type="linear" stroke={`var(--color-${key})`} strokeWidth={2} dot={data.length === 1} activeDot={{ r: 4 }} connectNulls={false} isAnimationActive={false} />)}
       </LineChart>
     </ChartContainer>
-    <details className="mt-4 border-t pt-3 text-xs">
-      <summary className="cursor-pointer rounded-sm font-medium">View {title.toLowerCase()} data</summary>
-      <div className="mt-3"><DataTable label={`${title} data`} headings={["Period starting", ...keys.map((key) => config[key].label), ...(keys.includes("tokens") ? ["Missing reports"] : [])]}
-        rows={data.map((row) => [row.date, ...keys.map((key) => <AnalyticsNumber value={row[key]} />), ...(keys.includes("tokens") ? [<AnalyticsNumber value={row.missing_reports} />] : [])])} /></div>
-    </details>
   </AnalyticsPanel>;
 }
 
-export function BreakdownChart({ title, description, data, onSelect, severity = false }: {
-  title: string; description?: ReactNode; data: Schema["AnalyticsCount"][]; onSelect?: (key: string) => void; severity?: boolean;
+export function BreakdownChart({ title, description, data, onSelect, severity = false, className }: {
+  title: string; description?: ReactNode; data: Schema["AnalyticsCount"][]; onSelect?: (key: string) => void; severity?: boolean; className?: string;
 }) {
   const visible = data.slice(0, 10).map((row) => ({ ...row, label: analyticsLabel(row.key) }));
   const colors: Record<string, string> = { critical: "var(--chart-critical)", high: "var(--chart-high)", medium: "var(--chart-medium)", low: "var(--chart-low)" };
-  return <AnalyticsPanel title={title} description={description}>
+  return <AnalyticsPanel title={title} description={description} className={className}>
     {data.some((row) => row.count > 0) ? <ChartContainer config={{ count: { label: title, color: "var(--chart-1)" } }} className="w-full aspect-auto" style={{ height: Math.max(170, visible.length * 36) }}>
       <BarChart accessibilityLayer data={visible} layout="vertical" margin={{ left: 0, right: 12 }}>
         <CartesianGrid horizontal={false} />
@@ -82,13 +82,10 @@ export function BreakdownChart({ title, description, data, onSelect, severity = 
         </Bar>
       </BarChart>
     </ChartContainer> : <p className="py-7 text-sm text-muted-foreground">No recorded results in this period.</p>}
-    {data.length > 10 && <p className="mt-2 text-xs text-muted-foreground">Showing the first 10. All <AnalyticsNumber value={data.length} /> results are available below.</p>}
+    {data.length > visible.length && <p className="mt-2 text-xs text-muted-foreground">Showing {visible.length} of {analyticsNumber(data.length)} results.</p>}
     {onSelect && <div className="mt-3 flex flex-wrap gap-2" aria-label={`Filter by ${title.toLowerCase()}`}>{visible.map((row) => <Tooltip key={row.key}>
       <TooltipTrigger asChild><button aria-label={`${row.label}: ${analyticsNumber(row.count)} findings`} onClick={() => onSelect(row.key)} className="min-h-11 max-w-full rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"><span className="break-words">{row.label}</span><span className="ml-2 tabular-nums text-muted-foreground">{analyticsCompactNumber(row.count)}</span></button></TooltipTrigger>
       {row.count >= 1000 && <TooltipContent sideOffset={6}>{analyticsNumber(row.count)}</TooltipContent>}
     </Tooltip>)}</div>}
-    <details className="mt-4 border-t pt-3 text-xs"><summary className="cursor-pointer rounded-sm font-medium">View {title.toLowerCase()} data</summary>
-      <div className="mt-3"><DataTable label={`${title} data`} headings={[title, "Count"]} rows={data.map((row) => [onSelect ? <button onClick={() => onSelect(row.key)} className="rounded-sm text-left underline underline-offset-4">{analyticsLabel(row.key)}</button> : analyticsLabel(row.key), <AnalyticsNumber value={row.count} />])} /></div>
-    </details>
   </AnalyticsPanel>;
 }

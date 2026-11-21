@@ -267,7 +267,11 @@ test("compact numbers preserve zero, missing values and magnitude boundaries", (
 
 test("compact metrics and table values expose full numbers on hover, focus and tap", async ({ page }, info) => {
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1292, height: 889 });
-  await mock(page, (view) => view === "overview" ? { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] } : view === "security" ? { ...security, scans: 1200 } : undefined);
+  await mock(page, (view) => ({
+    overview: { ...overview, usage: { ...total, tokens: 441757065 }, severities: [{ key: "critical", count: 1200 }] },
+    usage: { ...usage, trend: [trend[1], trend[16]] },
+    security: { ...security, scans: 1200 },
+  }[view]));
   await page.goto("/repositories/22/analytics");
   const metric = page.locator("dl").getByRole("button", { name: "441,757,065", exact: true });
   await expect(metric).toHaveText("441.8M");
@@ -284,33 +288,35 @@ test("compact metrics and table values expose full numbers on hover, focus and t
   await expect(page.getByRole("tooltip")).toHaveText("441,757,065");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Critical: 1,200 findings", exact: true })).toContainText("1.2k");
-  await page.getByText("View severity data", { exact: true }).click();
-  const severityValue = page.getByRole("table", { name: "Severity data", exact: true }).getByRole("button", { name: "1,200", exact: true });
-  await expect(severityValue).toHaveText("1.2k");
-  await severityValue.focus();
-  await expect(page.getByRole("tooltip")).toHaveText("1,200");
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.locator("#analytics-panel dl dd")).toHaveText(["1.2M", "26 / 28", "43.9k", "65.1k"]);
   const modelValue = page.getByRole("table", { name: "Usage by model", exact: true }).getByRole("button", { name: "1,245,800", exact: true });
   await expect(modelValue).toHaveText("1.2M");
   await modelValue.focus();
   await expect(page.getByRole("tooltip")).toHaveText("1,245,800");
-  await page.getByText("View token usage data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Token usage data", exact: true }).getByRole("button", { name: "1,709", exact: true })).toHaveText("1.7k");
+  const usagePanel = page.getByRole("region", { name: "Token usage", exact: true });
+  const usageChart = usagePanel.getByRole("application");
+  await page.mouse.move(0, 0);
+  await usageChart.focus();
+  await expect(usagePanel.getByRole("status")).toContainText("1,709");
+  await usageChart.press("ArrowRight");
+  await expect(usagePanel.getByRole("status")).toContainText("Missing reports: 2");
   await page.getByRole("tab", { name: "Security", exact: true }).click();
   await expect(page.locator("dl").getByRole("button", { name: "1,200", exact: true })).toHaveText("1.2k");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("overview loads only its endpoint and charts offer data tables", async ({ page }) => {
+test("overview loads only its endpoint and shows charts without redundant tables", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "Repository", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Categories", exact: true, level: 2 })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Repository", exact: true })).toHaveCount(0);
+  await expect(page.locator("#analytics-panel dd").filter({ hasText: "61% of findings detected" })).toContainText("19");
   expect(requests.every((url) => url.pathname.endsWith("/overview"))).toBe(true);
-  await page.getByText("View review activity data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Review activity data", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review activity", exact: true }).getByRole("application")).toBeVisible();
+  await expect(page.getByRole("tabpanel").getByRole("table")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("Page not found");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -415,11 +421,11 @@ test("security analytics preserves filters and exposes accessible scan data", as
   expect(requests.at(-1)?.searchParams.get("repo")).toBe("23");
   expect(requests.at(-1)?.searchParams.has("severity")).toBe(false);
   expect(requests.at(-1)?.searchParams.has("status")).toBe(false);
-  await page.getByText("View security activity data", { exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("table", { name: "Security activity data", exact: true }).getByRole("columnheader")).toHaveText(["Period starting", "Security scans", "Findings detected"]);
-  await page.getByText("View current resolution data", { exact: true }).click();
-  await expect(page.getByRole("table", { name: "Current resolution data", exact: true })).toContainText("Accepted risk");
+  const scanPanel = page.getByRole("region", { name: "Security activity", exact: true });
+  await scanPanel.getByRole("application").focus();
+  await expect(scanPanel.getByRole("status")).toContainText("Security scans");
+  await expect(scanPanel.getByRole("status")).toContainText("Findings detected");
+  await expect(page.getByRole("region", { name: "Current resolution", exact: true }).getByRole("application")).toContainText("Accepted risk");
   await page.getByRole("tab", { name: "Usage", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Usage", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("ArrowRight");
@@ -462,7 +468,9 @@ test("date controls align, wrap and show themed calendar popovers", async ({ pag
     if (info.project.name === "desktop") {
       const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
       const from = await page.getByRole("button", { name: "From", exact: true }).boundingBox();
+      const title = await page.getByRole("heading", { level: 1, name: "Analytics" }).boundingBox();
       expect(Math.abs(refresh!.y - from!.y)).toBeLessThan(1);
+      expect(Math.abs((refresh!.y + refresh!.height / 2) - (title!.y + title!.height / 2))).toBeLessThan(2);
     }
     await page.screenshot({ path: `../.impeccable/review/analytics-filters-${info.project.name}-${mode}.png`, animations: "disabled" });
     await page.getByRole("button", { name: "From", exact: true }).click();
@@ -509,9 +517,9 @@ test("charts follow every palette and remain keyboard accessible", async ({ page
     const rgb = `rgb(${[1, 3, 5].map((start) => parseInt(muted.slice(start, start + 2), 16)).join(", ")})`;
     await expect(page.locator(".recharts-cartesian-axis-tick-value").first()).toHaveCSS("fill", rgb);
   }
-  await page.getByText("View severity data", { exact: true }).focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByRole("table", { name: "Severity data", exact: true })).toBeVisible();
+  const severityPanel = page.getByRole("region", { name: "Severity", exact: true });
+  await severityPanel.getByRole("application").focus();
+  await expect(severityPanel.getByRole("status")).toContainText("Critical");
 });
 
 test("capture Analytics in each tab and theme with long labels", async ({ page }, info) => {
@@ -520,9 +528,16 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
   await page.goto("/repositories/22/analytics");
   await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
   await mkdir("../.impeccable/review", { recursive: true });
-  for (const tab of ["Overview", "Findings", "Reviews", "Usage", "Security"]) {
+  for (const [tab, lead, supporting] of [
+    ["Overview", "Review activity", "Severity"],
+    ["Findings", "Finding trends", "Current resolution"],
+    ["Reviews", "Review outcomes", "File review results"],
+    ["Usage", "Token usage", "Usage by stage"],
+    ["Security", "Security activity", "Severity"],
+  ]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator("#analytics-panel > p, #analytics-panel section > div > details")).toHaveCount(0);
     await expect(page.locator("[data-slot=chart]").first()).toBeVisible();
     await expect(page.locator("#analytics-panel dl dt")).toHaveCount(4);
     await expect(page.locator("#analytics-panel dl dd")).toHaveCount(4);
@@ -534,6 +549,19 @@ test("capture Analytics in each tab and theme with long labels", async ({ page }
       const svg = chart.querySelector("svg.recharts-surface");
       return svg && Math.abs(svg.getBoundingClientRect().width - chart.getBoundingClientRect().width) < 2;
     }))).toBe(true);
+    const leadPanel = page.getByRole("heading", { name: lead, exact: true, level: 2 }).locator("..");
+    const supportingPanel = page.getByRole("heading", { name: supporting, exact: true, level: 2 }).locator("..");
+    const [leadBox, supportingBox] = await Promise.all([leadPanel.boundingBox(), supportingPanel.boundingBox()]);
+    const supportingBackground = await supportingPanel.evaluate((panel) => getComputedStyle(panel).backgroundColor);
+    await expect(leadPanel).not.toHaveCSS("background-color", supportingBackground);
+    if (info.project.name === "desktop") {
+      expect(Math.abs(leadBox!.y - supportingBox!.y)).toBeLessThan(1);
+      expect(leadBox!.width).toBeGreaterThan(supportingBox!.width);
+    } else {
+      expect(Math.abs(leadBox!.width - supportingBox!.width)).toBeLessThan(1);
+      const [first, second] = tab === "Findings" ? [supportingBox!, leadBox!] : [leadBox!, supportingBox!];
+      expect(first.y + first.height).toBeLessThan(second.y);
+    }
     if (tab === "Findings") {
       await expect(page.locator("#analytics-panel dl dt")).toHaveText(["Findings", "Open", "Resolved", "Dismissed"]);
       const metrics = await page.locator("#analytics-panel dl").boundingBox();

@@ -16,6 +16,8 @@ import { useUrlTab } from "./hooks/use-url-tab";
 import { analyticsLabel as label, analyticsPercent as percent, analyticsRange, analyticsTabs, calendarDate, localDate } from "./lib/analytics";
 
 const number = (value: number | null | undefined) => <AnalyticsNumber value={value} />;
+const panelGrid = "grid min-w-0 gap-4 @min-[48rem]/analytics:grid-cols-12";
+const leadPanel = "bg-[color-mix(in_srgb,var(--card)_96%,var(--primary))]";
 
 function DateFilter({ id, name, value, onChange }: { id: string; name: string; value: string | null; onChange: (value: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -34,14 +36,18 @@ function DateFilter({ id, name, value, onChange }: { id: string; name: string; v
 }
 
 function Metrics({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return <dl className={`grid grid-cols-2 gap-x-5 gap-y-6 border-y py-5 ${items.length > 2 ? "lg:grid-cols-4" : ""}`}>
-    {items.map((item) => <div key={item.label} className="min-w-0"><dt className="text-xs font-medium text-muted-foreground">{item.label}</dt><dd className="mt-2 text-2xl font-semibold tracking-tight tabular-nums sm:text-3xl">{item.value}</dd></div>)}
+  return <dl className="grid grid-cols-2 rounded-lg border bg-card @min-[34rem]/analytics:grid-cols-4">
+    {items.map((item) => <div key={item.label}
+      className="min-w-0 px-3.5 py-3 even:border-s [&:nth-child(n+3)]:border-t @min-[34rem]/analytics:[&:nth-child(n+2)]:border-s @min-[34rem]/analytics:[&:nth-child(n+3)]:border-t-0">
+      <dt className="text-xs leading-tight font-medium text-muted-foreground">{item.label}</dt>
+      <dd className="mt-1 text-[clamp(1.25rem,4cqi,1.875rem)] leading-tight font-semibold tracking-tight tabular-nums">{item.value}</dd>
+    </div>)}
   </dl>;
 }
 
-function UsageTable({ title, rows }: { title: string; rows: Schema["AnalyticsUsageGroup"][] }) {
+function UsageTable({ title, rows, className }: { title: string; rows: Schema["AnalyticsUsageGroup"][]; className: string }) {
   const byRepository = title === "Usage by repository";
-  return <AnalyticsPanel title={title} description={byRepository ? "Averages include fully reported samples only. Counts beneath each average show its denominator." : "Saved execution settings, including summary retry overrides. Uncertain historical settings are shown as not recorded."}>
+  return <AnalyticsPanel title={title} className={className} description={byRepository ? "Averages include fully reported samples only. Counts beneath each average show its denominator." : "Saved execution settings, including summary retry overrides. Uncertain historical settings are shown as not recorded."}>
     <DataTable label={title} headings={[byRepository ? "Repository" : title === "Usage by model" ? "Model" : "Effort", "Reported tokens", "Missing reports", ...(byRepository ? ["Mean / run", "Mean / reviewed PR"] : [])]}
       rows={rows.map((row) => [row.key,
         number(row.usage.tokens), number(row.usage.missing_reports),
@@ -111,9 +117,8 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
     : tab === "findings" ? !findings.data?.unfiltered_total : tab === "reviews" ? !reviews.data?.runs
     : tab === "security" ? !security.data?.scans && !security.data?.findings : !usage.data?.total.total_runs);
   const choices = (values: string[]) => values.map((value) => ({ value, name: label(value) }));
-  return <div className="min-w-0 space-y-6">
-    <PageTitle title="Analytics" />
-    <div role="group" aria-label="Analytics filters">
+  return <div className="@container/analytics min-w-0 space-y-3.5">
+    <PageTitle title="Analytics" className="mb-0 [&>div]:items-center" actions={<div role="group" aria-label="Analytics filters">
       <FilterBar filters={[]} onChange={change}>
       <div className="w-40"><Label htmlFor="analytics-period" className="sr-only">Date range</Label><SearchSelect id="analytics-period" value={range.period} onChange={setPeriod} required options={[
         { value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }, { value: "90", label: "Last 90 days" }, { value: "all", label: "All time" }, { value: "custom", label: "Custom dates" },
@@ -121,17 +126,10 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
       {range.period === "custom" && <div className="flex max-w-full flex-wrap gap-3">{(["start", "end"] as const).map((key) => <DateFilter key={key} id={`analytics-${key}`} name={key === "start" ? "From" : "Through"} value={params.get(key) ?? range[key] ?? null} onChange={(value) => change(key, [value])} />)}</div>}
       <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
       </FilterBar>
-    </div>
-    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Analytics views">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
+    </div>} />
+    <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" className="gap-x-3 sm:gap-x-6" aria-label="Analytics views">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
-      <p className="mb-4 text-xs leading-relaxed text-muted-foreground">{{
-        overview: "Review activity, findings, and resolution for this repository and the selected period.",
-        findings: "Explore findings by severity, category, and current resolution status.",
-        reviews: "Review outcomes, execution time, validated file coverage, assessments, and contributor activity.",
-        usage: "Token usage by stage, repository, model, and effort, with averages per run and reviewed PR.",
-        security: "Security scan activity and unique findings first detected in this repository and the selected period.",
-      }[tab]}</p>
-      <div className="min-w-0 space-y-6">
+      <div className="min-w-0 space-y-4">
       {tab === "findings" && scope && scope.repositories.length > 0 && !empty && findings.data && <div role="status"><Metrics items={[
         { label: "Findings", value: number(findings.data.total) },
         { label: "Open", value: number(findings.data.statuses.find((row) => row.key === "open")?.count ?? 0) },
@@ -151,21 +149,27 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
             <Metrics items={[
               { label: "PRs reviewed", value: number(overview.data.reviewed_prs) },
               { label: "Findings detected", value: number(overview.data.findings) },
-              { label: "Resolved findings", value: number(overview.data.resolved) },
+              { label: "Resolved findings", value: <>
+                {number(overview.data.resolved)}
+                {overview.data.findings > 0 && <> <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+                  {percent(overview.data.resolved, overview.data.findings)}<span className="sr-only"> of findings detected</span>
+                </span></>}
+              </> },
               { label: "Reported tokens", value: number(overview.data.usage.tokens) },
             ]} />
-            <TrendChart title="Review activity" description="Runs are grouped by creation date; findings by first detection. One PR can have several runs." data={overview.data.trend} keys={["runs", "findings"]} />
-            <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="Severity" description="Explore findings first detected in this period." data={overview.data.severities} severity onSelect={(value) => findingFilter("severity", value)} /><BreakdownChart title="Categories" description="Saved finding classifications, including custom categories." data={overview.data.categories} onSelect={(value) => findingFilter("category", value)} /></div>
-            <AnalyticsPanel title="Repository" description="Saved review activity in this repository.">
-              <DataTable label="Repository" headings={["Repository", "PRs reviewed", "Findings", "Resolved"]} rows={overview.data.repositories.map((repo) => [repo.name, number(repo.reviewed_prs), number(repo.findings), <>{number(repo.resolved)}<span className="mt-1 block text-xs text-muted-foreground">{percent(repo.resolved, repo.findings)}</span></>])} />
-            </AnalyticsPanel>
+            <div className={panelGrid}>
+              <TrendChart title="Review activity" className={`${leadPanel} @min-[48rem]/analytics:col-span-8`} description="Runs are grouped by creation date; findings by first detection. One PR can have several runs." data={overview.data.trend} keys={["runs", "findings"]} />
+              <BreakdownChart title="Severity" className="@min-[48rem]/analytics:col-span-4" description="Explore findings first detected in this period." data={overview.data.severities} severity onSelect={(value) => findingFilter("severity", value)} />
+              <BreakdownChart title="Categories" className="col-span-full" description="Saved finding classifications, including custom categories." data={overview.data.categories} onSelect={(value) => findingFilter("category", value)} />
+            </div>
           </>}
           {tab === "findings" && findings.data && <>
-            {!findings.data.total ? <Empty title="No findings match these filters">Change the severity, category, or status selection.</Empty> : <>
-              <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="Severity" data={findings.data.severities} severity /><BreakdownChart title="Categories" data={findings.data.categories} /></div>
-              <BreakdownChart title="Current resolution" description="Confirmed current state of findings detected in this period. Dismissal is separate from resolution." data={findings.data.statuses} />
-              <TrendChart title="Finding trends" description="Unique findings grouped by first detection date, using the selected filters." data={findings.data.trend} keys={["findings"]} />
-            </>}
+            {!findings.data.total ? <Empty title="No findings match these filters">Change the severity, category, or status selection.</Empty> : <div className={panelGrid}>
+              <BreakdownChart title="Severity" className="@min-[48rem]/analytics:col-span-5" data={findings.data.severities} severity />
+              <BreakdownChart title="Categories" className="@min-[48rem]/analytics:col-span-7" data={findings.data.categories} />
+              <BreakdownChart title="Current resolution" className="@min-[48rem]/analytics:col-span-5" description="Confirmed current state of findings detected in this period. Dismissal is separate from resolution." data={findings.data.statuses} />
+              <TrendChart title="Finding trends" className={`${leadPanel} @min-[48rem]/analytics:col-span-7`} description="Unique findings grouped by first detection date, using the selected filters." data={findings.data.trend} keys={["findings"]} />
+            </div>}
           </>}
           {tab === "reviews" && reviews.data && <>
             <Metrics items={[
@@ -173,10 +177,12 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
               { label: "Average review duration", value: reviews.data.mean_duration_seconds == null ? "Unavailable" : reviews.data.mean_duration_seconds < 60 ? <>{number(reviews.data.mean_duration_seconds)} sec</> : <>{number(reviews.data.mean_duration_seconds / 60)} min</> },
               { label: "Contributors", value: number(reviews.data.contributors.length) },
             ]} />
-            <BreakdownChart title="Review outcomes" description="Execution status is separate from GitHub publication and finding resolution." data={reviews.data.outcomes} />
-            <div className="grid min-w-0 gap-6 lg:grid-cols-2"><BreakdownChart title="File review results" description={<>Validated results per run; a file reviewed again counts again. {number(reviews.data.coverage_missing_runs)} runs have no valid saved coverage.</>} data={reviews.data.coverage} />
-              <BreakdownChart title="Assessment outcomes" description={<>Each candidate appears in one outcome. {number(reviews.data.assessment_missing_runs)} legacy runs have no recorded assessment policy.</>} data={reviews.data.assessments} /></div>
-            <AnalyticsPanel title="Contributor activity" description="Distinct reviewed PRs by saved PR author. Activity counts do not measure code quality."><DataTable label="Contributor activity" headings={["PR author", "PRs reviewed"]} rows={reviews.data.contributors.map((row) => [row.key, number(row.count)])} /></AnalyticsPanel>
+            <div className={panelGrid}>
+              <BreakdownChart title="Review outcomes" className={`${leadPanel} @min-[48rem]/analytics:col-span-7`} description="Execution status is separate from GitHub publication and finding resolution." data={reviews.data.outcomes} />
+              <BreakdownChart title="File review results" className="@min-[48rem]/analytics:col-span-5" description={<>Validated results per run; a file reviewed again counts again. {number(reviews.data.coverage_missing_runs)} runs have no valid saved coverage.</>} data={reviews.data.coverage} />
+              <BreakdownChart title="Assessment outcomes" className="@min-[48rem]/analytics:col-span-7" description={<>Each candidate appears in one outcome. {number(reviews.data.assessment_missing_runs)} legacy runs have no recorded assessment policy.</>} data={reviews.data.assessments} />
+              <AnalyticsPanel title="Contributor activity" className="@min-[48rem]/analytics:col-span-5" description="Distinct reviewed PRs by saved PR author. Activity counts do not measure code quality."><DataTable label="Contributor activity" headings={["PR author", "PRs reviewed"]} rows={reviews.data.contributors.map((row) => [row.key, number(row.count)])} /></AnalyticsPanel>
+            </div>
           </>}
           {tab === "usage" && usage.data && <>
             <Metrics items={[
@@ -185,9 +191,13 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
               { label: "Mean tokens / run", value: number(usage.data.total.mean_per_run) },
               { label: "Mean tokens / reviewed PR", value: number(usage.data.total.mean_per_reviewed_pr) },
             ]} />
-            <TrendChart title="Token usage" description="Saved consumption attributed to each run’s creation date, including its retries. Gaps mean no known usage; partial totals remain identified in the data table." data={usage.data.trend} keys={["tokens"]} />
-            <AnalyticsPanel title="Usage by stage" description="Each saved consumption record is counted once."><DataTable label="Usage by stage" headings={["Stage", "Reported tokens", "Missing reports"]} rows={usage.data.stages.map((row) => [label(row.key), number(row.usage.tokens), number(row.usage.missing_reports)])} /></AnalyticsPanel>
-            <UsageTable title="Usage by repository" rows={usage.data.repositories} /><UsageTable title="Usage by model" rows={usage.data.models} /><UsageTable title="Usage by effort" rows={usage.data.efforts} />
+            <div className={panelGrid}>
+              <TrendChart title="Token usage" className={`${leadPanel} @min-[48rem]/analytics:col-span-8`} description="Saved consumption by run creation date, including retries. Gaps mean no usage was reported for the period." data={usage.data.trend} keys={["tokens"]} />
+              <AnalyticsPanel title="Usage by stage" className="@min-[48rem]/analytics:col-span-4" description="Each saved consumption record is counted once."><DataTable label="Usage by stage" headings={["Stage", "Reported tokens", "Missing reports"]} rows={usage.data.stages.map((row) => [label(row.key), number(row.usage.tokens), number(row.usage.missing_reports)])} /></AnalyticsPanel>
+              <UsageTable title="Usage by repository" rows={usage.data.repositories} className="col-span-full" />
+              <UsageTable title="Usage by model" rows={usage.data.models} className="@min-[48rem]/analytics:col-span-6" />
+              <UsageTable title="Usage by effort" rows={usage.data.efforts} className="@min-[48rem]/analytics:col-span-6" />
+            </div>
           </>}
           {tab === "security" && security.data && <>
             <Metrics items={[
@@ -196,12 +206,12 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
               { label: "Open findings", value: number(security.data.open) },
               { label: "Resolved findings", value: number(security.data.resolved) },
             ]} />
-            <TrendChart title="Security activity" description="Scans are grouped by creation date; unique findings by first detection. Repeated observations do not add findings." data={security.data.trend} keys={["runs", "findings"]} runLabel="Security scans" />
-            <div className="grid min-w-0 gap-6 lg:grid-cols-2">
-              <BreakdownChart title="Severity" description="Severity of unique findings first detected in this period, across all current states." data={security.data.severities} severity />
-              <BreakdownChart title="Finding types" description="Saved security classifications, including code, dependencies, secrets, and infrastructure." data={security.data.kinds} />
-              <BreakdownChart title="Current resolution" description="Current state of findings first detected in this period. False positives and accepted risk are separate from resolved findings." data={security.data.states} />
-              <BreakdownChart title="Scan outcomes" description="Saved execution status for scans started in this period. Partial, failed, and unscanned work never implies a clean repository." data={security.data.outcomes} />
+            <div className={panelGrid}>
+              <TrendChart title="Security activity" className={`${leadPanel} @min-[48rem]/analytics:col-span-8`} description="Scans are grouped by creation date; unique findings by first detection. Repeated observations do not add findings." data={security.data.trend} keys={["runs", "findings"]} runLabel="Security scans" />
+              <BreakdownChart title="Severity" className="@min-[48rem]/analytics:col-span-4" description="Severity of unique findings first detected in this period, across all current states." data={security.data.severities} severity />
+              <BreakdownChart title="Finding types" className="@min-[48rem]/analytics:col-span-4" description="Saved security classifications, including code, dependencies, secrets, and infrastructure." data={security.data.kinds} />
+              <BreakdownChart title="Current resolution" className="@min-[48rem]/analytics:col-span-4" description="Current state of findings first detected in this period. False positives and accepted risk are separate from resolved findings." data={security.data.states} />
+              <BreakdownChart title="Scan outcomes" className="@min-[48rem]/analytics:col-span-4" description="Saved execution status for scans started in this period. Partial, failed, and unscanned work never implies a clean repository." data={security.data.outcomes} />
             </div>
           </>}
         </>}
