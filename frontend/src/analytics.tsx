@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { CalendarIcon, RefreshCw } from "lucide-react";
-import { useApi, type Schema } from "./api";
+import { CalendarIcon, Download, LoaderCircle, RefreshCw } from "lucide-react";
+import { api, useApi, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading, PageTitle } from "./components/common";
 import { AnalyticsNumber, AnalyticsPanel, BreakdownChart, DataTable, TrendChart } from "./components/analytics-charts";
 import { normalizeOrdering } from "./lib/ordering";
+import { downloadAnalyticsCsv } from "./lib/analytics-csv";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { Button } from "./components/ui/button";
@@ -63,6 +64,9 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
   const [params, setParams] = useSearchParams();
   const { state } = useLocation();
   const [tab, setTab] = useUrlTab("tab", [...analyticsTabs], "overview");
+  const csvRequest = useRef<AbortController | null>(null);
+  const [csvDownload, setCsvDownload] = useState<{ pending: boolean; error?: unknown }>({ pending: false });
+  useLayoutEffect(() => () => csvRequest.current?.abort(), []);
   const range = analyticsRange(params);
   useEffect(() => {
     if (range.period !== "custom" || range.error || (params.get("period") === "custom" && params.has("start") && params.has("end"))) return;
@@ -81,13 +85,47 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
   const base = baseParams.toString();
   const findingQuery = new URLSearchParams(base);
   for (const key of ["severity", "category", "status"]) for (const value of params.getAll(key)) findingQuery.append(key, value);
-  const overview = useApi<Schema["AnalyticsOverview"]>(`/analytics/overview?${base}`, false, valid && tab === "overview");
-  const findings = useApi<Schema["AnalyticsFindings"]>(`/analytics/findings?${findingQuery}`, false, valid && tab === "findings");
-  const reviews = useApi<Schema["AnalyticsReviews"]>(`/analytics/reviews?${base}`, false, valid && tab === "reviews");
-  const usage = useApi<Schema["AnalyticsUsage"]>(`/analytics/usage?${base}`, false, valid && tab === "usage");
-  const security = useApi<Schema["AnalyticsSecurity"]>(`/analytics/security?${base}`, false, valid && tab === "security");
+  const paths = {
+    overview: `/analytics/overview?${base}`,
+    findings: `/analytics/findings?${findingQuery}`,
+    reviews: `/analytics/reviews?${base}`,
+    usage: `/analytics/usage?${base}`,
+    security: `/analytics/security?${base}`,
+  };
+  const overview = useApi<Schema["AnalyticsOverview"]>(paths.overview, false, valid && tab === "overview");
+  const findings = useApi<Schema["AnalyticsFindings"]>(paths.findings, false, valid && tab === "findings");
+  const reviews = useApi<Schema["AnalyticsReviews"]>(paths.reviews, false, valid && tab === "reviews");
+  const usage = useApi<Schema["AnalyticsUsage"]>(paths.usage, false, valid && tab === "usage");
+  const security = useApi<Schema["AnalyticsSecurity"]>(paths.security, false, valid && tab === "security");
   const query = tab === "findings" ? findings : tab === "reviews" ? reviews : tab === "usage" ? usage : tab === "security" ? security : overview;
   const scope = !query.error && valid ? query.data?.scope : undefined;
+  async function downloadCsv() {
+    if (range.error || csvRequest.current) return;
+    const controller = new AbortController();
+    csvRequest.current = controller;
+    setCsvDownload({ pending: true });
+    try {
+      const read = <T,>(path: string) => api<T>(path, "GET", undefined, undefined, controller.signal);
+      const [overview, findings, reviews, usage, security] = await Promise.all([
+        read<Schema["AnalyticsOverview"]>(paths.overview),
+        read<Schema["AnalyticsFindings"]>(paths.findings),
+        read<Schema["AnalyticsReviews"]>(paths.reviews),
+        read<Schema["AnalyticsUsage"]>(paths.usage),
+        read<Schema["AnalyticsSecurity"]>(paths.security),
+      ]);
+      if (controller.signal.aborted) return;
+      const period = range.period === "all" ? `all-time-through-${range.end}` : `${range.start}-to-${range.end}`;
+      downloadAnalyticsCsv({ overview, findings, reviews, usage, security }, repository, period, findingQuery);
+      setCsvDownload({ pending: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        controller.abort();
+        setCsvDownload({ pending: false, error });
+      }
+    } finally {
+      if (csvRequest.current === controller) csvRequest.current = null;
+    }
+  }
   function change(key: string, values: string[]) {
     const next = new URLSearchParams(params);
     next.delete(key);
@@ -124,9 +162,16 @@ export default function Analytics({ repository }: { repository: Pick<Schema["Rep
         { value: "7", label: "Last 7 days" }, { value: "30", label: "Last 30 days" }, { value: "90", label: "Last 90 days" }, { value: "all", label: "All time" }, { value: "custom", label: "Custom dates" },
       ]} /></div>
       {range.period === "custom" && <div className="flex max-w-full flex-wrap gap-3">{(["start", "end"] as const).map((key) => <DateFilter key={key} id={`analytics-${key}`} name={key === "start" ? "From" : "Through"} value={params.get(key) ?? range[key] ?? null} onChange={(value) => change(key, [value])} />)}</div>}
-      <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" disabled={!valid || query.isFetching} onClick={() => query.refetch()}><RefreshCw aria-hidden="true" className={query.isFetching ? "motion-safe:animate-spin" : ""} />Refresh</Button>
+        <Button variant="outline" disabled={!valid || csvDownload.pending} aria-busy={csvDownload.pending} onClick={downloadCsv}>
+          {csvDownload.pending ? <LoaderCircle aria-hidden="true" className="motion-safe:animate-spin" /> : <Download aria-hidden="true" />}Download
+        </Button>
+        <span role="status" className="sr-only">{csvDownload.pending ? "Preparing Analytics CSV" : ""}</span>
+      </div>
       </FilterBar>
     </div>} />
+    <ErrorNotice error={csvDownload.error} title="Could not download Analytics CSV" />
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" className="gap-x-3 sm:gap-x-6" aria-label="Analytics views">{analyticsTabs.map((value) => <TabsTrigger key={value} value={value} id={`analytics-tab-${value}`} aria-controls="analytics-panel">{label(value)}</TabsTrigger>)}</TabsList></Tabs>
     <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} aria-busy={valid && query.isFetching} className="min-w-0">
       <div className="min-w-0 space-y-4">

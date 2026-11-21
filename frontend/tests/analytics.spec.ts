@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import type { Schema } from "../src/api";
 import { analyticsCompactNumber, analyticsRange } from "../src/lib/analytics";
 import { themes } from "../src/lib/appearance";
@@ -321,6 +321,91 @@ test("overview loads only its endpoint and shows charts without redundant tables
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
+test("one Analytics CSV includes all tabs in the current repository and date range", async ({ page }) => {
+  const requests = await mock(page, (view) => {
+    if (view === "findings") return { ...findings, total: 8 };
+    if (view === "usage") return { ...usage, repositories: usage.repositories.filter((repo) => repo.repository_id === 22) };
+    if (view === "overview") return {
+      ...overview,
+      repositories: overview.repositories.filter((repo) => repo.id === 22),
+      categories: [
+        ...Array.from({ length: 10 }, (_, index) => ({ key: `category-${index}`, count: index + 1 })),
+        { key: 'résultat, "quoted"\r\nsecond line', count: 2 },
+        { key: "  =1+1", count: 1 },
+      ],
+    };
+  });
+  await page.goto("/repositories/22/analytics?tab=reviews&period=custom&start=2026-09-19&end=2026-10-18&repo=23&severity=high&category=bug&status=open");
+  await expect(page.getByRole("heading", { name: "Review outcomes", exact: true })).toBeVisible();
+  expect(requests.map((request) => request.pathname.split("/").at(-1))).toEqual(["reviews"]);
+  const downloaded = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download", exact: true }).click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toBe("analytics-acme-code-mortis-2026-09-19-to-2026-10-18.csv");
+  const csv = await readFile(await file.path(), "utf8");
+  expect(csv).toMatch(/^\uFEFFrepository,repository_id,from_at,to_at_exclusive,timezone,bucket,tab,section,item,date,metric,value\r\n/);
+  expect(csv).toContain('"acme/code-mortis",22,"2026-09-19T00:00:00Z","2026-10-19T00:00:00Z","America/Santiago","day"');
+  expect(csv).toContain('"overview","activity","","2026-09-02","review_runs",7\r\n');
+  expect(csv).toContain('"overview","categories","résultat, ""quoted""\r\nsecond line","","count",2\r\n');
+  expect(csv).toContain(`"overview","categories","'  =1+1","","count",1\r\n`);
+  expect(csv).toContain('"findings","filters","","","severity","high"\r\n');
+  expect(csv).toContain('"findings","summary","","","total",8\r\n');
+  expect(csv).toContain('"reviews","summary","","","contributor_count",2\r\n');
+  expect(csv).toContain('"reviews","coverage","completed","","count",110\r\n');
+  expect(csv).toContain('"usage","activity","","2026-09-17","tokens",\r\n');
+  expect(csv).toContain('"usage","activity","","2026-09-17","missing_reports",2\r\n');
+  expect(csv).toContain('"usage","by_model","review-model","","tokens",1245800\r\n');
+  expect(csv).toContain('"security","states","accepted_risk","","count",2\r\n');
+  expect(csv).not.toContain("acme/noodle");
+  const exportRequests = requests.slice(1);
+  expect(exportRequests.map((request) => request.pathname.split("/").at(-1)).sort()).toEqual(["findings", "overview", "reviews", "security", "usage"]);
+  for (const { pathname, searchParams } of exportRequests) {
+    expect(searchParams.getAll("repo")).toEqual(["22"]);
+    for (const name of ["from_at", "to_at", "timezone"]) {
+      expect(searchParams.get(name)).toBeTruthy();
+      expect(searchParams.get(name)).toBe(requests[0].searchParams.get(name));
+    }
+    const findingsOnly = pathname.endsWith("/findings");
+    expect(searchParams.get("severity")).toBe(findingsOnly ? "high" : null);
+    expect(searchParams.get("category")).toBe(findingsOnly ? "bug" : null);
+    expect(searchParams.get("status")).toBe(findingsOnly ? "open" : null);
+  }
+  await expect(page.getByRole("tab", { name: "Reviews", exact: true })).toHaveAttribute("aria-selected", "true");
+});
+
+test("Analytics CSV waits for all sections and can be retried after a failure", async ({ page }) => {
+  await mock(page);
+  let attempts = 0;
+  let failExport!: () => void;
+  const pending = new Promise<void>((resolve) => { failExport = resolve; });
+  await page.route("**/api/v1/analytics/security?**", async (route) => {
+    if (++attempts > 1) return route.fulfill({ json: security });
+    await pending;
+    return route.fulfill({ status: 503, json: { detail: "Security analytics is temporarily unavailable." } });
+  });
+  const downloads: string[] = [];
+  page.on("download", (file) => downloads.push(file.suggestedFilename()));
+  await page.goto("/repositories/22/analytics?period=all");
+  await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
+  const button = page.getByRole("button", { name: "Download", exact: true });
+  await button.click();
+  try {
+    await expect(button).toBeDisabled();
+    await expect(page.getByRole("group", { name: "Analytics filters" }).getByRole("status")).toHaveText("Preparing Analytics CSV");
+  } finally {
+    failExport();
+  }
+  await expect(page.getByRole("alert")).toContainText("Security analytics is temporarily unavailable.");
+  expect(downloads).toEqual([]);
+  const downloaded = page.waitForEvent("download");
+  await button.click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toMatch(/^analytics-acme-code-mortis-all-time-through-\d{4}-\d{2}-\d{2}\.csv$/);
+  expect(downloads).toHaveLength(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(button).toBeEnabled();
+});
+
 test("repository overview locks scope across tabs, URL filters, reload and retries", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/23/analytics?repo=22&repo=999");
@@ -382,6 +467,7 @@ test("custom dates validate before requesting and keyboard switches tabs", async
   const requests = await mock(page);
   await page.goto("/repositories/22/analytics?period=custom&start=2026-02-30&end=bad");
   await expect(page.getByRole("alert")).toContainText("Choose a valid");
+  await expect(page.getByRole("button", { name: "Download", exact: true })).toBeDisabled();
   expect(requests).toHaveLength(0);
   await page.getByRole("button", { name: "From", exact: true }).click();
   await page.getByRole("button", { name: /October 1st, 2026/ }).click();
@@ -465,8 +551,11 @@ test("date controls align, wrap and show themed calendar popovers", async ({ pag
     await expect(page.getByRole("heading", { name: "Review activity", exact: true })).toBeVisible();
     await expect(page.getByText("Review impact and model usage across your repositories.")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "From", exact: true })).toHaveAccessibleDescription("Sep 19, 2026");
+    const download = await page.getByRole("button", { name: "Download", exact: true }).boundingBox();
+    const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
+    expect(Math.abs(download!.y - refresh!.y)).toBeLessThan(1);
+    expect(download!.x + download!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     if (info.project.name === "desktop") {
-      const refresh = await page.getByRole("button", { name: "Refresh", exact: true }).boundingBox();
       const from = await page.getByRole("button", { name: "From", exact: true }).boundingBox();
       const title = await page.getByRole("heading", { level: 1, name: "Analytics" }).boundingBox();
       expect(Math.abs(refresh!.y - from!.y)).toBeLessThan(1);
