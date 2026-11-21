@@ -2,7 +2,7 @@ import { isValidElement, useId, useState, type ComponentProps, type ReactNode } 
 import ReactMarkdown from "react-markdown";
 import { AlertCircle, ArrowUpRight, ChevronDown, Copy, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "./ui/badge";
+import { Badge, badgeRadius } from "./ui/badge";
 import { Label } from "./ui/label";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
@@ -24,10 +24,10 @@ export function ListDate({ value }: { value: string }) {
   return <time dateTime={value} title={date(value)} className="text-xs tabular-nums text-muted-foreground">{listDate.format(new Date(value))}</time>;
 }
 export function StatusGroup({ children }: { children: ReactNode }) {
-  return <span data-slot="status-group" className="inline-flex w-fit overflow-hidden rounded-full border border-border align-middle [&_[data-slot=badge]]:rounded-none [&_[data-slot=badge]]:border-0 [&_a]:rounded-none [&_a:focus-visible]:-outline-offset-2">{children}</span>;
+  return <span data-slot="status-group" className={cn("inline-flex w-fit overflow-hidden border border-border align-middle [&_[data-slot=badge]]:rounded-none [&_[data-slot=badge]]:border-0 [&_a]:rounded-none [&_a:focus-visible]:-outline-offset-2", badgeRadius)}>{children}</span>;
 }
 export function FindingCount({ count }: { count: number }) {
-  return <Badge variant="outline" className={count ? "border-destructive/20 bg-destructive/5 text-destructive" : "bg-muted/50 text-muted-foreground"}>{count} unresolved<span className="sr-only"> findings</span></Badge>;
+  return <Badge variant={count ? "destructive" : "outline"} className={count ? undefined : "bg-muted/50 text-muted-foreground"}>{count} unresolved<span className="sr-only"> findings</span></Badge>;
 }
 export function Status({ value, label, icon, showSpinner = true }: { value: string; label?: string; icon?: ReactNode; showSpinner?: boolean }) {
   const good = ["completed", "published", "resolved", "connected", "success", "active"].includes(
@@ -37,17 +37,15 @@ export function Status({ value, label, icon, showSpinner = true }: { value: stri
   const caution = ["partial", "medium", "partially_published", "action_required", "blocked", "outdated"].includes(value);
   return (
     <Badge
-      variant="outline"
+      variant={value === "running" ? "default" : "outline"}
       className={cn(
-        "gap-1.5 font-medium whitespace-nowrap",
+        "gap-1.5",
         !label && "capitalize",
         good &&
-          "border-emerald-700/20 bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
-        bad && "border-red-600/20 bg-red-600/8 text-red-700 dark:text-red-300",
-        // Foreground blend keeps primary text readable over its tint across themes.
-        value === "running" && "border-primary/20 bg-primary/8 text-[color:color-mix(in_srgb,var(--primary)_75%,var(--foreground))]",
+          "border-transparent bg-emerald-700/8 text-emerald-800 dark:text-emerald-300",
+        bad && "border-transparent bg-red-600/8 text-red-700 dark:text-red-300",
         caution &&
-          "border-amber-700/20 bg-amber-700/8 text-amber-800 dark:text-amber-300",
+          "border-transparent bg-amber-700/8 text-amber-800 dark:text-amber-300",
       )}
     >
       {label || words(value)}

@@ -77,13 +77,21 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(activity).toContainText("2 security scans");
   const reviewCard = page.getByRole("region", { name: "Reviews", exact: true });
   const securityCard = page.getByRole("region", { name: "Security", exact: true });
+  const enabledBadge = reviewCard.getByText("Enabled", { exact: true });
+  const gradeBadge = securityCard.getByText("Grade B", { exact: true });
   await expect(reviewCard).toContainText(/10\s*open findings/);
-  await expect(reviewCard.getByText("Enabled", { exact: true })).toBeVisible();
+  for (const badge of [enabledBadge, gradeBadge]) {
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("data-variant", "default");
+    await expect(badge).toHaveCSS("border-radius", "5px");
+    await expect(badge).toHaveCSS("padding", "3px 8px");
+    await expect(badge).toHaveCSS("line-height", "17px");
+    await expect(badge).toHaveCSS("font-weight", "600");
+  }
   await expect(reviewCard).toContainText(/Automatic reviews\s*On/);
   await expect(reviewCard).toContainText(/Review language\s*English/);
   await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveAttribute("href", "/repositories/22");
   await expect(securityCard).toContainText(/7\s*open findings/);
-  await expect(securityCard).toContainText("Grade B");
   await expect(securityCard.locator("time")).toHaveAttribute("datetime", "2026-11-19T12:00:00Z");
   await expect(securityCard).toContainText(/Scan status\s*completed/i);
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveAttribute("href", "/security/repositories/22");
@@ -100,8 +108,6 @@ test("repository Overview shows daily activity before opening Analytics", async 
   await expect(calendar.locator('[tabindex="0"]')).toHaveCount(1);
   const today = calendar.getByRole("button", { name: /8 total, 6 review runs, 2 security scans/ });
   const primaryColor = await today.evaluate((cell) => getComputedStyle(cell).backgroundColor);
-  await expect(reviewCard.getByText("Enabled", { exact: true })).toHaveCSS("color", primaryColor);
-  await expect(securityCard.getByText("Grade B", { exact: true })).toHaveCSS("color", primaryColor);
   await expect(reviewCard.getByRole("link", { name: "View reviews" })).toHaveCSS("color", primaryColor);
   await expect(securityCard.getByRole("link", { name: "View security" })).toHaveCSS("color", primaryColor);
   if (info.project.name === "mobile") {

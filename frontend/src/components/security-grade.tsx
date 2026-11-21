@@ -3,13 +3,13 @@ import type { Schema } from "../api";
 import { Status } from "./common";
 import { securityIcons } from "./security-badge";
 import { Link } from "react-router-dom";
+import { badgeRadius } from "./ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export const securityStates: Record<string, string> = {
   current: "Current", not_scanned: "Not scanned", incomplete: "Incomplete",
   outdated: "Outdated", unavailable: "Unable to verify freshness",
 };
-export const securityCoverage: Record<string, string> = { complete: "Coverage complete", incomplete: "Coverage incomplete", not_scanned: "Not scanned" };
 export const securityFreshness: Record<string, string> = { current: "Current commit", outdated: "Outdated scan", unavailable: "Freshness unverified" };
 const gradeDescriptions: Record<string, string> = {
   A: "No confirmed unresolved findings.", B: "Low-severity unresolved findings.",
@@ -42,7 +42,7 @@ export function SecurityGrade({ repositoryId, summary, shield = false, showLabel
   const accessible = letter === "?" ? "Security grade unknown" : `Security grade ${letter}`;
   const description = !summary || summary.state === "not_scanned" ? "No security scan has been recorded for this repository."
     : `${summary.grade ? `Grade ${summary.grade}: ${gradeDescriptions[summary.grade]} Based on current findings and triage decisions.` : "No security grade is available."} ${summary.coverage === "complete" ? "Coverage is complete." : "The latest assessment is incomplete. Unvalidated code may change the grade."} ${freshnessDescriptions[summary.freshness ?? "unavailable"]}`;
-  return <Tooltip><TooltipTrigger asChild><Link data-security-badge aria-label={shield ? accessible : undefined} to={`/security/repositories/${repositoryId}`} className={`inline-flex no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring ${shield ? "relative z-10 size-11 shrink-0 items-center justify-center rounded-md sm:size-8" : "w-fit max-w-full rounded-full"}`}>
+  return <Tooltip><TooltipTrigger asChild><Link data-security-badge aria-label={shield ? accessible : undefined} to={`/security/repositories/${repositoryId}`} className={`inline-flex no-underline outline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-ring ${shield ? "relative z-10 size-11 shrink-0 items-center justify-center rounded-md sm:size-8" : `w-fit max-w-full ${badgeRadius}`}`}>
     {shield ? <SecurityGradeShield grade={letter} /> : <Status value={status} label={showLabel && label !== "Unscanned" ? `Security ${label}` : label} icon={showIcon && <Icon aria-hidden="true" className={`size-3 ${showLabel ? "order-first" : ""}`} />} />}
   </Link></TooltipTrigger><TooltipContent sideOffset={6} collisionPadding={16} className="max-w-xs leading-relaxed">{description}</TooltipContent></Tooltip>;
 }

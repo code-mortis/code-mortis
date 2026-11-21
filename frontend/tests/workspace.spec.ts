@@ -1211,10 +1211,15 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   const latest = summary.getByRole("region", { name: "Last completed review", exact: true });
   const check = summary.getByRole("region", { name: "Last successful GitHub PR check", exact: true });
   await expect(summary.getByRole("region")).toHaveCount(3);
+  const enabled = policy.getByRole("heading", { name: "Review policy" }).locator("..").getByText("Reviews enabled", { exact: true });
+  await expect(enabled).toHaveAttribute("data-variant", "default");
   await expect(policy).toContainText("Automatic reviews");
   await expect(policy.getByText("File limit", { exact: true })).toBeVisible();
   await expect(policy.getByText("Comment language", { exact: true })).toHaveCount(0);
   await expect(check.locator("time")).toHaveAttribute("datetime", checked);
+  await expect(check.getByRole("term")).toHaveText("Open PRs");
+  await expect(check.getByRole("definition")).toHaveText(String(repo.open_prs));
+  await expect(check.getByRole("definition")).toHaveCSS("font-size", "12px");
   await expect(latest.locator("code")).toHaveText("ccccccc");
   const review = latest.getByRole("link", { name: "View review for PR #148", exact: true });
   await expect(review).toHaveAttribute("href", "/runs/run");
@@ -1222,12 +1227,14 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(latest.getByRole("heading").locator("..").getByRole("link")).toHaveCount(1);
   await expect(latest.getByText("PR #148", { exact: true })).toHaveCSS("font-size", "16px");
   await expect(header.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", `https://github.com/${repo.full_name}`);
-  const [policyBox, reviewBox, checkBox] = await Promise.all([policy.boundingBox(), latest.boundingBox(), check.boundingBox()]);
+  const [policyBox, checkBox, reviewBox] = await Promise.all([policy.boundingBox(), check.boundingBox(), latest.boundingBox()]);
   if (info.project.name === "mobile") {
-    expect(reviewBox!.y).toBeGreaterThanOrEqual(policyBox!.y + policyBox!.height);
-    expect(checkBox!.y).toBeGreaterThanOrEqual(reviewBox!.y + reviewBox!.height);
+    expect(checkBox!.y).toBeGreaterThanOrEqual(policyBox!.y + policyBox!.height);
+    expect(reviewBox!.y).toBeGreaterThanOrEqual(checkBox!.y + checkBox!.height);
   } else {
-    expect([reviewBox!.y, checkBox!.y]).toEqual([policyBox!.y, policyBox!.y]);
+    expect([checkBox!.y, reviewBox!.y]).toEqual([policyBox!.y, policyBox!.y]);
+    expect(checkBox!.x).toBeGreaterThan(policyBox!.x);
+    expect(reviewBox!.x).toBeGreaterThan(checkBox!.x);
     expect(policyBox!.height).toBeLessThan(140);
   }
   await header.screenshot({ path: info.outputPath("pull-requests-summary-cards.png") });
@@ -1238,13 +1245,14 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   await expect(page).toHaveURL(returnUrl);
   const pulls = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(pulls.getByLabel("Search pull requests")).toHaveValue("148");
-  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [repo] }));
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, open_prs: 0 }] }));
   await page.reload();
   await expect(page.getByRole("heading", { name: "Pull requests", exact: true })).toBeVisible();
   await expect(summary.getByRole("region")).toHaveCount(3);
   await expect(latest).toContainText("None recorded");
   await expect(latest.getByRole("link")).toHaveCount(0);
   await expect(check).toContainText("None recorded");
+  await expect(check.getByRole("definition")).toHaveText("0");
 });
 
 test("repository settings retain drafts while directory polling fails and recovers", async ({ page }) => {
@@ -2844,7 +2852,8 @@ test("repository state filters retain running reviews and reset when switching r
   await chooseRepository(page, "acme/other");
   await expect(page).toHaveURL(/repositories\/23\?state=open$/);
   await expect(page.getByRole("button", { name: /Edit PR state/ })).toHaveAccessibleName("Edit PR state: Open");
-  await expect(page.getByRole("region", { name: "Review configuration" }).getByText("Paused", { exact: true })).toBeVisible();
+  const paused = page.getByRole("region", { name: "Review configuration" }).getByRole("heading", { name: "Review policy" }).locator("..").getByText("Paused", { exact: true });
+  await expect(paused).toHaveAttribute("data-variant", "outline");
 });
 
 test("repository navigation, filtering, and review workspace", async ({
@@ -5774,8 +5783,8 @@ test("assessment result tooltips preserve card activation and keyboard access", 
   for (const [index, { label, description, status }] of outcomes.entries()) {
     const card = page.getByRole("button", { name: new RegExp(`Proposal ${index}`) });
     const badge = card.getByText(label, { exact: true });
-    if (status === "running") await expect(badge).toHaveClass(/bg-primary/);
-    if (status === "queued") await expect(badge).not.toHaveClass(/bg-primary/);
+    if (status === "running") await expect(badge).toHaveAttribute("data-variant", "default");
+    if (status === "queued") await expect(badge).toHaveAttribute("data-variant", "outline");
     await expect(badge).toHaveCSS("cursor", "pointer");
     await expect(card.locator("button, a, input, [tabindex]")).toHaveCount(0);
     await expect(card).toHaveAccessibleName(new RegExp(description));

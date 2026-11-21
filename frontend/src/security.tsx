@@ -17,7 +17,7 @@ import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
 import { RepositoryHeader, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
-import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
+import { SecurityGrade, SecurityGradeShield, securityFreshness, securityStates } from "./components/security-grade";
 import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
@@ -322,24 +322,23 @@ export function SecurityRepository({ user }: { user: User }) {
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </>}>
-      <RepositorySummaryCard label="Saved grade"
+      <RepositorySummaryCard label="Saved grade" badgeInHeading
         badge={<SecurityGrade showLabel showIcon={false} repositoryId={repo.id} summary={summary} />}
-        details={summary.graded_at ? [
-          ["Report saved", <time dateTime={summary.graded_at}>{date(summary.graded_at)}</time>],
-          ["Graded commit", summary.grade_sha ? <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code> : null],
+        details={summary.graded_at && summary.grade_sha ? [
+          ["Graded commit", <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code>],
         ] : undefined}
         note={summary.graded_at ? undefined : "A finished report establishes the first grade."}>
-        {hasScan && <span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span>}
-      </RepositorySummaryCard>
-      <RepositorySummaryCard label="Latest scan" regionLabel="Latest security scan"
-        badge={hasScan && <SecurityStatus value={summary.latest_status ?? "unknown"} />}
-        action={hasScan && <Link className={repositoryActivityLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}>
-        {hasScan ? summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time> : "No scans recorded"}
+        {summary.graded_at && <time dateTime={summary.graded_at}>{date(summary.graded_at)}</time>}
       </RepositorySummaryCard>
       <RepositorySummaryCard label="Freshness check" badgeInHeading
         badge={hasScan && <span aria-label="Scan freshness" className="text-xs font-medium">{summary.freshness === "outdated" ? <Status value="outdated" label={freshness} /> : freshness}</span>}
         details={currentHead ? [["Current commit", <code title={currentHead}>{currentHead.slice(0, 7)}</code>]] : undefined}>
         {summary.checked_at ? <time dateTime={summary.checked_at}>{date(summary.checked_at)}</time> : "No check recorded"}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard label="Latest scan" regionLabel="Latest security scan"
+        details={hasScan ? [["Scan status", label(summary.latest_status ?? "unknown")]] : undefined}
+        action={hasScan && <Link className={repositoryActivityLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}>
+        {hasScan ? summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time> : "No scans recorded"}
       </RepositorySummaryCard>
     </RepositoryHeader>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}

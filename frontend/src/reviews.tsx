@@ -45,7 +45,7 @@ import {
 } from "./api";
 import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
-import { Badge } from "./components/ui/badge";
+import { Badge, badgeRadius } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
@@ -168,11 +168,15 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
       </Button>}
     >
-      <RepositorySummaryCard label="Review policy" regionLabel="Review configuration"
-        badge={<Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Reviews enabled" : "Paused"} />}
+      <RepositorySummaryCard label="Review policy" regionLabel="Review configuration" badgeInHeading
+        badge={<Badge variant={selected.enabled ? "default" : "outline"}>{selected.enabled ? "Reviews enabled" : "Paused"}</Badge>}
         details={selected.enabled ? [["File limit", selected.settings.max_files == null ? "No limit" : `${selected.settings.max_files} files per review`]] : undefined}
         note={selected.enabled ? undefined : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
         {selected.enabled && (selected.settings.automatic ? "Automatic reviews" : "Manual reviews only")}
+      </RepositorySummaryCard>
+      <RepositorySummaryCard label="Last successful GitHub PR check"
+        details={!repos.error && selected.open_prs != null ? [["Open PRs", selected.open_prs.toLocaleString()]] : undefined}>
+        {lastCheck ? <time dateTime={lastCheck}>{date(lastCheck)}</time> : missingActivity}
       </RepositorySummaryCard>
       <RepositorySummaryCard
         label={reviewInProgress && !latestReview ? "Current review" : "Last completed review"}
@@ -185,9 +189,6 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         </Link>}
       >
         {latestReview ? `PR #${latestReview.number}` : reviewInProgress ? "Review in progress" : missingActivity}
-      </RepositorySummaryCard>
-      <RepositorySummaryCard label="Last successful GitHub PR check">
-        {lastCheck ? <time dateTime={lastCheck}>{date(lastCheck)}</time> : missingActivity}
       </RepositorySummaryCard>
     </RepositoryHeader> : <PageTitle title="Repositories">Follow each pull request from first review to final resolution.</PageTitle>}
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
@@ -833,6 +834,8 @@ const checkDescriptions: Record<string, string> = {
   action_required: "The review or GitHub synchronization needs attention.",
 };
 
+const statusTriggerClass = `inline-flex cursor-pointer ${badgeRadius} outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring`;
+
 function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
   const { run, pull_request: pr, occurrences, finding_state_counts = {}, findings_revision = "", assessment_revision = 0, assessment, can_write } = detail;
   const action = useAction();
@@ -941,28 +944,28 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
       <section aria-label="GitHub publication" className="mt-6 space-y-3 border-t pt-4 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
           <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
-            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
+            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass}><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
             </Tooltip>}
           </div>
           {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessmentStatus === "partial" ? "Some candidates could not be fully assessed." : assessmentStatus === "running" ? "Candidates are being assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
           {!run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Fix verification</span>
-            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring" role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
+            <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
           {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">GitHub check</span>
             {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
-              {run.check_url ? <a className="inline-flex cursor-pointer rounded-full outline-offset-2 underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
+              {run.check_url ? <a className={`${statusTriggerClass} underline-offset-4`} href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
                 <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
-              </a> : <span tabIndex={0} className="inline-flex cursor-pointer rounded-full outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"><Status value={checkValue || "check"} /></span>}
+              </a> : <span tabIndex={0} className={statusTriggerClass}><Status value={checkValue || "check"} /></span>}
             </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
               : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
           </div>}

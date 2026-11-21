@@ -7,7 +7,6 @@ import { Badge } from "./ui/badge";
 
 const numberFormat = new Intl.NumberFormat();
 const scanDateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-const badgeClass = "rounded-[5px] px-2 py-[3px] leading-[17px] font-semibold data-[variant=secondary]:bg-primary/10 data-[variant=secondary]:text-primary";
 
 export function RepositoryQuickView({ repository }: { repository: Repository }) {
   const { id, enabled, settings } = repository;
@@ -20,7 +19,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
   return <div className="mb-6 grid gap-3.5 md:grid-cols-2">
     <QuickViewCard
       title="Reviews" icon={GitPullRequest} to={`/repositories/${id}`}
-      badge={<Badge variant={enabled ? "secondary" : "outline"} className={badgeClass}>
+      badge={<Badge variant={enabled ? "default" : "outline"}>
         {enabled ? "Enabled" : "Paused"}
       </Badge>}
       count={reviews.error ? undefined : reviews.data?.total}
@@ -32,7 +31,7 @@ export function RepositoryQuickView({ repository }: { repository: Repository }) 
     />
     <QuickViewCard
       title="Security" icon={ShieldCheck} to={securityPath}
-      badge={summary && <Badge variant={summary.grade ? "secondary" : "outline"} className={badgeClass}
+      badge={summary && <Badge variant={summary.grade ? "default" : "outline"}
         title={summary.grade && summary.freshness === "outdated" ? "Grade is from an older revision" : undefined}>
         {summary.grade ? `Grade ${summary.grade}` : summary.latest_scan_id ? "Unrated" : "Unscanned"}
         {summary.grade && summary.freshness === "outdated" && <span className="sr-only"> (outdated)</span>}

@@ -107,9 +107,9 @@ export function FilterBar<Key extends string>({ query = "", searchResetKey = 0, 
               <PlusCircle className="size-4 text-muted-foreground" /><span className="shrink-0">{filter.label}</span>
               {active && <>
                 <span className="h-4 border-l" aria-hidden="true" />
-                <Badge variant="secondary" className="rounded-sm px-1.5 sm:hidden">{names.length}</Badge>
+                <Badge variant="secondary" className="px-1.5 sm:hidden">{names.length}</Badge>
                 <span className="hidden min-w-0 gap-1 sm:flex">
-                  {names.length > 2 ? <Badge variant="secondary" className="rounded-sm px-1.5">{names.length} selected</Badge> : names.map((name, index) => <Badge key={filter.values[index]} variant="secondary" className="min-w-0 max-w-40 shrink rounded-sm px-1.5"><span className="truncate">{name}</span></Badge>)}
+                  {names.length > 2 ? <Badge variant="secondary" className="px-1.5">{names.length} selected</Badge> : names.map((name, index) => <Badge key={filter.values[index]} variant="secondary" className="min-w-0 max-w-40 shrink px-1.5"><span className="truncate">{name}</span></Badge>)}
                 </span>
               </>}
             </Button></PopoverTrigger>
