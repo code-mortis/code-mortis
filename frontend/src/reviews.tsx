@@ -91,7 +91,6 @@ import { assessmentExceptions, RunStages } from "./components/run-stages";
 import { assessmentOrderings, findingOrderings, normalizeOrdering, runFindingOrderings } from "./lib/ordering";
 import { useReviewFilters } from "./hooks/use-review-filters";
 import { useUrlTab } from "./hooks/use-url-tab";
-import { SecurityGrade } from "./components/security-grade";
 import { Pagination } from "./components/pagination";
 import { usePagedList } from "./hooks/use-paged-list";
 import { FindingCard, FindingCategory } from "./components/finding-card";
@@ -176,7 +175,6 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
         </>}>
         {selected ? <>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <SecurityGrade showLabel repositoryId={selected.id} summary={selected.security} />
             <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
             <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
           </div>

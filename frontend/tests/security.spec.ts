@@ -518,6 +518,9 @@ test("repository security badges put the state shield before Security and the gr
     page_size: 10, groups: [], total: 0, registered_total: 0, repository_count: 1, repositories: [], authors: [], state_counts: {},
   } }));
   await page.route("**/api/v1/security/repositories/22", (route) => route.fulfill({ json: { repository, summary: current, can_write: true, finding_count: 1, scan_count: 1 } }));
+  await page.goto("/repositories/22?state=open");
+  await expect(page.getByRole("link", { name: "View on GitHub" })).toBeVisible();
+  await expect(page.locator("[data-security-badge]")).toHaveCount(0);
   const cases: { change: Partial<Schema["SecuritySummary"]>; label: string; icon: string }[] = [
     { change: {}, label: "D", icon: "shield-check" },
     { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
@@ -531,7 +534,7 @@ test("repository security badges put the state shield before Security and the gr
     current = { ...summary, ...item.change,
       coverage: item.change.state === "incomplete" ? "incomplete" : "complete",
       freshness: item.change.state === "outdated" ? "outdated" : item.change.state === "unavailable" ? "unavailable" : "current" };
-    await page.goto("/repositories/22?state=open");
+    await page.goto("/security/repositories/22");
     const name = item.label === "Unscanned" ? item.label : `Security ${item.label}`;
     const badge = page.getByRole("link", { name, exact: true });
     await expect(badge).toHaveAttribute("href", "/security/repositories/22");
@@ -564,17 +567,8 @@ test("repository security badges put the state shield before Security and the gr
       await page.screenshot({ path: `/private/tmp/code-mortis-unverified-grade-${info.project.name}.png` });
       await page.keyboard.press("Escape");
       await expect(page.getByRole("tooltip")).toBeHidden();
-      await badge.click();
-      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
-      await expect(page.getByRole("link", { name: "Security D", exact: true }).locator(".lucide-shield-question")).toBeVisible();
     }
     if (index < 3) await badge.screenshot({ path: `/private/tmp/code-mortis-security-label-${index}-${info.project.name}.png` });
-    if (index < 3) {
-      await badge.click();
-      await expect(page).toHaveURL(/\/security\/repositories\/22$/);
-      await expect(page.getByRole("link", { name, exact: true }).locator(`.lucide-${item.icon}`)).toBeVisible();
-      if (item.label === "D") await expect(page.getByRole("link", { name: "Security D", exact: true }).locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
-    }
   }
   expect(writes).toHaveLength(0);
 });
