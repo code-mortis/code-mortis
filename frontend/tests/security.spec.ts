@@ -416,7 +416,8 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toHaveCount(0);
   await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toHaveCount(0);
   const gradeSummary = page.getByRole("region", { name: "Saved grade", exact: true });
-  await expect(gradeSummary.getByText(/Last graded report saved .* for aaaaaaa/)).toBeVisible();
+  await expect(gradeSummary.getByText("Report saved", { exact: true })).toBeVisible();
+  await expect(gradeSummary.locator("code")).toHaveText("aaaaaaa");
   await expect(gradeSummary.locator("time")).toHaveAttribute("datetime", at);
   await expect(page.getByRole("region", { name: "Freshness", exact: true }).getByText(/Freshness checked/)).toBeVisible();
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
@@ -468,14 +469,13 @@ for (const [state, badgeLabel] of [["current", "D"], ["incomplete", "D"], ["outd
     const explanation = { current: "current default-branch commit", incomplete: "latest assessment is incomplete", outdated: "Current changes have not been scanned", not_scanned: "No security scan has been recorded", unavailable: "freshness could not be verified" }[state];
     await expect(page.getByRole("tooltip")).toContainText(explanation);
     if (["outdated", "unavailable"].includes(state)) {
-      await expect(badge.locator(state === "outdated" ? ".lucide-history" : ".lucide-shield-question")).toBeVisible();
       await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
       await expect(page.getByText(state === "outdated" ? "Security Outdated" : "Security Unverified", { exact: true })).toHaveCount(0);
     }
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toBeHidden();
     if (["incomplete", "outdated", "unavailable"].includes(state)) {
-      await expect(page.getByText(/Last graded report saved/)).toBeVisible();
+      await expect(page.getByRole("region", { name: "Saved grade", exact: true }).getByText("Report saved", { exact: true })).toBeVisible();
     }
   });
 }
@@ -512,7 +512,7 @@ for (const incomplete of [false, true]) test(`triage immediately updates the rep
   expect(writes[0].body.state).toBe("false_positive");
 });
 
-test("repository security badges put the state shield before Security and the grade", async ({ page }, info) => {
+test("repository saved grade badges use text without an icon", async ({ page }, info) => {
   const writes = await mock(page);
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
   let current = { ...summary };
@@ -524,14 +524,13 @@ test("repository security badges put the state shield before Security and the gr
   await page.goto("/repositories/22?state=open");
   await expect(page.getByRole("link", { name: "View on GitHub" })).toBeVisible();
   await expect(page.locator("[data-security-badge]")).toHaveCount(0);
-  const cases: { change: Partial<Schema["SecuritySummary"]>; label: string; icon: string }[] = [
-    { change: {}, label: "D", icon: "shield-check" },
-    { change: { state: "incomplete", latest_status: "partial" }, label: "D", icon: "shield-alert" },
-    { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned", icon: "shield-question" },
-    { change: { state: "outdated" }, label: "D", icon: "history" },
-    { change: { state: "unavailable" }, label: "D", icon: "shield-question" },
-    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status, index) => ({ change: { state: "incomplete", latest_status: status }, label: "D",
-      icon: ["shield-x", "shield-off", "shield-ellipsis", "shield-ellipsis", "shield-alert", "shield-alert"][index] })),
+  const cases: { change: Partial<Schema["SecuritySummary"]>; label: string }[] = [
+    { change: {}, label: "D" },
+    { change: { state: "incomplete", latest_status: "partial" }, label: "D" },
+    { change: { state: "not_scanned", grade: null, latest_scan_id: null, latest_status: null }, label: "Unscanned" },
+    { change: { state: "outdated" }, label: "D" },
+    { change: { state: "unavailable" }, label: "D" },
+    ...["failed", "cancelled", "queued", "running", "blocked", "completed"].map((status) => ({ change: { state: "incomplete", latest_status: status }, label: "D" })),
   ];
   for (const [index, item] of cases.entries()) {
     current = { ...summary, ...item.change,
@@ -541,19 +540,10 @@ test("repository security badges put the state shield before Security and the gr
     const name = item.label === "Unscanned" ? item.label : `Security ${item.label}`;
     const badge = page.getByRole("link", { name, exact: true });
     await expect(badge).toHaveAttribute("href", "/security/repositories/22");
-    await expect(badge.locator("svg")).toHaveCount(1);
-    await expect(badge.locator(`.lucide-${item.icon}`)).toBeVisible();
+    await expect(badge.locator("svg")).toHaveCount(0);
     if (item.label === "D") await expect(badge.locator('[data-slot="badge"]')).toHaveClass(/text-red-700/);
     else await expect(badge.locator('[data-slot="badge"]')).not.toHaveClass(/text-(red|amber|emerald)-/);
-    const beforeText = await badge.evaluate((element) => {
-      const content = element.querySelector('[data-slot="badge"]')!;
-      const text = [...content.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())!;
-      const range = document.createRange(); range.selectNodeContents(text);
-      const icon = content.querySelector("svg")!.getBoundingClientRect();
-      return icon.right <= range.getBoundingClientRect().left;
-    });
-    expect(beforeText).toBe(true);
-    if (item.icon === "history") {
+    if (item.change.state === "outdated") {
       await badge.hover();
       await expect(page.getByRole("tooltip")).toContainText("The report covers an earlier commit or default branch.");
       await expect(page.getByRole("tooltip")).toContainText("Grade D:");
@@ -1168,8 +1158,9 @@ for (const head of ["b".repeat(40), null]) test(`repository freshness shows the 
   const state = head ? "outdated" : "unavailable";
   const writes = await mock(page, { summary: { state, freshness: state, head_sha: head } });
   await page.goto("/security/repositories/22");
-  const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
-  const freshness = page.getByRole("region", { name: "Freshness", exact: true });
+  const activity = page.getByRole("region", { name: "Scan activity", exact: true });
+  const latest = activity.getByRole("region", { name: "Latest security scan", exact: true });
+  const freshness = activity.getByRole("region", { name: "Freshness", exact: true });
   await expect(latest.locator("time")).toHaveAttribute("datetime", at);
   await expect(latest.locator("code")).toHaveCount(0);
   await expect(freshness.locator("time")).toHaveAttribute("datetime", at);
@@ -1178,7 +1169,7 @@ for (const head of ["b".repeat(40), null]) test(`repository freshness shows the 
     await expect(freshness.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
     await expect(freshness.locator("code")).toHaveAttribute("title", head);
     await expect(freshness.locator("code")).toHaveCSS("font-size", "12px");
-    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("aligned-security-header.png") });
+    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("security-status-and-activity.png") });
   } else await expect(freshness.locator("code")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);

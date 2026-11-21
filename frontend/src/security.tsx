@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { usePagedList } from "./hooks/use-paged-list";
 import { useActivityRead } from "./hooks/use-activity-read";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, TriangleAlert } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot, CircleSlash, CircleX, ClipboardCheck, Download, FileCode2, GitBranch, GitCommitHorizontal, Globe, LockKeyhole, MoreHorizontal, Pause, Play, RefreshCw, Settings2, Shield, ShieldCheck, TriangleAlert } from "lucide-react";
 import { api, ApiError, useAction, useApi, type Connection, type Schema } from "./api";
 import { Code } from "./components/code";
 import { CoverageGroup } from "./components/coverage-group";
@@ -16,7 +16,7 @@ import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/or
 import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
-import { RepositoryHeader, RepositoryHeaderFact, repositoryHeaderLink } from "./components/repository-header";
+import { RepositoryActivityCard, RepositoryActivityRow, RepositoryHeader, RepositoryStatusCard, repositoryActivityLink } from "./components/repository-header";
 import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
 import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
@@ -322,24 +322,28 @@ export function SecurityRepository({ user }: { user: User }) {
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
     </>}>
-      <RepositoryHeaderFact label="Saved grade" detail={summary.graded_at ? <>
-        Last graded report saved <time dateTime={summary.graded_at}>{date(summary.graded_at)}</time>
-        {summary.grade_sha && <> for <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code></>}
-      </> : "A finished report establishes the first grade."}>
-        <SecurityGrade showLabel repositoryId={repo.id} summary={summary} />
+      <RepositoryStatusCard label="Saved grade" icon={ShieldCheck}
+        badge={<SecurityGrade showLabel showIcon={false} repositoryId={repo.id} summary={summary} />}
+        details={summary.graded_at ? [
+          ["Report saved", <time dateTime={summary.graded_at}>{date(summary.graded_at)}</time>],
+          ["Graded commit", summary.grade_sha ? <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code> : null],
+        ] : undefined}
+        note={summary.graded_at ? undefined : "A finished report establishes the first grade."}>
         {hasScan && <span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span>}
-      </RepositoryHeaderFact>
-      {hasScan && <RepositoryHeaderFact label="Latest scan" regionLabel="Latest security scan"
-        detail={summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}>
-        <SecurityStatus value={summary.latest_status ?? "unknown"} />
-        <Link className={repositoryHeaderLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>
-      </RepositoryHeaderFact>}
-      {(hasScan || summary.checked_at) && <RepositoryHeaderFact label="Freshness" detail={(summary.checked_at || currentHead) && <>
-        {summary.checked_at && <div>Freshness checked <time dateTime={summary.checked_at}>{date(summary.checked_at)}</time></div>}
-        {currentHead && <div>Current commit · <code title={currentHead}>{currentHead.slice(0, 7)}</code></div>}
-      </>}>
-        {hasScan && <span aria-label="Scan freshness">{summary.freshness === "outdated" ? <Status value="outdated" label={freshness} /> : freshness}</span>}
-      </RepositoryHeaderFact>}
+      </RepositoryStatusCard>
+      {(hasScan || summary.checked_at) && <RepositoryActivityCard label="Scan activity">
+        {hasScan && <RepositoryActivityRow label="Latest scan" regionLabel="Latest security scan"
+          action={<Link className={repositoryActivityLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}>
+          <SecurityStatus value={summary.latest_status ?? "unknown"} />
+          {summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}
+        </RepositoryActivityRow>}
+        <RepositoryActivityRow label="Freshness" detail={(summary.checked_at || currentHead) && <>
+          {summary.checked_at && <div>Freshness checked <time dateTime={summary.checked_at}>{date(summary.checked_at)}</time></div>}
+          {currentHead && <div>Current commit · <code title={currentHead}>{currentHead.slice(0, 7)}</code></div>}
+        </>}>
+          {hasScan && <span aria-label="Scan freshness">{summary.freshness === "outdated" ? <Status value="outdated" label={freshness} /> : freshness}</span>}
+        </RepositoryActivityRow>
+      </RepositoryActivityCard>}
     </RepositoryHeader>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security">
