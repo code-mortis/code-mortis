@@ -129,6 +129,7 @@ export function PageTitle({
   headingProps,
   children,
   actions,
+  footer,
   className,
 }: {
   title: ReactNode;
@@ -136,6 +137,7 @@ export function PageTitle({
   headingProps?: ComponentProps<"h1">;
   children?: ReactNode;
   actions?: ReactNode;
+  footer?: ReactNode;
   className?: string;
 }) {
   return (
@@ -154,6 +156,7 @@ export function PageTitle({
         </div>
         {actions && <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
+      {footer}
     </header>
   );
 }

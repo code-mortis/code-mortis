@@ -1194,7 +1194,7 @@ test("repository activity and directory failures refresh without stale navigatio
   await expect(page.getByRole("combobox", { name: "Repository: payments", exact: true })).toBeVisible();
 });
 
-test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }) => {
+test("repository header shows successful GitHub checks and the reviewed PR commit", async ({ page }, info) => {
   await mock(page);
   const checked = "2026-11-18T10:30:00Z";
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{
@@ -1206,11 +1206,20 @@ test("repository header shows successful GitHub checks and the reviewed PR commi
   }] }));
   await page.goto("/repositories/22?q=148&state=open&ordering=title");
   const header = page.locator('[data-slot="page-title"]');
-  await expect(header.getByText(/Last successful GitHub PR check/)).toBeVisible();
-  await expect(header.locator("time")).toHaveAttribute("datetime", checked);
-  const review = header.getByRole("link", { name: "Last completed review · PR #148 · ccccccc", exact: true });
+  const summary = header.locator('[data-slot="repository-header-summary"]');
+  const policy = summary.getByRole("region", { name: "Review configuration" });
+  const latest = summary.getByRole("region", { name: "Last completed review", exact: true });
+  const check = summary.getByRole("region", { name: "Last successful GitHub PR check" });
+  await expect(policy).toContainText("Automatic reviews");
+  await expect(check.locator("time")).toHaveAttribute("datetime", checked);
+  await expect(latest.locator("code")).toHaveText("ccccccc");
+  const review = latest.getByRole("link", { name: "Last completed review for PR #148", exact: true });
   await expect(review).toHaveAttribute("href", "/runs/run");
   await expect(review).toHaveAttribute("title", `Reviewed commit ${"c".repeat(40)}`);
+  await expect(header.getByRole("link", { name: "View on GitHub" })).toHaveAttribute("href", `https://github.com/${repo.full_name}`);
+  const columns = await summary.locator(":scope > div").evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(" ").length);
+  expect(columns).toBe(info.project.name === "mobile" ? 1 : 3);
+  await header.screenshot({ path: info.outputPath("aligned-pull-requests-header.png") });
   const returnUrl = page.url();
   await review.click();
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();

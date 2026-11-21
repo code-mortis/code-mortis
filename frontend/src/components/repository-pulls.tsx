@@ -68,7 +68,7 @@ export function RepositoryPulls({ repositoryId, admin }: { repositoryId: number;
   const filtered = params.get("state") !== "all" || ["q", "review", "author", "findings", "visibility"].some((key) => params.has(key));
 
   return <section aria-labelledby="repository-pulls-heading">
-    <p role="status" className="mb-4 text-xs tabular-nums text-muted-foreground">{rows ? <>
+    <p role="status" className="sr-only">{rows ? <>
       {filtered ? `${rows.total} of ${rows.registered_total}` : rows.total} pull {rows.total === 1 ? "request" : "requests"}
     </> : pulls.error ? "Pull requests unavailable" : "Loading pull requests…"}</p>
     <div className="mb-4"><InboxFilters repository params={params} data={rows} onChange={change} onSearch={search} /></div>

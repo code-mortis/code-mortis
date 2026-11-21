@@ -16,6 +16,7 @@ import { findingOrderings, normalizeOrdering, snapshotOrderings } from "./lib/or
 import { Pagination } from "./components/pagination";
 import { FindingCard, FindingCategory } from "./components/finding-card";
 import { SearchSelect } from "./components/search-select";
+import { RepositoryHeader, RepositoryHeaderFact, repositoryHeaderLink } from "./components/repository-header";
 import { SecurityGrade, SecurityGradeShield, securityCoverage, securityFreshness, securityStates } from "./components/security-grade";
 import { StageCard } from "./components/stage-card";
 import { Button } from "./components/ui/button";
@@ -313,26 +314,34 @@ export function SecurityRepository({ user }: { user: User }) {
   if (query.error || !query.data) return <ErrorNotice error={query.error || "Repository unavailable."} />;
   const { repository: repo, summary } = query.data;
   const stateCounts = query.data.finding_state_counts;
-  const Visibility = repo.private ? LockKeyhole : Globe;
+  const hasScan = Boolean(summary.latest_scan_id);
+  const freshness = securityFreshness[summary.freshness ?? "unavailable"];
+  const currentHead = hasScan ? summary.head_sha : null;
   return <>
-    <PageTitle title="Security" actions={query.data.can_write !== false && <div className="flex flex-wrap gap-2">
+    <RepositoryHeader title="Security" repository={repo} actions={query.data.can_write !== false && <>
       <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={query.data.finding_count === 0} onClick={() => { setQueuedIssues(0); setCreatingIssues(true); }}>Create GitHub issues</Button>
       <Button size="sm" className="min-h-11 sm:min-h-8" disabled={active(summary.latest_status ?? "")} onClick={() => setScanning(true)}><Play aria-hidden="true" className="size-3.5" />Run scan</Button>
-    </div>}>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground"><SecurityGrade showLabel repositoryId={repo.id} summary={summary} />{summary.latest_scan_id && <><span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span><span aria-label="Scan freshness">{securityFreshness[summary.freshness ?? "unavailable"]}</span></>}<span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{repo.private ? "Private repository" : "Public repository"}</span><a className={`inline-flex min-h-6 items-center gap-1 ${metadataLink}`} href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a></div>
-      <p className="mt-2 text-xs text-muted-foreground">{summary.graded_at ? `Last graded report saved ${date(summary.graded_at)} for ${summary.grade_sha?.slice(0, 7)}.` : "A finished report establishes the first grade."}{summary.checked_at ? ` Freshness checked ${date(summary.checked_at)}.` : ""}</p>
-    </PageTitle>
+    </>}>
+      <RepositoryHeaderFact label="Saved grade" detail={summary.graded_at ? <>
+        Last graded report saved <time dateTime={summary.graded_at}>{date(summary.graded_at)}</time>
+        {summary.grade_sha && <> for <code title={summary.grade_sha}>{summary.grade_sha.slice(0, 7)}</code></>}
+      </> : "A finished report establishes the first grade."}>
+        <SecurityGrade showLabel repositoryId={repo.id} summary={summary} />
+        {hasScan && <span aria-label="Scan coverage">{securityCoverage[summary.coverage ?? "incomplete"]}</span>}
+      </RepositoryHeaderFact>
+      {hasScan && <RepositoryHeaderFact label="Latest scan" regionLabel="Latest security scan"
+        detail={summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}>
+        <SecurityStatus value={summary.latest_status ?? "unknown"} />
+        <Link className={repositoryHeaderLink} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>
+      </RepositoryHeaderFact>}
+      {(hasScan || summary.checked_at) && <RepositoryHeaderFact label="Freshness" detail={(summary.checked_at || currentHead) && <>
+        {summary.checked_at && <div>Freshness checked <time dateTime={summary.checked_at}>{date(summary.checked_at)}</time></div>}
+        {currentHead && <div>Current commit · <code title={currentHead}>{currentHead.slice(0, 7)}</code></div>}
+      </>}>
+        {hasScan && <span aria-label="Scan freshness">{summary.freshness === "outdated" ? <Status value="outdated" label={freshness} /> : freshness}</span>}
+      </RepositoryHeaderFact>}
+    </RepositoryHeader>
     {queuedIssues > 0 && <p role="status" className="mb-4 text-sm">{queuedIssues} GitHub {queuedIssues === 1 ? "issue" : "issues"} queued. Publication status is shown on each finding.</p>}
-    {summary.latest_scan_id && <section aria-label="Latest security scan" className="mb-6 border-t pt-4">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="font-medium">Latest scan</span><SecurityStatus value={summary.latest_status ?? "unknown"} />
-        <Link className={`inline-flex min-h-6 items-center gap-1 text-xs ${metadataLink}`} to={`/security/scans/${summary.latest_scan_id}`}>Inspect scan<ChevronRight aria-hidden="true" className="size-3.5" /></Link>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        {summary.latest_at && <time dateTime={summary.latest_at}>{date(summary.latest_at)}</time>}
-        {summary.head_sha && <span>Current commit · <code title={summary.head_sha}>{summary.head_sha.slice(0, 7)}</code></span>}
-      </div>
-    </section>}
     <Tabs value={tab} onValueChange={setTab}><TabsList variant="page" aria-label="Repository security" className="mb-4">
       {findingViews.map((view) => <TabsTrigger key={view.value} value={view.value}>{view.name} <span className="text-xs font-normal tabular-nums text-muted-foreground">{stateCounts?.[view.state] ?? 0}</span></TabsTrigger>)}
       <TabsTrigger value="history">Scan history <span className="text-xs font-normal tabular-nums text-muted-foreground">{query.data.scan_count ?? "…"}</span></TabsTrigger></TabsList>

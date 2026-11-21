@@ -24,8 +24,6 @@ import {
   ArrowUpRight,
   ArrowLeft,
   ClipboardCheck,
-  LockKeyhole,
-  Globe,
   CircleCheck,
   CircleDot,
   CircleSlash,
@@ -51,6 +49,7 @@ import { Badge } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
 import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
+import { RepositoryHeader, RepositoryHeaderFact, repositoryHeaderLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
@@ -156,46 +155,41 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;
   const syncPending = syncHere && action.isPending;
-  const Visibility = selected?.private ? LockKeyhole : Globe;
   const latestReview = !repos.error ? selected?.latest_completed_review : null;
   const lastCheck = !repos.error ? selected?.last_pr_sync_check_at : null;
+  const reviewInProgress = !repos.error && selected?.has_running_review;
   return <>
-    <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" title={selected ? "Pull requests" : "Repositories"}
-        headingProps={selected ? { id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } } : undefined}
-        actions={selected && (
-          <Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
-            onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
-          })}>
-            <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
-          </Button>
-        )}>
-        {selected ? <>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5"><Visibility aria-hidden="true" className="size-3.5" />{selected.private ? "Private repository" : "Public repository"}</span>
-            <a href={`https://github.com/${selected.full_name}`} target="_blank" rel="noreferrer" className="inline-flex min-h-6 items-center gap-1 rounded-sm outline-offset-2 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring">View on GitHub<ArrowUpRight aria-hidden="true" className="size-3.5" /></a>
-          </div>
-          {(lastCheck || latestReview || (!repos.error && selected.has_running_review)) && <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {lastCheck && <span>Last successful GitHub PR check · <time dateTime={lastCheck}>{date(lastCheck)}</time></span>}
-            {latestReview && <Link className="rounded-sm underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-              to={`/runs/${latestReview.run_id}`} state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
-              title={`Reviewed commit ${latestReview.head_sha}`}>
-              Last completed review · PR #{latestReview.number} · <code>{latestReview.head_sha.slice(0, 7)}</code>
-            </Link>}
-            {!repos.error && selected.has_running_review && <span>Review in progress</span>}
-          </p>}
-        </> : "Follow each pull request from first review to final resolution."}
-      </PageTitle>
-      {selected && <section aria-label="Review configuration" className="mt-6 border-t pt-4 text-xs">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <div className="flex items-center gap-2"><span className="text-muted-foreground">Reviews</span><Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Enabled" : "Paused"} /></div>
-          {selected.enabled ? <>
-            <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>
-            <span className="text-muted-foreground">{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</span>
-          </> : <span className="text-muted-foreground">{admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}</span>}
-        </div>
-      </section>}
-    </div>
+    {selected ? <RepositoryHeader title="Pull requests" repository={selected}
+      headingProps={{ id: "repository-pulls-heading", tabIndex: -1, ...{ "data-pull-list-focus": true } }}
+      actions={<Button variant="outline" size="sm" className="min-h-11 sm:min-h-8" disabled={syncPending} onClick={() => action.mutate({ path: syncPath }, {
+        onSuccess: () => toast.success("Sync queued", { description: "Pull requests will refresh when it finishes." }),
+      })}>
+        <RefreshCw aria-hidden="true" className={`size-4 ${syncPending ? "motion-safe:animate-spin" : ""}`} />{syncPending ? "Queuing sync…" : "Sync"}
+      </Button>}
+    >
+      <RepositoryHeaderFact label="Review policy" regionLabel="Review configuration" detail={selected.enabled
+        ? <>{selected.settings.max_files == null ? "No file limit" : `${selected.settings.max_files} files per review`} · {selected.settings.language} comments</>
+        : admin ? "Choose an AI connection in Repository settings to enable them." : "Your administrator can enable them."}>
+        <Status value={selected.enabled ? "connected" : "paused"} label={selected.enabled ? "Reviews enabled" : "Paused"} />
+        {selected.enabled && <span>{selected.settings.automatic ? "Automatic reviews" : "Manual reviews only"}</span>}
+      </RepositoryHeaderFact>
+      {(latestReview || reviewInProgress) && <RepositoryHeaderFact
+        label={latestReview ? "Last completed review" : "Review activity"}
+        detail={reviewInProgress && "Review in progress"}
+      >
+        {latestReview && <>
+          <Link className={repositoryHeaderLink} to={`/runs/${latestReview.run_id}`}
+            state={{ inbox: getInboxReturn(location.state), repository: returnPath }}
+            aria-label={`Last completed review for PR #${latestReview.number}`} title={`Reviewed commit ${latestReview.head_sha}`}>
+            PR #{latestReview.number}<ChevronRight aria-hidden="true" className="size-3.5" />
+          </Link>
+          <code className="text-xs text-muted-foreground">{latestReview.head_sha.slice(0, 7)}</code>
+        </>}
+      </RepositoryHeaderFact>}
+      {lastCheck && <RepositoryHeaderFact label="Last successful GitHub PR check">
+        <time dateTime={lastCheck}>{date(lastCheck)}</time>
+      </RepositoryHeaderFact>}
+    </RepositoryHeader> : <PageTitle title="Repositories">Follow each pull request from first review to final resolution.</PageTitle>}
     <ErrorNotice error={repos.error || (syncHere && action.error)} />
     {repos.error && <Button variant="outline" className="mb-4" onClick={() => repos.refetch()}>Retry repositories</Button>}
     {requested && !selected && <Empty title="Repository unavailable">

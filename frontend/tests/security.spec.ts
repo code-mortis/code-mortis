@@ -415,7 +415,10 @@ for (const grade of ["A", "D"]) test(`finished reports show grade ${grade} witho
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await expect(page.getByText(/Based on confirmed findings; coverage is incomplete/)).toHaveCount(0);
   await expect(page.getByText(new RegExp(`^Grade ${grade} saved`))).toHaveCount(0);
-  await expect(page.getByText(/^Last graded report saved .* for aaaaaaa\. Freshness checked/)).toBeVisible();
+  const gradeSummary = page.getByRole("region", { name: "Saved grade", exact: true });
+  await expect(gradeSummary.getByText(/Last graded report saved .* for aaaaaaa/)).toBeVisible();
+  await expect(gradeSummary.locator("time")).toHaveAttribute("datetime", at);
+  await expect(page.getByRole("region", { name: "Freshness", exact: true }).getByText(/Freshness checked/)).toBeVisible();
   await expect(page.getByRole("link", { name: `Security ${grade}`, exact: true })).toBeVisible();
   await page.screenshot({ path: `/private/tmp/code-mortis-repository-header-${grade}-${info.project.name}.png`, fullPage: true });
   await page.route("**/api/v1/security/repositories/22/scans?**", (route) => route.fulfill({ json: {
@@ -1160,18 +1163,23 @@ for (const status of ["queued", "running", "blocked", "completed", "partial", "f
   });
 }
 
-for (const head of ["b".repeat(40), null]) test(`latest scan metadata uses the current commit when ${head ? "known" : "unavailable"}`, async ({ page }, info) => {
+for (const head of ["b".repeat(40), null]) test(`repository freshness shows the current commit when ${head ? "known" : "unavailable"}`, async ({ page }, info) => {
   if (info.project.name === "mobile") await page.addInitScript(() => localStorage.setItem("theme", "dark"));
-  const writes = await mock(page, { summary: { state: head ? "outdated" : "unavailable", head_sha: head } });
+  const state = head ? "outdated" : "unavailable";
+  const writes = await mock(page, { summary: { state, freshness: state, head_sha: head } });
   await page.goto("/security/repositories/22");
   const latest = page.getByRole("region", { name: "Latest security scan", exact: true });
+  const freshness = page.getByRole("region", { name: "Freshness", exact: true });
   await expect(latest.locator("time")).toHaveAttribute("datetime", at);
+  await expect(latest.locator("code")).toHaveCount(0);
+  await expect(freshness.locator("time")).toHaveAttribute("datetime", at);
+  await expect(freshness.getByLabel("Scan freshness")).toHaveText(head ? "Outdated scan" : "Freshness unverified");
   if (head) {
-    await expect(latest.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
-    await expect(latest.locator("code")).toHaveAttribute("title", head);
-    await expect(latest.locator("code")).toHaveCSS("font-size", "12px");
-    await latest.screenshot({ path: `/private/tmp/code-mortis-latest-scan-commit-${info.project.name}.png` });
-  } else await expect(latest.locator("code")).toHaveCount(0);
+    await expect(freshness.getByText("Current commit · bbbbbbb", { exact: true })).toBeVisible();
+    await expect(freshness.locator("code")).toHaveAttribute("title", head);
+    await expect(freshness.locator("code")).toHaveCSS("font-size", "12px");
+    await page.locator('[data-slot="page-title"]').screenshot({ path: info.outputPath("aligned-security-header.png") });
+  } else await expect(freshness.locator("code")).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(writes).toHaveLength(0);
 });
