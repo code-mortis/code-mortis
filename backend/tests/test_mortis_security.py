@@ -169,7 +169,7 @@ def scan_workflow(seed, github_stub, tmp_path, monkeypatch):
     item.read = lambda path, sha=None: "unsafe provider-secret" if path == "app.py" else "resolved package"
     item.renamed = lambda sha, path: path
     monkeypatch.setattr(engine, "snapshot", lambda *a: nullcontext(item))
-    state = {"calls": [], "stale": False, "usage": 12, "after_response": None, "item": item}
+    state = {"calls": [], "stale": False, "usage": 12, "after_response": None, "item": item, "send": llm.send}
     monkeypatch.setattr(engine, "trivy", lambda *a, **kwargs: {"findings": [], "targets": {},
         "problems": ["Advisory database is stale"] if state["stale"] else [], "metadata": {"database_fresh": not state["stale"]}})
     with transaction() as db:

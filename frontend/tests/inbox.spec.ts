@@ -429,8 +429,8 @@ test("empty workspace, no matches, and legacy repository links", async ({ page }
   await expect(page.getByRole("heading", { name: "Your inbox is empty" })).toBeVisible();
   await page.goto("/?repo=22&configure=limits");
   await expect(page).toHaveURL(/\/repositories\/22\/settings\?tab=limits/);
-  await expect(page.getByRole("form", { name: "Repository configuration" })).toBeVisible();
-  await expect(page.getByLabel("Timeout (seconds)", { exact: true })).toBeVisible();
+  await expect(page.getByRole("form", { name: "Repository settings" })).toBeVisible();
+  await expect(page.getByLabel("Time limit (seconds)", { exact: true })).toBeVisible();
 });
 
 test("merged running reviews stay visible once and respect state filters after finishing", async ({ page }) => {
@@ -548,7 +548,7 @@ test("inbox visual states in light and dark", async ({ page }, info) => {
   await expect(page.getByRole("link", { name: /Bound model discovery/ })).toBeVisible();
   const list = page.getByRole("region", { name: "Pull requests", exact: true });
   await expect(list.locator('[data-slot=badge]').filter({ hasText: /^open$/ })).toHaveCount(6);
-  await expect(list.getByRole("link", { name: /Add repository context/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("completed", { exact: true })).toBeVisible();
+  await expect(list.getByRole("link", { name: /Add repository context/ }).locator("xpath=ancestor::*[@data-pull-row]").getByText("Completed", { exact: true })).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
   if (info.project.name === "mobile") {
     const search = await page.getByRole("textbox", { name: "Search pull requests", exact: true }).boundingBox();

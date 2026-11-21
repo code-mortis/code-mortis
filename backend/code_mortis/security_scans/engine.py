@@ -28,6 +28,7 @@ from code_mortis.schemas.security import (
     SecurityAnalysisSelection,
     SecurityAssessment,
     SecurityAssessmentSelection,
+    SecurityCitation,
     SecurityFix,
     SecurityFixSelection,
 )
@@ -88,7 +89,7 @@ def redacted_context(item, value, *, structural=False):
 
 
 class Snapshot:
-    def __init__(self, root, sha, env, stopped):
+    def __init__(self, root, sha, env, stopped, *, ai_policy=None):
         self.root, self.sha, self.env, self.stopped = root, sha, env, stopped
         self.git = root / "git"
         self.key = settings().encryption_key.encode()
@@ -99,6 +100,7 @@ class Snapshot:
         self.secret_rules = []
         self.secret_lines = {}
         self.renames = {}
+        self.ai_policy = ai_policy
 
     def read(self, path, sha=None):
         return git_source.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
@@ -109,7 +111,7 @@ class Snapshot:
     def source(self, path, sha=None):
         if any(part in PROTECTED for part in PurePosixPath(path).parts) or PurePosixPath(path).name in INSTRUCTION_FILES:
             raise ValueError("Repository agent instructions and MCP configuration are not supplied to AI.")
-        if file_policy.excluded(path):
+        if file_policy.excluded(path, self.ai_policy):
             raise ValueError("This source is excluded by repository policy.")
         text = self.redact(self.read(path, sha))
         lines = text.splitlines()
@@ -152,13 +154,15 @@ class Snapshot:
             self.inventory[path] = {"sha": blob, "hash": digest(source), "lines": len(source.splitlines()),
                                     "code": (PurePosixPath(path).suffix.lower() in CODE_EXTENSIONS
                                              or PurePosixPath(path).name.lower() in {"dockerfile", "containerfile"})
-                                    and not file_policy.excluded(path)
+                                    and not file_policy.excluded(path, self.ai_policy)
                                     and not any(p in PROTECTED for p in PurePosixPath(path).parts)
                                     and PurePosixPath(path).name not in INSTRUCTION_FILES}
             name = PurePosixPath(path).name
             if ".generated." in name or ".min." in name or name.endswith((".pb.go", "_pb2.py", "_pb2_grpc.py")) or name in {"package-lock.json", "npm-shrinkwrap.json"}:
                 self.inventory[path]["code"] = False
                 self.excluded.append({"path": path, "reason": "Generated code or resolved dependency data is checked by Trivy, not AI"})
+            elif file_policy.additionally_excluded(path, self.ai_policy):
+                self.excluded.append({"path": path, "reason": "Excluded from AI analysis by repository settings; Trivy may inspect it"})
             elif not self.inventory[path]["code"]:
                 self.excluded.append({"path": path, "reason": "No AI analysis for this file type or protected instruction path; Trivy may inspect it as data"})
 
@@ -176,12 +180,15 @@ class Snapshot:
             self.renamed(original, next(iter(paths)))
             for before, after in self.renames[original].items():
                 if (not _supported_path(before) or not _supported_path(after)
-                        or file_policy.excluded(before) or file_policy.excluded(after)):
+                        or file_policy.excluded(before, self.ai_policy) or file_policy.excluded(after, self.ai_policy)):
                     paths.difference_update((before, after))
-            paths = sorted(path for path in paths if not file_policy.excluded(path))
+            paths = {path for path in paths if not file_policy.excluded(path, self.ai_policy)}
+            # Git literal pathspecs also select descendants of a file replaced by a directory.
+            for denied in changed_paths - paths:
+                paths.difference_update(str(parent) for parent in PurePosixPath(denied).parents)
             if not paths:
                 return ""
-            scope = ["--", *(f":(literal){path}" for path in paths)]
+            scope = ["--", *(f":(literal){path}" for path in sorted(paths))]
         return self.redact(git_source.git(self.git, self.env, "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
                                    original, self.sha, *scope, stopped=self.stopped))
 
@@ -209,12 +216,12 @@ class Snapshot:
 
 
 @contextmanager
-def snapshot(full_name, sha, previous_shas, token, stopped):
+def snapshot(full_name, sha, previous_shas, token, stopped, *, ai_policy=None):
     safe_repo_name(full_name)
     if any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in [sha, *previous_shas]):
         raise ValueError("Security scan commit references are invalid.")
     with tempfile.TemporaryDirectory(prefix="mortis-security-", dir=settings().work_dir) as temp:
-        item = Snapshot(Path(temp), sha, process.child_environment(), stopped)
+        item = Snapshot(Path(temp), sha, process.child_environment(), stopped, ai_policy=ai_policy)
         item.git.mkdir()
         git_source.git(item.git, item.env, "init", "--quiet", stopped=stopped)
         authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
@@ -355,19 +362,53 @@ def validate_citations(evidence, sources, *, field="evidence", recoveries=None):
         raise verification.ResultValidationError(str(exc), exc.feedback) from exc
 
 
+def historical_evidence(item, finding):
+    # Older model prose may have drawn on uncited files outside the new policy.
+    evidence = finding.get("evidence", {})
+    sha = evidence.get("source_sha") if isinstance(evidence, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None
+    try:
+        citations = [SecurityCitation.model_validate(citation, strict=True).model_dump()
+                     for citation in evidence.get("evidence", [])]
+        if not citations or any(citation["revision"] != "current" for citation in citations):
+            return None
+        sources = {path: item.source(path, sha) for path in {citation["path"] for citation in citations}}
+        validate_citations(citations, {"current": sources})
+    except TimeoutError:
+        # A source read can time out independently of the scan.
+        engine_stopped(item.stopped)
+        return None
+    except (ValueError, KeyError, TypeError):
+        return None
+    return {**{key: finding[key] for key in ("id", "state", "kind", "severity", "path") if key in finding},
+            "evidence": {"source_sha": sha, "evidence": citations}}
+
+
 def ask(item, connection, credentials, task, context, budget, timeout, stopped, identity,
         *, infer, source_packing=None, select_packing=None,
         output_token_policy=analysis.OUTPUT_TOKEN_POLICY, navigation=None, select_navigation=None,
-        record_sources=None, record_required_paths=None):
+        record_sources=None, record_required_paths=None, effort="high", max_output_tokens=None):
     require_shared(connection)
     deadline = time.monotonic() + timeout if timeout is not None else None
-    denied = payload.excluded_source_paths({"sources": context.get("sources", {}), "assigned_path": context.get("assigned_path")})
+    ai_policy = getattr(item, "ai_policy", None)
+    denied = payload.excluded_source_paths({"sources": context.get("sources", {}), "assigned_path": context.get("assigned_path")}, ai_policy)
+    if ai_policy:
+        denied = denied or payload.excluded_source_paths(context, ai_policy, additional_only=True)
     if denied:
         redacted_context(item, denied, structural=True)
         raise verification.VerificationOutputError("Security source is excluded by repository policy; this task was withheld.",
             {"tokens": 0}, feedback={"kind": "context_limit", "reason": "Required source is excluded by repository policy"})
+    if ai_policy and "history" in context:
+        context = {**context, "history": [entry for old in context["history"] if (entry := historical_evidence(item, old))]}
+    if ai_policy and "finding" in context:
+        finding = historical_evidence(item, context["finding"])
+        if finding is None:
+            raise verification.VerificationOutputError("The original finding has no revalidated evidence within the AI scan scope.",
+                {"tokens": 0}, feedback={"kind": "context_limit", "reason": "Required original evidence is unavailable"})
+        context = {**context, "finding": finding}
     context = redacted_context(item, {**context, "available_paths": sorted(path for path in item.inventory
-        if not file_policy.excluded(path) and redacted_context(item, path) == path)})
+        if not file_policy.excluded(path, ai_policy) and redacted_context(item, path) == path)})
     model, selection_model = {"analysis": (SecurityAnalysis, SecurityAnalysisSelection),
         "assessment": (SecurityAssessment, SecurityAssessmentSelection), "verification": (SecurityFix, SecurityFixSelection)}[task]
     schema = model_schema(selection_model)
@@ -436,7 +477,7 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
             navigation = redacted_context(item, navigation)
             if select_navigation is not None:
                 navigation = select_navigation(navigation)
-            if payload.excluded_source_paths(navigation):
+            if payload.excluded_source_paths(navigation, ai_policy):
                 raise verification.VerificationOutputError("Saved security navigation includes excluded source; retry the security scan.",
                     {"tokens": 0}, feedback={"kind": "context_limit", "reason": "Saved source navigation violates repository policy"})
         except ReviewStopped as exc:
@@ -459,8 +500,8 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                     request = Request(instructions=review_context.sanitize(instructions, credentials, stopped),
                         messages=[Message(role="user", content=verification.evidence_bundle(packed))],
                         output_schema=schema_for_transport(schema),
-                        max_output_tokens=analysis.output_token_limit(output_token_policy), effort="high")
-                    required = llm.reservation(connection, request) + (max(1, request.max_output_tokens)
+                        max_output_tokens=max_output_tokens or analysis.output_token_limit(output_token_policy), effort=effort)
+                    required = llm.reservation(connection, request) + (1
                         if output_token_policy == analysis.WORKFLOW_OUTPUT_POLICY else request.max_output_tokens)
                     selected = source_packing is True or budget is None or required <= budget
             except (ValueError, verification.VerificationOutputError):
@@ -599,6 +640,9 @@ def ask(item, connection, credentials, task, context, budget, timeout, stopped, 
                 raise
         if record_required_paths is not None:
             record_required_paths(result["required_paths"])
+        if ai_policy and any(file_policy.additionally_excluded(path, ai_policy) for path in result["required_paths"]):
+            reason = "Required supporting source is excluded from AI analysis by repository settings."
+            break
         if attempt == 3:
             reason = "Additional source was still required after four evidence passes."
             break

@@ -8,7 +8,9 @@ import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuButton,
 
 export function SidebarToggle() {
   const { isMobile, open, openMobile } = useSidebar();
-  return <SidebarTrigger className="size-9" aria-label={isMobile ? "Open navigation" : open ? "Hide sidebar" : "Show sidebar"}
+  return <SidebarTrigger
+    className={`size-9 lg:fixed lg:top-[4.75rem] lg:z-10 lg:size-7 lg:bg-background lg:transition-[left] lg:duration-200 lg:ease-linear motion-reduce:transition-none ${open ? "lg:left-[calc(var(--sidebar-width)+0.125rem)]" : "lg:left-0.5"}`}
+    aria-label={isMobile ? "Open navigation" : open ? "Hide sidebar" : "Show sidebar"}
     aria-expanded={isMobile ? openMobile : open} aria-controls="workspace-navigation" />;
 }
 

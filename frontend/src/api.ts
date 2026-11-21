@@ -25,10 +25,12 @@ export async function api<T>(
   body?: unknown,
   headers?: HeadersInit,
   signal?: AbortSignal,
+  keepalive?: boolean,
 ): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     method,
     signal,
+    keepalive,
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",

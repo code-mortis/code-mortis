@@ -62,7 +62,7 @@ if hasattr(os, "register_at_fork"):
 atexit.register(close_http_client)
 
 
-def visible_repositories(db: Session, user: User) -> list[Repository]:
+def visible_repositories(db: Session, user: User, *, fail_on_throttle: bool = False) -> list[Repository]:
     token = user_token(db, user)
     visible = set()
     for installation in db.scalars(select(Installation).where(Installation.active.is_(True))):
@@ -74,7 +74,7 @@ def visible_repositories(db: Session, user: User) -> list[Repository]:
                 )
             )
         except GitHubError as exc:
-            if exc.status not in {403, 404}:
+            if exc.status not in {403, 404} or (fail_on_throttle and exc.retry_after > 0):
                 raise
     selected = effective_repository_ids(user)
     if selected is not None:

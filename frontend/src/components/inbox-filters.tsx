@@ -1,5 +1,5 @@
 import type { Schema } from "../api";
-import { label, orderings, properties, reviews, selected, states, type Property } from "../lib/inbox-filters";
+import { label, orderings, properties, reviews, reviewStatusLabel, selected, states, type Property } from "../lib/inbox-filters";
 import { FilterBar, type FilterDefinition } from "./filter-bar";
 
 export function InboxFilters({ params, data, onChange, onSearch, repository = false }: {
@@ -16,7 +16,7 @@ export function InboxFilters({ params, data, onChange, onSearch, repository = fa
     if (key === "repo") choices = data?.repositories.map((r) => ({ value: String(r.id), name: r.full_name })) ?? [];
     else if (key === "author") choices = [...new Map(data?.authors.map((a) => [a.toLowerCase(), { value: a.toLowerCase(), name: `@${a}` }])).values()];
     else if (key === "state") choices = states.map((value) => ({ value, name: label(value), count: data?.state_counts[value] }));
-    else if (key === "review") choices = reviews.map((value) => ({ value, name: label(value) }));
+    else if (key === "review") choices = reviews.map((value) => ({ value, name: reviewStatusLabel(value) }));
     else if (key === "visibility") choices = [{ value: "visible", name: "Visible" }, { value: "ignored", name: "Ignored" }, { value: "all", name: "All" }];
     else choices = [{ value: "open", name: "Has open findings" }, { value: "none", name: "No open findings" }];
     for (const value of values) if (!choices.some((choice) => choice.value === value)) choices.push({ value, name: key === "repo" ? `Repository ${value}` : key === "author" ? `@${value}` : label(value) });

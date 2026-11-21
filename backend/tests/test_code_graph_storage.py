@@ -267,12 +267,11 @@ def test_upgrade_and_graph_cleanup_preserve_existing_history(seed):
         db.flush()
         db.add(Occurrence(id="occurrence", run_id="history", finding_id="finding", snapshot={"saved": "original evidence"}))
     config = Config("alembic.ini")
-    legacy_tables = [name for name in Base.metadata.tables if not name.startswith(("code_graph_", "analysis_", "inference_"))]
     try:
         command.downgrade(config, "20261025_api_tokens")
         with engine().connect() as connection:
             legacy = MetaData()
-            legacy.reflect(connection, only=legacy_tables)
+            legacy.reflect(connection, only=lambda name, _: name != "alembic_version")
             history_queries = {
                 table.name: table.select().order_by(*table.primary_key.columns) for table in legacy.tables.values()
             }

@@ -676,8 +676,8 @@ def dispatch():
                 job.status, job.error, job.lease_until = "failed", "Summary generation was interrupted. Retry generation to start a new attempt.", None
                 pr_summary.fail_retry(db, job, job.error)
                 continue
-            if job.kind == "generate_background" and (job.payload.get("background") or job.payload.get("inference_started")):
-                job.status = "done" if job.payload.get("background") else "failed"
+            if job.kind == "generate_background" and (background.background_result_saved(job.payload) or job.payload.get("inference_started")):
+                job.status = "done" if background.background_result_saved(job.payload) else "failed"
                 job.error = None if job.status == "done" else background.INTERRUPTED
                 job.lease_until = None
                 continue

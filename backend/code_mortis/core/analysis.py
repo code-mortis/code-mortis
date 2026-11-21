@@ -69,13 +69,29 @@ def rolling_budget_enabled(db, claim, config):
     return versions is None or versions.get("budget_schedule") == ROLLING_BUDGET
 
 
-def budget_state(db, plan_id, stage):
+def budget_state(db, plan_id, stage, *, scoped_stage=None):
     tasks = select(AnalysisTask.id).where(AnalysisTask.plan_id == plan_id, AnalysisTask.stage == stage)
     unknown = tasks.join(AnalysisAttempt).where(AnalysisAttempt.usage_state == "unknown").exists()
     running = tasks.where(AnalysisTask.status == "running").exists()
     # Read reservations and possible releases from the same PostgreSQL snapshot.
-    return db.execute(select(AnalysisBudget, unknown, running).where(
-        AnalysisBudget.plan_id == plan_id, AnalysisBudget.stage == stage)).one()
+    query = select(AnalysisBudget, unknown, running).where(
+        AnalysisBudget.plan_id == plan_id, AnalysisBudget.stage == stage)
+    if scoped_stage:
+        remaining = select(AnalysisBudget.token_limit - AnalysisBudget.charged_tokens).where(
+            AnalysisBudget.plan_id == plan_id, AnalysisBudget.stage == scoped_stage).correlate(None).scalar_subquery()
+        query = query.add_columns(remaining)
+    return db.execute(query).one()
+
+
+def lock_task_budgets(db, task):
+    phases = {task.stage}
+    if task.stage == "security" and task.scope and isinstance(task.scope[0], dict):
+        phase = task.scope[0].get("budget_stage")
+        if isinstance(phase, str) and phase in {"assessment", "verification"}:
+            phases.add(phase)
+    return db.scalars(select(AnalysisBudget).where(
+        AnalysisBudget.plan_id == task.plan_id, AnalysisBudget.stage.in_(phases))
+        .order_by(AnalysisBudget.stage).with_for_update()).all()
 
 
 def budget_deadline(plan, budget):
@@ -143,6 +159,13 @@ def persist_plan(db, job_id: str, specification: PlanSpec) -> AnalysisPlan:
         raise ValueError("The plan review does not match its durable job")
     if specification.scan_id and job.payload.get("scan_id") != specification.scan_id:
         raise ValueError("The plan security scan does not match its durable job")
+    if "context" in specification.revisions and (
+        job.kind != "generate_background" or job.payload.get("mode") not in {"summary", "summary_draft", "summary_refresh"}
+        or job.payload.get("repository_id") != specification.repository_id
+        or job.payload.get("context_fingerprint") != specification.revisions["context"]
+        or job.payload.get("connection") != specification.connection
+    ):
+        raise ValueError("The repository summary plan must match its pinned job context")
     if specification.run_id:
         # Lock before the FK insert so concurrent stage plans cannot deadlock upgrading KEY SHARE locks.
         run = db.scalar(select(ReviewRun).where(ReviewRun.id == specification.run_id).with_for_update())
@@ -392,8 +415,8 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
                         and task.key == f"{parent.key}:unit:{fingerprint(task.scope[0])[:16]}"
                         and output_limited(db, plan, parent)):
                     return None
-        budget = db.scalar(select(AnalysisBudget).where(
-            AnalysisBudget.plan_id == plan.id, AnalysisBudget.stage == task.stage).with_for_update())
+        budgets = lock_task_budgets(db, task)
+        budget = next(row for row in budgets if row.stage == task.stage)
         unknown = db.scalar(select(AnalysisAttempt.id).join(AnalysisTask).where(
             AnalysisTask.plan_id == plan.id, AnalysisTask.stage == task.stage,
             AnalysisAttempt.usage_state == "unknown").limit(1))
@@ -407,7 +430,8 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
             run_limit = min(run_limit, concurrency_limit)
         wire_output = None
         if output_token_policy(plan.snapshot) == WORKFLOW_OUTPUT_POLICY:
-            available = None if budget.token_limit is None else budget.token_limit - budget.charged_tokens
+            available = min((row.token_limit - row.charged_tokens for row in budgets
+                             if row.token_limit is not None), default=None)
             if (available is not None and run_limit > 1
                     and plan.snapshot["versions"].get("budget_schedule") == ROLLING_BUDGET):
                 waiting, occupied = db.execute(select(
@@ -430,7 +454,7 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
                 output_tokens = min(output_tokens, remaining) if output_tokens else remaining
             wire_output = output_tokens
         reservation = input_tokens + output_tokens
-        if budget.token_limit is not None and budget.charged_tokens + reservation > budget.token_limit:
+        if any(row.token_limit is not None and row.charged_tokens + reservation > row.token_limit for row in budgets):
             return None
         expires = min(timestamp + timedelta(seconds=lease_seconds), job.lease_until,
                       deadline or job.lease_until)
@@ -441,7 +465,8 @@ def claim_task(task_id: str, job_id: str, job_attempt: int, *, input_tokens: int
                          task_id=task.id, job_id=job_id, job_attempt=job_attempt)
         if not capacity:
             return None
-        budget.charged_tokens += reservation
+        for row in budgets:
+            row.charged_tokens += reservation
         task.status, task.attempts = "running", task.attempts + 1
         attempt = AnalysisAttempt(id=uid(), task_id=task.id, number=task.attempts, job_attempt=job_attempt,
                                   lease_until=expires, reserved_tokens=reservation)
@@ -482,8 +507,7 @@ def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | No
         if not owned:
             return False
         task, attempt = owned
-        budget = db.scalar(select(AnalysisBudget).where(
-            AnalysisBudget.plan_id == task.plan_id, AnalysisBudget.stage == task.stage).with_for_update())
+        budgets = lock_task_budgets(db, task)
         if lease.admission_id:
             ticket = db.get(InferenceAdmission, lease.admission_id)
             if (not ticket or ticket.task_id != task.id or ticket.job_id != lease.job_id
@@ -498,7 +522,8 @@ def finish_task(lease: TaskLease, *, usage_tokens: int | None, result: dict | No
         if not job_live(db.get(Job, lease.job_id), lease.job_attempt, timestamp) or attempt.lease_until <= timestamp:
             return False
         if usage_tokens is not None:
-            budget.charged_tokens += usage_tokens - attempt.reserved_tokens
+            for row in budgets:
+                row.charged_tokens += usage_tokens - attempt.reserved_tokens
         attempt.usage_tokens, attempt.usage_state = usage_tokens, "known" if usage_tokens is not None else "unknown"
         attempt.finished_at, attempt.error_code = timestamp, error_code
         attempt.provider_request_id = provider_request_id

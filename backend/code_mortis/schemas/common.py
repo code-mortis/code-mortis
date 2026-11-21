@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
@@ -128,8 +128,25 @@ class RunLimits(StrictModel):
     token_budget: int | None = Field(default=None, ge=1000, le=5000000)
 
 
-class ScanSettings(RunLimits):
+class ScanLimits(RunLimits):
     concurrency: int = Field(default=4, ge=1, le=8, strict=True)
+
+
+class ScanSettings(ScanLimits):
+    effort: Literal["low", "medium", "high"] = "high"
+    exclusions: str = Field(default="", max_length=4000)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=1000000, strict=True)
+    assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000, strict=True)
+    verification_token_budget: int | None = Field(default=None, ge=1000, le=5000000, strict=True)
+
+    @field_validator("exclusions")
+    @classmethod
+    def deny_only_exclusions(cls, value):
+        file_policy.patterns(value)
+        return value
+
+
+ProjectSummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]
 
 
 class RepoSettings(RunLimits):
@@ -171,20 +188,36 @@ class RepoSettings(RunLimits):
     def trim_language(cls, value):
         return value.strip() if isinstance(value, str) else value
 
+    @classmethod
+    def for_execution(cls, settings):
+        return cls.model_validate({key: value for key, value in settings.items() if key != "project_summary"}).model_dump()
+
+
+class RepoSettingsWithSummary(RepoSettings):
+    project_summary: ProjectSummary | None = None
+
 
 class RepositoryInput(StrictModel):
     enabled: bool
     code_graph_enabled: bool | None = None
     code_graph_limits: CodeGraphLimits | None = None
     connection_id: str | None = None
-    settings: RepoSettings = Field(default_factory=RepoSettings)
+    settings: RepoSettingsWithSummary = Field(default_factory=RepoSettingsWithSummary)
     scan_settings: ScanSettings | None = None
+    expected_background: str | None = Field(default=None, max_length=20000)
+    expected_project_summary: str | None = Field(default=None, max_length=600)
 
 
 class BackgroundInput(StrictModel):
-    connection_id: str = Field(min_length=1, max_length=36)
+    mode: Literal["draft", "context", "context_refresh", "summary", "summary_draft", "summary_refresh"] = "draft"
+    connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     limits: RunLimits | None = None
+    generation_id: UUID4 | None = None
+
+
+class BackgroundCancelInput(StrictModel):
+    generation_id: UUID4
 
 
 class BackgroundResult(StrictModel):
@@ -198,10 +231,21 @@ class BackgroundResult(StrictModel):
         return value.strip()
 
 
+class BackgroundWithSummary(BackgroundResult):
+    project_summary: ProjectSummary
+
+
+class ProjectSummaryResult(StrictModel):
+    project_summary: ProjectSummary
+
+
 class BackgroundJobOut(StrictModel):
     id: str
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
+    finished_at: datetime | None = None
+    mode: Literal["draft", "context", "context_refresh", "summary", "summary_draft", "summary_refresh"] | None = None
     background: str | None = None
+    project_summary: str | None = None
     error: str | None = None
 
 
@@ -343,7 +387,7 @@ class RepositoryOut(ORMModel):
     code_graph_limits: CodeGraphLimits = Field(default_factory=CodeGraphLimits)
     connection_id: str | None
     connection_requires_setup: bool = False
-    settings: RepoSettings
+    settings: RepoSettingsWithSummary
     scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False
@@ -412,6 +456,7 @@ class RunOut(ORMModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    activity_finished_at: datetime | None = None
     error: str | None
     publication_error: str | None
     config: dict[str, Any]

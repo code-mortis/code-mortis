@@ -1,15 +1,18 @@
 import "./sentry";
 import { reactErrorHandler } from "@sentry/react";
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BrowserRouter,
+  createBrowserRouter,
+  matchPath,
   NavLink,
   Navigate,
   Route,
+  RouterProvider,
   Routes,
   useNavigate,
   useLocation,
+  useParams,
 } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Github } from "lucide-react";
@@ -21,7 +24,6 @@ import {
   ErrorNotice,
   Field,
   Loading,
-  PageTitle,
 } from "./components/common";
 import { Repositories, PullDetail, RunDetail } from "./reviews";
 import { Inbox } from "./inbox";
@@ -32,6 +34,8 @@ import logo from "./assets/logo.svg";
 import { AppHeader } from "./components/app-header";
 import { WorkspaceProgress, WorkspaceProgressFallback, WorkspaceProgressProvider } from "./components/workspace-progress";
 import { AppBreadcrumb } from "./components/app-breadcrumb";
+import { RepositoryActivity } from "./components/repository-activity";
+import { RepositorySummary } from "./components/repository-summary";
 import { RepositoryDirectory, LegacyAnalytics } from "./components/repository-directory";
 import { WorkspaceNavigationProvider, useWorkspaceNavigation } from "./hooks/use-workspace-navigation";
 import { SidebarProvider } from "./components/ui/sidebar";
@@ -39,6 +43,7 @@ import { Toaster } from "./components/ui/sonner";
 import { SettingsPage } from "./settings";
 import { McpAuthorizePage, McpApprovalPage } from "./mcp";
 import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
+import { isBackgroundConnectionError } from "./hooks/use-background-generation";
 import "./index.css";
 
 const Analytics = lazy(() => import("./analytics"));
@@ -52,17 +57,28 @@ function NavigationError() {
   return <div className="mb-4 space-y-2"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
 }
 
-function RepositoryOverview({ analytics = false }: { analytics?: boolean }) {
+function RepositoryOverview({ analytics = false, admin = false }: { analytics?: boolean; admin?: boolean }) {
   const route = useLocation();
+  const { repositoryId } = useParams();
   const params = new URLSearchParams(route.search);
-  const { directory, repository } = useWorkspaceNavigation();
+  const { directory, repository: listedRepository } = useWorkspaceNavigation();
+  const repository = listedRepository ?? (!analytics && directory.error && isBackgroundConnectionError(directory.error)
+    ? directory.data?.find((row) => String(row.id) === repositoryId)
+    : undefined);
+  const directoryError = directory.error && <div className="space-y-3">
+    <ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button>
+  </div>;
   if (directory.isPending) return <Loading />;
-  if (directory.error) return <div className="space-y-3"><ErrorNotice error={directory.error} /><Button variant="outline" onClick={() => directory.refetch()}>Retry repositories</Button></div>;
+  if (directory.error && !repository) return directoryError;
   if (!repository) return <Empty title="Repository unavailable">Choose a repository from the navigation.</Empty>;
   if (!analytics && ["tab", "period", "start", "end", "ordering", "severity", "category", "status", "repo"].some((key) => params.has(key))) {
     return <Navigate to={{ pathname: `/repositories/${repository.id}/analytics`, search: route.search, hash: route.hash }} state={route.state} replace />;
   }
-  if (!analytics) return <PageTitle title="Overview" />;
+  if (!analytics) return <>
+    {directoryError && <div className="mb-4">{directoryError}</div>}
+    <RepositorySummary key={`summary-${repository.id}`} repository={repository} admin={admin} />
+    <RepositoryActivity key={repository.id} repositoryId={repository.id} />
+  </>;
   return <Suspense fallback={<WorkspaceProgressFallback />}><Analytics key={repository.id} repository={repository} /></Suspense>;
 }
 
@@ -215,6 +231,7 @@ function App() {
   const action = useAction();
   const navigate = useNavigate();
   const route = useLocation();
+  const logoutRequest = useRef<string>(undefined);
   const [mode, setMode] = useState<ColorMode>(initialAppearance.mode);
   const [colorTheme, setColorTheme] = useState<ThemeId>(initialAppearance.theme);
   const [dark, setDark] = useState(initialDark);
@@ -236,6 +253,16 @@ function App() {
   useEffect(() => {
     setCsrf(session.data?.csrf ?? "");
   }, [session.data]);
+  const signOut = action.mutateAsync;
+  useEffect(() => {
+    if (!session.data || route.state?.signOut !== true || logoutRequest.current === route.key) return;
+    logoutRequest.current = route.key;
+    void signOut({ path: "/auth/logout" }).then(() => {
+      setCsrf("");
+      cache.clear();
+      window.location.replace("/");
+    }).catch(() => {});
+  }, [session.data, route.state, route.key, signOut]);
   if (setup.isPending || (setup.data?.configured && session.isPending))
     return (
       <header className="relative flex min-h-14 items-center border-b bg-background px-4 sm:px-8">
@@ -281,13 +308,6 @@ function App() {
         </Button>
       </div>
     );
-  async function logout() {
-    await action.mutateAsync({ path: "/auth/logout" });
-    setCsrf("");
-    cache.clear();
-    navigate("/");
-    window.location.reload();
-  }
   return (
     <WorkspaceNavigationProvider>
     <SidebarProvider className="flex-col">
@@ -295,19 +315,19 @@ function App() {
         event.preventDefault();
         document.getElementById("main-content")?.focus();
       }} className="sr-only z-50 rounded-md bg-background px-4 py-3 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Skip to content</a>
-      <AppHeader user={session.data} onLogout={logout} signingOut={action.isPending} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
+      <AppHeader user={session.data} onLogout={() => { void navigate("/", { state: { signOut: true } }); }} signingOut={action.isPending} dark={dark} onToggleTheme={() => setMode(dark ? "light" : "dark")} />
       <div className="flex min-w-0 flex-1">
       <AppSidebar admin={session.data.role === "admin"} />
       <div className="min-w-0 flex-1">
         <main id="main-content" tabIndex={-1} className="min-w-0 px-5 py-6 sm:px-8 lg:py-8 has-[[data-slot=breadcrumb]]:pt-4">
-          <div className="mx-auto max-w-6xl">
+          <div className={`mx-auto ${matchPath("/repositories/:repositoryId/overview", route.pathname) ? "max-w-4xl" : "max-w-6xl"}`}>
             <NavigationError />
             <AppBreadcrumb admin={session.data.role === "admin"} />
             <ErrorNotice error={action.error} />
             <Routes>
               <Route path="/" element={<Inbox admin={session.data.role === "admin"} />} />
               <Route path="/analytics" element={<LegacyAnalytics />} />
-              <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview />} />
+              <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview admin={session.data.role === "admin"} />} />
               <Route path="/repositories/:repositoryId/analytics" element={<RepositoryOverview analytics />} />
               <Route path="/organizations/:owner/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
@@ -386,6 +406,8 @@ class ErrorBoundary extends React.Component<
     );
   }
 }
+const router = createBrowserRouter([{ path: "*", element: <ErrorBoundary><App /></ErrorBoundary> }]);
+
 createRoot(document.getElementById("root")!, {
   onUncaughtError: reactErrorHandler(),
   onCaughtError: reactErrorHandler(),
@@ -395,9 +417,7 @@ createRoot(document.getElementById("root")!, {
     <ErrorBoundary>
       <QueryClientProvider client={cache}>
         <WorkspaceProgressProvider>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
+          <RouterProvider router={router} />
         </WorkspaceProgressProvider>
       </QueryClientProvider>
     </ErrorBoundary>

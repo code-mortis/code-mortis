@@ -528,7 +528,10 @@ class UpdateRepositoryInput(RepositoryScopedInput, MutationInput):
 
 def reviews_update_repository_config(params: UpdateRepositoryInput) -> dict[str, Any]:
     """Change review configuration for a repository. Administrator only."""
-    body = RepositoryInput(enabled=params.enabled, connection_id=params.connection_id, settings=params.settings)
+    body = RepositoryInput.model_validate({
+        "enabled": params.enabled, "connection_id": params.connection_id,
+        "settings": params.settings.model_dump(exclude_unset=True),
+    })
 
     def callback(db, user):
         _require_admin(user)

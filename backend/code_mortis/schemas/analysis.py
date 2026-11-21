@@ -50,8 +50,14 @@ class PlanSpec(StrictModel):
     def execution_inputs(self):
         if self.run_id and self.scan_id:
             raise ValueError("A plan cannot belong to both a review and a security scan")
-        if "head" not in self.revisions or any(len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
-                                     for sha in self.revisions.values()):
+        if "context" in self.revisions:
+            digest = self.revisions["context"]
+            if (self.run_id is not None or self.scan_id is not None or set(self.budgets) != {"summary"}
+                    or set(self.revisions) != {"context"} or len(digest) != 64
+                    or any(c not in "0123456789abcdef" for c in digest)):
+                raise ValueError("Repository summaries require an exact saved context fingerprint")
+        elif "head" not in self.revisions or any(len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
+                                               for sha in self.revisions.values()):
             raise ValueError("Plans require exact Git revisions")
         if not {"engine", "planner", "prompt", "rules", "schema", "file_policy"} <= set(self.versions):
             raise ValueError("Plans require all execution contract versions")

@@ -14,16 +14,16 @@ from code_mortis.schemas.common import ReviewComment
 
 def test_category_upgrade_preserves_history_and_saves_public_maximum(seed):
     config = Config("alembic.ini")
+    with transaction() as db:
+        db.add(ReviewRun(id="category-run", pr_id="pr", actor_id=7, trigger="manual", dedup_key="category-run",
+                         base_sha="b" * 40, head_sha="a" * 40, status="running",
+                         config={"analysis_engine": "mortis"}, progress={"execution": "category-job:1"}))
+        db.flush()
+        db.add(Finding(id="historical-finding", pr_id="pr", fingerprint="a" * 64, path="existing.py",
+                       content="Historical finding", category="h" * 30, start_line=1, end_line=1,
+                       last_seen_run_id="category-run"))
     try:
         command.downgrade(config, "20261107_inference_admission")
-        with transaction() as db:
-            db.add(ReviewRun(id="category-run", pr_id="pr", actor_id=7, trigger="manual", dedup_key="category-run",
-                             base_sha="b" * 40, head_sha="a" * 40, status="running",
-                             config={"analysis_engine": "mortis"}, progress={"execution": "category-job:1"}))
-            db.flush()
-            db.add(Finding(id="historical-finding", pr_id="pr", fingerprint="a" * 64, path="existing.py",
-                           content="Historical finding", category="h" * 30, start_line=1, end_line=1,
-                           last_seen_run_id="category-run"))
     finally:
         command.upgrade(config, "head")
     with transaction() as db:

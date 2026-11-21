@@ -5,6 +5,7 @@ import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
 import logo from "../assets/logo.svg";
 import { AccountMenu } from "./account-menu";
 import { Button } from "./ui/button";
+import { NotificationInbox } from "./notification-inbox";
 import { WorkspaceProgress } from "./workspace-progress";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList, ComboboxTrigger } from "./ui/combobox";
 
@@ -61,6 +62,7 @@ export function AppHeader({ user, onLogout, signingOut, dark, onToggleTheme }: {
         </>}
       </nav>
       <div className="ml-auto flex shrink-0 items-center gap-1 max-sm:min-h-14">
+        <NotificationInbox key={user.id} userId={user.id} />
         <Button variant="ghost" size="icon" onClick={onToggleTheme} aria-label={themeLabel} title={themeLabel}
           className="relative text-muted-foreground motion-reduce:transition-none pointer-coarse:size-11">
           <Sun aria-hidden="true" className="size-4 rotate-0 scale-100 transition-transform duration-200 ease-out dark:-rotate-90 dark:scale-0 motion-reduce:transition-none" />

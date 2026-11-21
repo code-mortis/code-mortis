@@ -24,6 +24,10 @@ class InferenceBudgetError(InferenceOutputError):
     """A request cannot fit within its remaining budget even after active work settles."""
 
 
+class InferenceStageBudgetError(InferenceBudgetError):
+    """A stage cap prevented a request that could fit in the overall workflow budget."""
+
+
 class RunnerBlocked(ValueError):
     def __init__(self, reason: str, usage=None):
         self.reason = reason

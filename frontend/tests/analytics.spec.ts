@@ -38,7 +38,7 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
     let json: unknown;
     if (path === "/setup/status") json = { configured: true, public_url: "http://localhost" };
     else if (path === "/auth/me") json = { id: 7, login: "developer", role: "admin", csrf: "test", avatar_url: "" };
-    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true }));
+    else if (path === "/repositories") json = repositories.map((repo) => ({ ...repo, open_prs: 2, enabled: true, active: true, settings: { background: "" } }));
     else if (path.startsWith("/analytics/")) {
       requests.push(url);
       const view = path.split("/").at(-1)!;
@@ -49,11 +49,53 @@ async function mock(page: Page, override?: (view: string, params: URLSearchParam
   return requests;
 }
 
-test("repository Overview stays empty before opening Analytics", async ({ page }, info) => {
+test("repository Overview shows daily activity before opening Analytics", async ({ page }, info) => {
   const requests = await mock(page);
+  const days = Array.from({ length: 365 }, (_, index) => ({
+    date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10),
+    reviews: index === 364 ? 6 : 0,
+    scans: index === 364 ? 2 : 0,
+  }));
+  let activityReads = 0;
+  await page.route("**/api/v1/repositories/22/activity?**", async (route) => {
+    expect(new URL(route.request().url()).searchParams.get("timezone")).toBeTruthy();
+    activityReads++;
+    await route.fulfill({ json: { days } });
+  });
   await page.goto("/repositories/22/overview");
   await expect(page.getByRole("heading", { name: "Overview", level: 1, exact: true })).toBeVisible();
-  await expect(page.getByRole("main").getByRole("heading")).toHaveCount(1);
+  const activity = page.getByRole("region", { name: "Repository activity" });
+  await expect(activity).toContainText("8 total runs");
+  await expect(activity).toContainText("6 review runs");
+  await expect(activity).toContainText("2 security scans");
+  const calendar = activity.getByRole("group", { name: /Daily activity/ });
+  await expect(calendar.getByRole("button")).toHaveCount(365);
+  await expect(calendar.locator('[tabindex="0"]')).toHaveCount(1);
+  const today = calendar.getByRole("button", { name: /8 total, 6 review runs, 2 security scans/ });
+  if (info.project.name === "mobile") {
+    await expect(today).toBeInViewport({ ratio: 1 });
+    await today.tap();
+  } else await today.hover();
+  const tooltip = activity.getByRole("tooltip");
+  await expect(tooltip).toContainText("Nov 20, 2026 · 8 runs");
+  await expect(tooltip.getByText("6", { exact: true })).toBeVisible();
+  await expect(tooltip.getByText("2", { exact: true })).toBeVisible();
+  if (info.project.name === "desktop") {
+    await calendar.getByRole("button", { name: /^Nov 19, 2026/ }).hover({ position: { x: 6, y: 2 } });
+    await expect(tooltip).toContainText("Nov 19, 2026 · 0 runs");
+    await today.hover();
+    await expect(tooltip).toContainText("Nov 20, 2026 · 8 runs");
+    await today.focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(tooltip).toContainText("Nov 13, 2026 · 0 runs");
+    await page.keyboard.press("Escape");
+    await page.getByRole("heading", { name: "Overview", exact: true }).hover();
+  } else {
+    await page.getByRole("heading", { name: "Overview", exact: true }).tap();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+  }
+  await expect(tooltip).toHaveCount(0);
+  expect(activityReads).toBe(1);
   await expect(page.getByRole("group", { name: "Analytics filters", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
   expect(requests).toHaveLength(0);
@@ -63,6 +105,27 @@ test("repository Overview stays empty before opening Analytics", async ({ page }
   await expect(page.getByRole("heading", { name: "Analytics", level: 1, exact: true })).toBeVisible();
   await expect.poll(() => requests.length).toBeGreaterThan(0);
   expect(requests.every((url) => url.searchParams.get("repo") === "22")).toBe(true);
+});
+
+test("repository activity keeps load errors separate from empty history", async ({ page }) => {
+  await mock(page);
+  let failed = false;
+  await page.route("**/api/v1/repositories/23/activity?**", async (route) => {
+    if (!failed) {
+      failed = true;
+      await route.fulfill({ status: 503, json: { detail: "Temporarily unavailable." } });
+      return;
+    }
+    const days = Array.from({ length: 365 }, (_, index) => ({
+      date: new Date(Date.UTC(2025, 10, 21 + index)).toISOString().slice(0, 10), reviews: 0, scans: 0,
+    }));
+    await route.fulfill({ json: { days } });
+  });
+  await page.goto("/repositories/23/overview");
+  await expect(page.getByRole("alert")).toContainText("Could not load repository activity");
+  await expect(page.getByText("No review runs or security scans in this period.")).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry activity" }).click();
+  await expect(page.getByText("No review runs or security scans in this period.")).toBeVisible();
 });
 
 test("legacy repository Overview analytics filters open Analytics", async ({ page }) => {

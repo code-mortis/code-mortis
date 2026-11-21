@@ -9,7 +9,7 @@ from code_mortis.schemas.common import (
     ORMModel,
     RepositoryOut,
     ReviewComment,
-    ScanSettings,
+    ScanLimits,
     SecuritySummary,
     StrictModel,
 )
@@ -17,7 +17,7 @@ from code_mortis.schemas.common import (
 ISSUE_BODY_LIMIT = 50000
 
 
-class SecurityScanInput(ScanSettings):
+class SecurityScanInput(ScanLimits):
     """Use saved limits by default. Explicit limits are supported for existing API clients."""
 
     connection_id: str = Field(min_length=1, max_length=36)

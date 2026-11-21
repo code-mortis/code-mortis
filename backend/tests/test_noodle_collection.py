@@ -102,12 +102,15 @@ EXPECTED_PUBLIC = {
 # Session-only, browser-flow, bootstrap, webhook, and OAuth/MCP operations from
 # docs/api-token-route-policy.md. None may have runnable collection YAML.
 EXPECTED_SESSION_ONLY = {
+    ("GET", "/api/v1/activity"),
+    ("POST", "/api/v1/activity/read"),
     ("GET", "/api/v1/pulls/{pr_id}/code"),
     ("POST", "/api/v1/pulls/{pr_id}/code/file"),
     ("POST", "/api/v1/pulls/{pr_id}/code/workspace"),
     ("GET", "/api/v1/pulls/{pr_id}/code-graph"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/query"),
     ("POST", "/api/v1/pulls/{pr_id}/code-graph/index"),
+    ("GET", "/api/v1/runs/{run_id}/summary/attempts/{job_id}"),
     ("POST", "/api/v1/setup/manifest"),
     ("GET", "/api/v1/setup/callback"),
     ("GET", "/api/v1/auth/login"),
@@ -115,10 +118,12 @@ EXPECTED_SESSION_ONLY = {
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/auth/logout"),
     ("PUT", "/api/v1/repositories/{repository_id}"),
+    ("GET", "/api/v1/repositories/{repository_id}/activity"),
     ("GET", "/api/v1/repositories/{repository_id}/code-graph"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/retry"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/cancel"),
     ("POST", "/api/v1/repositories/{repository_id}/background"),
+    ("POST", "/api/v1/repositories/{repository_id}/background/cancel"),
     ("GET", "/api/v1/repositories/{repository_id}/background/{job_id}"),
     ("POST", "/api/v1/connections"),
     ("POST", "/api/v1/connections/models"),

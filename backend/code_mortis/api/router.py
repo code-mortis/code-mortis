@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from code_mortis.api.routers import (
+    activity,
     analytics,
     api_tokens,
     auth,
@@ -19,6 +20,7 @@ from code_mortis.api.routers import (
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(auth.router)
+router.include_router(activity.router)
 router.include_router(api_tokens.router)
 router.include_router(repositories.router)
 router.include_router(analytics.router)

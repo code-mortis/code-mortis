@@ -152,7 +152,7 @@ def create_run(
     if not connection:
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
-    options = RepoSettings.model_validate(repo.settings).model_dump()
+    options = RepoSettings.for_execution(repo.settings)
     require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None

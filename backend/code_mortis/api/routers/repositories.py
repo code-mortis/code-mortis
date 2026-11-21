@@ -1,20 +1,33 @@
+from datetime import datetime, time, timedelta
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import Date, cast, func, select
 
-from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, USER, repo_access
+from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
 from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import service as graphs
 from code_mortis.code_graph import store
+from code_mortis.core.db import now
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
-from code_mortis.models import CodeGraphRepository, Connection, Job, Repository, ReviewRun
+from code_mortis.models import (
+    CodeGraphRepository,
+    Connection,
+    Job,
+    PullRequest,
+    Repository,
+    ReviewRun,
+    SecurityScan,
+)
 from code_mortis.reviews import background, inbox
 from code_mortis.reviews.service import enqueue
+from code_mortis.schemas.analytics import RepositoryActivity, RepositoryActivityDay, RepositoryActivityFilters
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
+    BackgroundCancelInput,
     BackgroundInput,
     BackgroundJobOut,
     InboxOut,
@@ -41,13 +54,56 @@ def repositories(db: DB, user: USER):
     return result
 
 
+@router.get("/repositories/{repository_id}/activity", response_model=RepositoryActivity)
+def repository_activity(
+    repository_id: int, db: DB, user: SESSION_USER, filters: Annotated[RepositoryActivityFilters, Query()],
+):
+    repo, remote = repo_access(db, user, repository_id)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+
+    end = now()
+    zone = ZoneInfo(filters.timezone)
+    first = end.astimezone(zone).date() - timedelta(days=364)
+    start = datetime.combine(first, time.min, zone)
+    review_day = cast(func.timezone(filters.timezone, ReviewRun.created_at), Date)
+    scan_day = cast(func.timezone(filters.timezone, SecurityScan.created_at), Date)
+    reviews = dict(db.execute(
+        select(review_day, func.count()).select_from(ReviewRun).join(PullRequest).where(
+            PullRequest.repository_id == repo.id, ReviewRun.created_at >= start, ReviewRun.created_at <= end,
+        ).group_by(review_day)
+    ).all())
+    scans = dict(db.execute(
+        select(scan_day, func.count()).where(
+            SecurityScan.repository_id == repo.id, SecurityScan.created_at >= start, SecurityScan.created_at <= end,
+        ).group_by(scan_day)
+    ).all())
+    dates = (first + timedelta(days=offset) for offset in range(365))
+    return RepositoryActivity(days=[
+        RepositoryActivityDay(date=day, reviews=reviews.get(day, 0), scans=scans.get(day, 0)) for day in dates
+    ])
+
+
 @router.put("/repositories/{repository_id}", response_model=RepositoryOut)
 def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: ADMIN):
-    db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update())
+    db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update()
+              .execution_options(populate_existing=True))
     repo, remote = repo_access(db, user, repository_id, write=True)
     if type(remote.get("id")) is not int or remote["id"] != repo.id:
         raise HTTPException(403, "GitHub repository identity changed.")
     effective_settings = body.settings.model_dump()
+    saved_background = repo.settings.get("background", "")
+    if body.expected_background is not None and saved_background != body.expected_background:
+        raise HTTPException(409, "Project context changed while you were editing. Reload settings and try again.")
+    if ("project_summary" in body.settings.model_fields_set and "expected_project_summary" in body.model_fields_set
+            and repo.settings.get("project_summary") != body.expected_project_summary):
+        raise HTTPException(409, "The repository summary changed while you were editing. Reload settings and try again.")
+    if "background" not in body.settings.model_fields_set:
+        effective_settings["background"] = saved_background
+    if "project_summary" not in body.settings.model_fields_set:
+        effective_settings["project_summary"] = repo.settings.get("project_summary")
+    if effective_settings["project_summary"] is None:
+        effective_settings.pop("project_summary")
     if body.code_graph_enabled is not None or body.code_graph_limits is not None:
         graphs.browser_only()
     if body.connection_id and not db.get(Connection, body.connection_id):
@@ -67,7 +123,7 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
     if body.code_graph_limits is not None:
         repo.code_graph_limits = body.code_graph_limits.model_dump()
     if body.scan_settings is not None:
-        repo.scan_settings = body.scan_settings.model_dump()
+        repo.scan_settings = {**repo.scan_settings, **body.scan_settings.model_dump(exclude_unset=True)}
     repo.enabled, repo.connection_id, repo.settings = (
         body.enabled,
         body.connection_id,
@@ -124,15 +180,43 @@ def cancel_code_graph(repository_id: int, db: DB, user: SESSION_ADMIN):
 
 @router.post("/repositories/{repository_id}/background", response_model=BackgroundJobOut, status_code=202)
 def generate_background(repository_id: int, body: BackgroundInput, db: DB, user: ADMIN):
-    repo, _ = repo_access(db, user, repository_id, write=True)
-    connection = db.get(Connection, body.connection_id)
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    db.refresh(repo, with_for_update={"key_share": True})
+    if body.generation_id is not None:
+        prior = background.requested_job(db, repo, user, body.generation_id)
+        if prior:
+            return background.job_out(prior)
+    connection_id, model, limits = body.connection_id, body.model, body.limits
+    if body.mode not in {"draft", "context_refresh"}:
+        saved = repo.settings.get("background", "").strip()
+        has_summary = bool(repo.settings.get("project_summary"))
+        if body.mode in {"summary_draft", "summary_refresh"}:
+            if not has_summary:
+                raise HTTPException(409, "The saved repository summary changed. Refresh the repository and try again.")
+        elif has_summary or bool(saved) != (body.mode == "summary"):
+            raise HTTPException(409, "The saved project context changed. Refresh the repository and try again.")
+        connection_id, model, limits = repo.connection_id, repo.settings.get("model", ""), None
+    connection = db.get(Connection, connection_id) if connection_id else None
     background.authorize(db, repo, user, connection, check_repository=False)
-    return background.job_out(background.enqueue(db, repo, user, connection, body.model, body.limits))
+    return background.job_out(background.enqueue(db, repo, user, connection, model, limits,
+                                                 mode=body.mode, generation_id=body.generation_id))
+
+
+@router.post("/repositories/{repository_id}/background/cancel", response_model=BackgroundJobOut)
+def cancel_background(repository_id: int, body: BackgroundCancelInput, db: DB, user: SESSION_ADMIN):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    return background.job_out(background.cancel_request(db, repo, user, body.generation_id))
 
 
 @router.get("/repositories/{repository_id}/background/{job_id}", response_model=BackgroundJobOut)
 def background_status(repository_id: int, job_id: str, db: DB, user: ADMIN):
-    repo_access(db, user, repository_id, write=True)
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
     job = db.get(Job, job_id)
     if (not job or job.kind != "generate_background"
         or job.payload.get("repository_id") != repository_id or job.payload.get("actor_id") != user.id):

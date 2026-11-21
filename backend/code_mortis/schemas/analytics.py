@@ -1,10 +1,21 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import AfterValidator, AwareDatetime, Field, model_validator
 
 from code_mortis.schemas.common import InboxRepository, StrictModel
+
+
+def valid_timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Choose a valid IANA timezone.") from exc
+    return value
+
+
+AnalyticsTimezone = Annotated[str, Field(max_length=100), AfterValidator(valid_timezone)]
 
 
 class AnalyticsFilters(StrictModel):
@@ -13,16 +24,7 @@ class AnalyticsFilters(StrictModel):
     from_at: AwareDatetime | None = None
     to_at: AwareDatetime | None = None
     all_time: bool = False
-    timezone: str = Field(default="UTC", max_length=100)
-
-    @field_validator("timezone")
-    @classmethod
-    def valid_timezone(cls, value):
-        try:
-            ZoneInfo(value)
-        except (ValueError, ZoneInfoNotFoundError) as exc:
-            raise ValueError("Choose a valid IANA timezone.") from exc
-        return value
+    timezone: AnalyticsTimezone = "UTC"
 
     @model_validator(mode="after")
     def valid_dates(self):
@@ -37,6 +39,20 @@ class AnalyticsFindingFilters(AnalyticsFilters):
     severity: list[Literal["critical", "high", "medium", "low"]] = Field(default_factory=list, max_length=4)
     category: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=100)
     status: list[Literal["open", "resolved", "dismissed"]] = Field(default_factory=list, max_length=3)
+
+
+class RepositoryActivityFilters(StrictModel):
+    timezone: AnalyticsTimezone = "UTC"
+
+
+class RepositoryActivityDay(StrictModel):
+    date: date
+    reviews: int
+    scans: int
+
+
+class RepositoryActivity(StrictModel):
+    days: list[RepositoryActivityDay]
 
 
 class AnalyticsScope(StrictModel):
