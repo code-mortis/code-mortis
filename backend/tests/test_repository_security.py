@@ -2288,7 +2288,84 @@ def test_security_assessment_batches_share_paths_anchors_and_renamed_history():
     assert [row.id for row in security.assessment_batch(rows[1:], history, item, 4)] == [1, 5]
 
 
-@pytest.mark.parametrize("discovery", ["queued", "in_flight", "external_history", "late_quota", "late_unknown"])
+def test_security_assessment_frontier_allows_independent_candidates_before_a_shared_target():
+    rows = [SimpleNamespace(id=number) for number in range(4)]
+    keys = {0: {"left"}, 1: {"right"}, 2: {"left", "right"}, 3: {"right"}}
+    assert security.assessment_frontier(rows, keys) == rows[:2]
+    assert security.assessment_frontier(rows, keys, admitted={0}) == rows[1:2]
+    assert security.assessment_frontier(rows[2:], keys) == rows[2:3]
+
+
+def test_security_assessment_ignores_supporting_path_bridges_but_orders_finding_updates(
+    seed, security_github, monkeypatch, tmp_path,
+):
+    paths = ("first.py", "independent.py", "second.py")
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    item.inventory = {path: {"code": True, "hash": digest(path), "lines": 1} for path in paths}
+    item.source = lambda path, sha=None: path
+    item.renamed = lambda sha, path: path
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {
+        "findings": [], "targets": {}, "problems": [], "metadata": {},
+    })
+
+    def citation(path, quote=None):
+        return {"revision": "current", "path": path, "start_line": 1, "end_line": 1, "quote": quote or path}
+
+    def proposal(path):
+        return {"title": path, "category": "test", "severity": "low", "path": path,
+                "explanation": "Synthetic", "trigger": "Input", "impact": "Impact",
+                "remediation": "Fix", "verification": "Test", "evidence": [citation(path)]}
+
+    with transaction() as db:
+        earlier = saved_scan(db, seed, status="completed")
+        target = saved_finding(db, seed, earlier, path="second.py",
+            fingerprint=security.assessment_fingerprint(proposal("first.py")),
+            evidence=[citation("second.py"), citation("shared.py", "first usage")])
+        target.evidence = {**target.evidence, "fingerprint": digest("later observation")}
+        target_id = target.id
+        independent_id = saved_finding(db, seed, earlier, path="independent.py",
+            evidence=[citation("independent.py"), citation("shared.py", "second usage")]).id
+        scan_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid(), concurrency=3)).id
+
+    barrier = Barrier(2)
+
+    def ask(*args, **kwargs):
+        task, context = args[3:5]
+        if task == "analysis":
+            return {"findings": [proposal(context["assigned_path"])], "required_paths": []}, {"tokens": 12}
+        assert task == "assessment"
+        candidate = context["proposal"]
+        path = candidate["path"]
+        historical, = context["history"]
+        assert historical["id"] == (independent_id if path == "independent.py" else target_id)
+        evidence = candidate["evidence"]
+        finding_id = historical["id"]
+        if path in paths[:2]:
+            barrier.wait(timeout=10)
+            if path == "first.py":
+                # Implicit fingerprint lookup still updates the same finding as an explicit ID.
+                finding_id = None
+                evidence = [*evidence, citation("second.py")]
+        else:
+            assert historical["path"] == "first.py" and historical["version"] == 1
+        return {"verdict": "confirmed", "finding_id": finding_id, "explanation": "Checked",
+                "evidence": evidence, "required_paths": []}, {"tokens": 12}
+
+    monkeypatch.setattr(security_engine, "ask", ask)
+    perform_security(scan_id, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, scan_id)
+        assert scan.status == "completed", scan.error
+        assert scan.stages["assessment"]["completed"] == 3
+        assert db.get(SecurityFinding, target_id).version == 2
+        assert db.get(SecurityFinding, independent_id).version == 1
+
+
+@pytest.mark.parametrize("discovery", [
+    "queued", "in_flight", "same_wave", "late_later", "shared_expansion", "external_history", "late_quota", "late_unknown",
+])
 @pytest.mark.parametrize("budget", [None, 200_000])
 def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
     seed, security_github, monkeypatch, tmp_path, discovery, budget,
@@ -2307,11 +2384,13 @@ def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
 
     initial = set(paths[:4])
     late_failure = discovery in {"late_quota", "late_unknown"}
-    refilled_path = "linked.py" if discovery == "in_flight" or late_failure else "fifth.py"
+    same_wave = discovery in {"same_wave", "late_later", "shared_expansion"}
+    refilled_path = "linked.py" if discovery == "in_flight" or same_wave or late_failure else "fifth.py"
     barrier, lock = Barrier(4), Lock()
     release, refilled, first_collected = Event(), Event(), Event()
     initial_collected = Event()
     started = []
+    retrying, retry_matches = False, []
     active = peak = 0
     original_stage = security.stage
 
@@ -2336,6 +2415,14 @@ def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
         assert task == "assessment"
         proposal = context["proposal"]
         title = proposal["title"]
+        if retrying:
+            match = None
+            if title in {"Related", "slow1.py"}:
+                match, = [entry["id"] for entry in context["history"] if entry["id"] == first_id]
+            if title == "slow1.py":
+                retry_matches.append(match)
+            return {"verdict": "confirmed", "finding_id": match, "explanation": "Checked",
+                    "evidence": proposal["evidence"], "required_paths": []}, {"tokens": 12}
         with lock:
             started.append(title)
             active += 1
@@ -2371,6 +2458,12 @@ def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
             if (discovery == "queued" and title in {"first.py", "Related"}
                     or discovery == "in_flight" and title == "slow1.py"):
                 evidence = [*evidence, citation("linked.py")]
+            elif discovery == "same_wave" and title == "first.py":
+                evidence = [*evidence, citation("slow1.py")]
+            elif discovery == "late_later" and title == "slow1.py":
+                evidence = [*evidence, citation("first.py")]
+            elif discovery == "shared_expansion" and title in {"first.py", "slow1.py"}:
+                evidence = [*evidence, citation("support.py")]
             return {"verdict": "confirmed", "finding_id": finding_id, "explanation": "Checked",
                     "evidence": evidence, "required_paths": []}, {"tokens": 12}
         finally:
@@ -2424,11 +2517,26 @@ def test_security_assessment_refills_free_slots_and_waits_for_saved_history(
                 assert started[-2:] == ["Related", "linked.py"]
             else:
                 assert scan.status == "partial"
-                task = scan.progress["tasks"]["assessment:5"]
+                position, withheld = (2, "slow1.py") if same_wave else (5, "linked.py")
+                task = scan.progress["tasks"][f"assessment:{position}"]
                 assert task["tokens"] == 12 and task["result"]["verdict"] == "uncertain"
+                assert task["stale_history"] is True
                 assert "history changed" in task["result"]["explanation"]
-                assert not db.scalar(select(SecurityFinding.id).where(SecurityFinding.path == "linked.py"))
+                assert not db.scalar(select(SecurityFinding.id).where(SecurityFinding.path == withheld))
                 assert scan.report["unsettled_candidates"][0]["assessment"] == task["result"]
+        if discovery == "late_later":
+            first_id = db.scalar(select(SecurityFinding.id).where(SecurityFinding.path == "first.py"))
+            retry_id = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+                connection_id="connection", request_key=uid(), concurrency=4, token_budget=budget), parent=scan).id
+
+    if discovery == "late_later":
+        retrying = True
+        perform_security(retry_id, "retry:1")
+        with transaction() as db:
+            retry = db.get(SecurityScan, retry_id)
+            assert retry.status == "completed", retry.error
+            assert retry_matches == [first_id]
+            assert db.get(SecurityFinding, first_id).path == "slow1.py"
 
 
 @pytest.mark.parametrize("history_changed", [False, True])
@@ -2829,7 +2937,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
     with transaction() as db:
         parent = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(connection_id="connection", request_key=uid()))
         config = {key: value for key, value in parent.config.items()
-                  if key not in {"task_contract", "execution_limits", "budget_schedule"}}
+                  if key not in {"task_contract", "execution_limits", "budget_schedule", "assessment_targets"}}
         config["connection"] = connection_snapshot(db.get(Connection, "connection"))
         config["limits"] = {"token_budget": 100000, "timeout_seconds": 900}
         context = {"assigned_path": "app.py", "head_sha": SHA, "diff": "", "sources": {"current": {"app.py": "safe"}},
@@ -2846,6 +2954,7 @@ def test_legacy_security_retry_preserves_completed_file_checkpoints(
             **({"concurrency": concurrency} if concurrency else {})), parent=parent)
         identity = retry.id
         assert "task_contract" not in retry.config
+        assert "assessment_targets" not in retry.config
         assert retry.config["limits"] == {**config["limits"], "concurrency": concurrency or 1}
     perform_security(identity, "test:1")
     with transaction() as db:

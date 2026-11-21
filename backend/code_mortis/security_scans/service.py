@@ -64,6 +64,7 @@ from code_mortis.security_scans import payload
 ACTIVE = {"queued", "running", "blocked"}
 STAGES = ("snapshot", "trivy", "analysis", "assessment", "verification", "report")
 RATING_POLICY = "highest-unresolved-severity/v1"
+ASSESSMENT_TARGETS = "direct-history/v1"
 
 
 def rolling_analysis(paths, concurrency, submit, stopped, stop_workers):
@@ -186,6 +187,8 @@ def create_scan(db, repo, actor, body, remote=None, parent=None):
             config["budget_schedule"] = parent.config["budget_schedule"] if parent else ROLLING_BUDGET
     if parent is None or "task_contract" in parent.config:
         config["task_contract"] = parent.config["task_contract"] if parent else security_engine.TASK_CONTRACT
+    if parent is None or "assessment_targets" in parent.config:
+        config["assessment_targets"] = parent.config["assessment_targets"] if parent else ASSESSMENT_TARGETS
     config["connection"]["model"] = body.model.strip() or (repo.settings.get("model") if repo.connection_id == connection.id else None) or connection.model
     if not config["connection"]["model"]:
         raise ValueError("Choose a model before starting a security scan.")
@@ -408,7 +411,7 @@ def finding_snapshot(row):
             "rotation": row.rotation, "pending_close": row.issue.get("desired_state") == "closed"}
 
 
-def assessment_keys(value, item, history=()):
+def assessment_keys(value, item, history=(), *, primary_only=False):
     evidence = value.get("evidence", [])
     source_sha = item.sha
     if isinstance(evidence, dict):
@@ -420,14 +423,20 @@ def assessment_keys(value, item, history=()):
                      *(ai_analysis.get("assessment") or {}).get("evidence", [])]
     else:
         citations = evidence
-    paths = {value["path"], *(citation["path"] for citation in citations)}
-    if source_sha != item.sha:
-        for path in list(paths):
+    def names(path):
+        if source_sha != item.sha:
             try:
-                paths.add(item.renamed(source_sha, path))
+                return {path, item.renamed(source_sha, path)}
             except ValueError:
                 pass  # Original paths and citation anchors still relate unavailable historical commits.
-    connected = {("path", path) for path in paths} | {
+        return {path}
+
+    if primary_only:
+        return {("path", path) for path in names(value["path"])} | {
+            ("anchor", path, quote) for citation in citations
+            if (quote := citation.get("quote", "").strip()) for path in names(citation["path"])}
+    paths = {value["path"], *(citation["path"] for citation in citations)}
+    connected = {("path", path) for original in paths for path in names(original)} | {
         ("anchor", citation["quote"].strip()) for citation in citations if citation.get("quote", "").strip()}
     dependencies = [assessment_keys(old, item) for old in history]
     while True:
@@ -440,6 +449,30 @@ def assessment_keys(value, item, history=()):
 def assessment_history(proposal, history, item):
     connected = assessment_keys(proposal, item, history)
     return [old for old in history if connected & assessment_keys(old, item) and model_finding_allowed(old, item)]
+
+
+def assessment_fingerprint(proposal):
+    return digest(json.dumps(["code", proposal["path"], proposal["category"],
+                              proposal["evidence"][0]["quote"], proposal["title"]]))
+
+
+def direct_assessment_history(proposal, history, item, fingerprint_match):
+    keys = assessment_keys(proposal, item, primary_only=True)
+    return [old for old in history
+            if (old["id"] == fingerprint_match or keys & assessment_keys(old, item, primary_only=True))
+            and model_finding_allowed(old, item)]
+
+
+def assessment_frontier(rows, keys, *, admitted=()):
+    earlier = set().union(*(keys[identity] for identity in admitted))
+    ready = []
+    for row in rows:
+        if row.id not in admitted:
+            if earlier.isdisjoint(keys[row.id]):
+                ready.append(row)
+            # A waiting candidate still owns its place before later writes to the same target.
+            earlier.update(keys[row.id])
+    return ready
 
 
 def model_finding_allowed(finding, item):
@@ -1129,10 +1162,37 @@ def perform(scan_id, claim):
             remaining = [SimpleNamespace(id=number, position=number, proposal=candidate) for number, candidate in enumerate(candidates)]
             parallel = concurrency > 1 and len(candidates) > 1
             rolling = parallel and (limits["token_budget"] is None or finite_rolling)
+            direct_targets = config.get("assessment_targets") == ASSESSMENT_TARGETS
+            frontier = assessment_frontier if direct_targets else assessment.independent_batch
 
-            def assessment_history_snapshot(db, *, lock=False):
+            def assessment_history_snapshot(db, *, lock=False, fingerprints=None):
                 query = select(SecurityFinding).where(SecurityFinding.repository_id == scan.repository_id).order_by(SecurityFinding.id)
-                return [finding_snapshot(row) for row in db.scalars(query.with_for_update() if lock else query)]
+                findings = list(db.scalars(query.with_for_update() if lock else query))
+                if fingerprints is not None:
+                    fingerprints.update((finding.fingerprint, finding.id) for finding in findings)
+                return [finding_snapshot(row) for row in findings]
+
+            def candidate_history(proposal, history):
+                if direct_targets:
+                    return direct_assessment_history(
+                        proposal, history, item, fingerprints.get(assessment_fingerprint(proposal)),
+                    )
+                return assessment_history(proposal, history, item)
+
+            def matching_proposal(candidate):
+                for _, _, task in saved.get(f"assessment:{candidate.id}", ()):
+                    result = task.get("result", {})
+                    if (not task.get("stale_history") or result.get("verdict") != "uncertain"
+                            or task.get("proposal") != candidate.proposal
+                            or not payload.reusable_source_context(task, ai_policy)):
+                        continue
+                    evidence = result["evidence"]
+                    try:
+                        if security_engine.redacted_context(item, evidence) == evidence:
+                            return {**candidate.proposal, "evidence": [*candidate.proposal["evidence"], *evidence]}
+                    except verification.VerificationOutputError:
+                        continue
+                return candidate.proposal
 
             def assessment_context(candidate, history, current_progress):
                 paths = list(dict.fromkeys(citation["path"] for citation in candidate.proposal["evidence"]))
@@ -1141,7 +1201,8 @@ def perform(scan_id, claim):
                     # Assess with the same source context, including guards not quoted in the allegation.
                     paths = sorted(set(paths) | set(analysis_task.get("context_paths", [])))
                 context = {"proposal": candidate.proposal,
-                    "history": assessment_history(candidate.proposal, history, item), "head_sha": item.sha, "diff": "",
+                    "history": selected_histories[candidate.id] if direct_targets else candidate_history(candidate.proposal, history),
+                    "head_sha": item.sha, "diff": "",
                     "sources": {"current": {path: item.source(path) for path in paths}}}
                 # Reconstruct history only to recognize cached inputs. New requests use live history.
                 saved_histories = {}
@@ -1157,7 +1218,8 @@ def perform(scan_id, claim):
                             row = before if candidate.position <= position else after
                         if row is not None:
                             recovered.append(row)
-                    saved_histories[source_id] = assessment_history(candidate.proposal, recovered, item)
+                    proposal = matching_proposals[candidate.id] if direct_targets else candidate.proposal
+                    saved_histories[source_id] = candidate_history(proposal, recovered)
                 return context, saved_histories
 
             def submit_assessment(pool, candidate, context, required_paths, allowance=None, *, budget_demand=None):
@@ -1205,8 +1267,9 @@ def perform(scan_id, claim):
                 while remaining:
                     if stopped():
                         raise ReviewStopped("Security scan cancelled.")
+                    fingerprints = {} if direct_targets else None
                     with transaction() as db:
-                        history = assessment_history_snapshot(db)
+                        history = assessment_history_snapshot(db, fingerprints=fingerprints)
                         current_progress = db.get(SecurityScan, scan_id).progress
                         used = current_progress.get("tokens")
                     if used is None:
@@ -1214,17 +1277,35 @@ def perform(scan_id, claim):
 
                     required_paths = {}
                     stop_admitting = Event()
-                    if rolling:
-                        initial_keys = {row.id: assessment_keys(row.proposal, item, history) for row in remaining}
-                        keys = initial_keys.copy()
+                    added_citations = {}
+                    if direct_targets:
+                        matching_proposals = {row.id: matching_proposal(row) for row in remaining}
+                        selected_histories = {identity: candidate_history(proposal, history)
+                                              for identity, proposal in matching_proposals.items()}
+                    if rolling or direct_targets:
+                        initial_keys = {}
+                        for row in remaining:
+                            if direct_targets:
+                                fingerprint = assessment_fingerprint(row.proposal)
+                                keys = assessment_keys(matching_proposals[row.id], item, primary_only=True)
+                                keys.add(("fingerprint", fingerprint))
+                                keys.update(("finding", finding["id"]) for finding in selected_histories[row.id])
+                                if target := fingerprints.get(fingerprint):
+                                    keys.add(("finding", target))
+                            else:
+                                keys = assessment_keys(row.proposal, item, history)
+                            initial_keys[row.id] = keys
                         candidate_keys = set().union(*initial_keys.values())
-                        admitted, added_citations = {}, {}
-                        ready = deque(assessment.independent_batch(remaining, keys))
+                    if rolling:
+                        keys = initial_keys.copy()
+                        admitted = {}
+                        ready = deque(frontier(remaining, keys))
                         pending = assessment_responses(
                             pool, ready, admitted, history, current_progress, required_paths, stop_admitting,
                         )
                     else:
-                        batch = assessment_batch(remaining, history, item, concurrency)
+                        batch = (frontier(remaining, initial_keys)[:concurrency] if direct_targets
+                                 else assessment_batch(remaining, history, item, concurrency))
                         contexts = {row.id: assessment_context(row, history, current_progress) for row in batch}
                         needed = sum(task_input("assessment", contexts[row.id][0], f"assessment:{row.id}",
                                                 contexts[row.id][1])[2] is None for row in batch)
@@ -1239,14 +1320,17 @@ def perform(scan_id, claim):
                         try:
                             assessed = results[candidate.id] = future.result()
                             assessment_completed += 1
-                            if rolling and assessed["verdict"] == "confirmed":
-                                cited = assessment_keys({"path": candidate.proposal["path"], "evidence": assessed["evidence"]}, item)
-                                added = (cited & candidate_keys) - initial_keys[candidate.id]
+                            confirmed = assessed["verdict"] == "confirmed"
+                            if direct_targets or (rolling and confirmed):
+                                cited = assessment_keys({"path": candidate.proposal["path"], "evidence": assessed["evidence"]},
+                                                        item, primary_only=direct_targets)
+                                added = (cited if direct_targets else cited & candidate_keys) - initial_keys[candidate.id]
                                 if added:
                                     added_citations[candidate.id] = added
-                                    keys[candidate.id] = initial_keys[candidate.id] | added
-                                    ready.clear()
-                                    ready.extend(assessment.independent_batch(remaining, keys, admitted=admitted))
+                                    if rolling and confirmed:
+                                        keys[candidate.id] = initial_keys[candidate.id] | added
+                                        ready.clear()
+                                        ready.extend(frontier(remaining, keys, admitted=admitted))
                         except InferenceStageBudgetError:
                             assessment_failed += 1
                             assessment_problems.append(f"Assessment token budget could not admit assessment: {candidate.proposal['path']}.")
@@ -1281,20 +1365,25 @@ def perform(scan_id, claim):
                     if rolling:
                         settling = {identity: wave for identity, wave in admitted.items() if wave < first_failed_wave}
                         batch = [row for row in remaining if row.id in settling]
+                    if direct_targets or rolling:
+                        waves = ((row.id,) for row in batch) if direct_targets else (
+                            wave for _, wave in groupby(settling, key=settling.__getitem__))
                         earlier_citations = set()
                         # A later admission may finish before an earlier response reveals their dependency.
-                        for _, wave in groupby(settling, key=settling.__getitem__):
+                        for wave in waves:
                             wave_citations = set()
                             for identity in wave:
                                 if identity not in results:
                                     continue
-                                if initial_keys[identity] & earlier_citations:
+                                cited = added_citations.get(identity, set())
+                                dependencies = initial_keys[identity] | cited if direct_targets else initial_keys[identity]
+                                if dependencies & earlier_citations:
                                     stale_results[identity] = results[identity] = {
                                         **results[identity], "verdict": "uncertain", "finding_id": None,
                                         "explanation": "Finding history changed during assessment. Retry this security scan to evaluate the candidate with the updated history.",
                                     }
-                                else:
-                                    wave_citations.update(added_citations.get(identity, ()))
+                                elif results[identity]["verdict"] == "confirmed":
+                                    wave_citations.update(dependencies if direct_targets else cited)
                             earlier_citations.update(wave_citations)
                     with transaction() as db:
                         row = db.get(SecurityScan, scan_id)
@@ -1331,8 +1420,7 @@ def perform(scan_id, claim):
                             proposal = candidate.proposal
                             evidence = {**proposal, "kind": "code", "sources": ["mortis"], "source_sha": item.sha,
                                         "source_hash": item.inventory[proposal["path"]]["hash"], "assessment": assessed,
-                                        "fingerprint": digest(json.dumps(["code", proposal["path"], proposal["category"],
-                                                                          proposal["evidence"][0]["quote"], proposal["title"]]))}
+                                        "fingerprint": assessment_fingerprint(proposal)}
                             finding = observe(db, row, evidence, assessed["finding_id"])
                             remember_observation(finding)
                             observed.add(finding.id)
@@ -1340,7 +1428,8 @@ def perform(scan_id, claim):
                             tasks = dict(row.progress["tasks"])
                             for identity, assessed in stale_results.items():
                                 key = f"assessment:{identity}"
-                                tasks[key] = {**tasks[key], "result": assessed}
+                                tasks[key] = {**tasks[key], "result": assessed,
+                                              **({"stale_history": True} if direct_targets else {})}
                             row.progress = {**row.progress, "tasks": tasks}
                     if fatal:
                         raise fatal
