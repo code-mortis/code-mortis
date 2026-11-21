@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function mockPullActions(page: Page, options: { write?: boolean; admin?: boolean; paused?: boolean; closed?: boolean; ignored?: boolean } = {}) {
+async function mockPullActions(page: Page, options: { write?: boolean; admin?: boolean; paused?: boolean; closed?: boolean; ignored?: boolean; title?: string } = {}) {
   const calls: { path: string; method: string; body: unknown }[] = [];
   const controls = { ignored: options.ignored ?? false, active: 2, latestRun: false, failAction: false, failDetail: false, write: options.write !== false };
   const repo = {
@@ -12,7 +12,7 @@ async function mockPullActions(page: Page, options: { write?: boolean; admin?: b
   function pull(id: string) {
     return {
       id, repository_id: 22, repository_name: repo.full_name, number: id === "start" ? 42 : 43,
-      title: id === "start" ? "Validate provider responses" : "Preserve review history",
+      title: id === "start" ? options.title ?? "Validate provider responses" : "Preserve review history",
       author: "developer", state: options.closed ? "closed" : "open", draft: false, fork: false,
       ignored: id === "start" && controls.ignored, head_ref: "feature", head_sha: "a".repeat(40), base_sha: "b".repeat(40),
       created_at: "2026-10-17T12:00:00Z", updated_at: "2026-10-17T12:00:00Z", open_findings: 0,
@@ -60,6 +60,22 @@ async function mockPullActions(page: Page, options: { write?: boolean; admin?: b
 }
 
 for (const surface of ["/", "/repositories/22"]) {
+  test(`a truncated PR title keeps the row and its menu clickable on ${surface}`, async ({ page }) => {
+    const title = "Validate provider responses across repository configurations. ".repeat(6).trim();
+    await mockPullActions(page, { title });
+    await page.goto(surface);
+    const link = page.getByRole("link", { name: title, exact: true });
+    const row = page.locator("[data-pull-row]").filter({ has: link });
+
+    await row.getByRole("button", { name: /^Actions for #42:/ }).click();
+    await expect(page.getByRole("menuitem", { name: "View pull request", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(link).toBeVisible();
+    // Click the row padding, outside the title's bounds.
+    await row.click({ position: { x: 8, y: 8 } });
+    await expect(page).toHaveURL(/\/pulls\/start$/);
+  });
+
   for (const ignored of [false, true]) {
     test(`PR menus refresh stale ${ignored ? "ignored" : "visible"} rows on ${surface}`, async ({ page }) => {
       const { controls } = await mockPullActions(page, { ignored });
@@ -268,8 +284,6 @@ test("ignored PR details confirm restore and keep review controls disabled", asy
   const reason = "Reviews are stopped while this pull request is ignored. Restore it to run reviews.";
   await expect(page.getByText(reason, { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run review", exact: true })).toHaveAccessibleDescription(reason);
-  await expect(page.getByRole("combobox", { name: "Review connection" })).toBeDisabled();
-  await expect(page.getByRole("combobox", { name: "Review connection" })).toHaveAccessibleDescription(reason);
   await page.screenshot({ path: `/private/tmp/pr-ignored-detail-${info.project.name}.png` });
   await expect(page.getByText("Restore this pull request before reviewing it.", { exact: true })).toHaveCount(0);
   const trigger = page.getByRole("region", { name: "Ignored pull request" }).getByRole("button", { name: "Restore pull request", exact: true });

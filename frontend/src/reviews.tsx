@@ -48,7 +48,6 @@ import { Button } from "./components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./components/ui/dialog";
 import { Badge, badgeRadius } from "./components/ui/badge";
 import { FilterBar } from "./components/filter-bar";
-import { SearchSelect } from "./components/search-select";
 import { label } from "./lib/inbox-filters";
 import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
@@ -279,8 +278,6 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [restoring, setRestoring] = useState(false);
   const restoreTrigger = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const connections = useApi<Schema["ConnectionOut"][]>("/connections");
-  const [connection, setConnection] = useState("");
   const [urlTab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "code", "impact"], "findings");
   const tab = urlTab === "impact" ? "code" : urlTab;
   const resolved = tab === "resolved";
@@ -345,12 +342,11 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const scopeTotal = count(status);
   const sections = findings?.groups.filter((group) => group.total > 0) ?? [];
   const noOpenFindings = status === "open" && total > 0 && !count("open") && !severities.length && !categories.length && !term;
-  const needsSharedConnection = !connection && repository.connection_requires_setup;
   const reviewUnavailable = !can_write ? "You have read-only access to this pull request."
     : pr.ignored ? "Reviews are stopped while this pull request is ignored. Restore it to run reviews."
     : running || pr.state !== "open" ? null
     : !repository.enabled ? "Reviews are paused. Enable them in repository configuration."
-    : needsSharedConnection ? "The repository's connection is retired. Choose a shared API connection for this review, or update repository configuration."
+    : repository.connection_requires_setup ? "The repository's connection is retired. Update the default AI connection in repository settings."
     : pr.fork ? "Fork reviews require a manual start." : null;
   function showAllFindings() {
     filters.clear();
@@ -380,7 +376,16 @@ export function PullDetail({ admin }: { admin: boolean }) {
       </DialogContent>
     </Dialog>
     <div className="mb-6 min-w-0">
-      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>} titleMeta={<Status value={pr.state} />}>
+      <PageTitle className="mb-0" headingProps={{ ref: heading, tabIndex: -1 }} title={<><span className="font-normal tabular-nums text-muted-foreground">#{pr.number}</span> {pr.title}</>} titleMeta={<Status value={pr.state} />}
+        actions={can_write && pr.state === "open" && (
+          <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined}
+            disabled={action.isPending || running || pr.ignored || !repository.enabled || repository.connection_requires_setup}
+            onClick={async () => {
+              const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: {} }).catch(() => null);
+              if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
+            }}><Play aria-hidden="true" className="size-4" />Run review</Button>
+        )}
+        footer={reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound aria-hidden="true" className="size-3.5 shrink-0" /><span className="break-words [overflow-wrap:anywhere]">@{pr.author}</span></span>
           {pr.draft && <span>Draft</span>}
@@ -413,19 +418,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
               </> : <span>A review records findings and coverage for this commit.</span>}
             </div>
           </div>
-          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2 empty:hidden">
-            {latest && <Link className={repositoryActivityLink} to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
-            {can_write && pr.state === "open" && <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-              <SearchSelect aria-label="Review connection" aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled} value={connection} onChange={setConnection} className="min-w-0 flex-1 basis-48 sm:w-56 sm:flex-none" placeholder="Repository default"
-                options={[{ value: "", label: "Repository default" }, ...(connections.data ?? []).filter((item) => item.kind === "api").map((item) => ({ value: item.id, label: item.name }))]} />
-              <Button aria-describedby={reviewUnavailable ? "review-unavailable" : undefined} disabled={action.isPending || running || pr.ignored || pr.state !== "open" || !repository.enabled || needsSharedConnection} onClick={async () => {
-                const run = await action.mutateAsync({ path: `/pulls/${id}/runs`, body: connection ? { connection_id: connection } : {} }).catch(() => null);
-                if (run) navigate(`/runs/${run.id}`, { state: { inbox: inboxReturn, repository: repositoryReturn } });
-              }}><Play aria-hidden="true" className="size-4" />{running ? "Review in progress" : action.isPending ? "Starting review…" : "Run review"}</Button>
-            </div>}
-          </div>
+          {latest && <Link className={repositoryActivityLink} to={`/runs/${latest.id}`} state={{ inbox: inboxReturn, repository: repositoryReturn }}>Inspect review<ChevronRight aria-hidden="true" className="size-3.5" /></Link>}
         </div>
-        {reviewUnavailable && <p id="review-unavailable" className="mt-3 text-xs text-muted-foreground">{reviewUnavailable}</p>}
       </section>
     </div>
     <ErrorNotice error={action.error || query.error} />

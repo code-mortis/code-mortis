@@ -4322,50 +4322,33 @@ for (const available of [true, false]) {
   });
 }
 
-test("review connection stays closed after a running review disables it", async ({ page }) => {
+test("PR header review action updates as a review starts and finishes", async ({ page }) => {
   await mock(page);
   await page.clock.install();
   let status: Run["status"] = "completed";
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, runs: [{ ...run, status }], findings: [], can_write: true }));
   await page.goto("/pulls/pr");
-  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
-  await picker.fill("Team");
-  await expect(page.getByRole("listbox")).toBeVisible();
+  const header = page.locator('[data-slot="page-title"]');
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
   status = "running";
   await page.clock.fastForward(6000);
-  await expect(picker).toBeDisabled();
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await expect(page.locator('[data-slot="input-group"]').filter({ has: picker }).getByRole("button", { name: "Show options" })).toBeDisabled();
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "Latest review" }).getByRole("link", { name: "Inspect review" })).toHaveAttribute("href", "/runs/run");
   status = "completed";
   await page.clock.fastForward(6000);
-  await expect(picker).toBeEnabled();
-  await expect(picker).toHaveValue("");
-  await expect(picker).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("listbox")).toHaveCount(0);
-  await picker.fill("Team");
-  await expect(page.getByRole("option", { name: "Team reviews", exact: true })).toBeVisible();
+  await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeEnabled();
 });
 
-test("pull request connection search preserves the default and submits the selected connection", async ({ page }, info) => {
+test("PR header runs a review using the repository default connection", async ({ page }) => {
   const requests = await mock(page);
-  await page.route("**/api/v1/connections", (route) => route.fulfill({ json: [connection, { ...connection, id: "research", name: "Research reviews" }] }));
   await page.goto("/pulls/pr");
-  const picker = page.getByRole("combobox", { name: "Review connection", exact: true });
-  await expect(picker).toHaveAttribute("placeholder", "Repository default");
-  await picker.fill("Research");
-  await expect(page.getByRole("option")).toHaveCount(1);
+  const header = page.locator('[data-slot="page-title"]');
+  const review = header.getByRole("button", { name: "Run review", exact: true });
+  await expect(review).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Review connection", exact: true })).toHaveCount(0);
   await noOverflow(page);
-  await page.screenshot({ path: `../.impeccable/review/combobox-connection-${info.project.name}.png`, animations: "disabled" });
-  await page.getByRole("option", { name: "Research reviews", exact: true }).click();
-  await expect(picker).toHaveValue("Research reviews");
-  await chooseOption(page, picker, "Repository default");
-  await expect(picker).toHaveValue("");
-  await picker.fill("Repository default");
-  await expect(page.getByRole("option", { name: "Repository default", exact: true })).toHaveAttribute("aria-selected", "true");
-  await picker.press("Escape");
-  await chooseOption(page, picker, "Research reviews");
-  await page.getByRole("button", { name: "Run review", exact: true }).click();
-  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "research" });
+  await review.click();
+  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({});
 });
 
 test("saved model selection refreshes without replacing custom IDs", async ({ page }, info) => {
@@ -8813,7 +8796,7 @@ test("run history fetches ten runs per page and keeps summary independent of loa
   });
   await page.goto("/pulls/pr");
   await expect(page.getByRole("tab", { name: "Run history 23" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Review in progress" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
   await expect(page.getByText("Not observed in latest review", { exact: true })).toHaveCount(0);
   expect(requests).toEqual([]);
   await page.getByRole("tab", { name: "Run history 23" }).click();
@@ -9060,21 +9043,20 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
     }));
     await page.goto("/pulls/pr");
     const summary = page.getByRole("region", { name: "Latest review" });
+    const header = page.locator('[data-slot="page-title"]');
     const messages = {
       merged: "Reviews can only run on open pull requests.", closed: "Reviews can only run on open pull requests.", paused: "Reviews are paused.",
       running: "A review is already queued or running.", viewer: "You have read-only access",
       fork: "Fork reviews require a manual start.",
     };
     if (["running", "merged", "closed"].includes(state)) await expect(page.getByText(messages[state], { exact: true })).toHaveCount(0);
-    else await expect(summary).toContainText(messages[state]);
+    else await expect(header).toContainText(messages[state]);
+    await expect(summary.getByRole("button")).toHaveCount(0);
     if (["viewer", "merged", "closed"].includes(state)) {
-      await expect(summary.getByRole("button")).toHaveCount(0);
-      await expect(page.getByLabel("Review connection")).toHaveCount(0);
-    } else if (state === "fork") await expect(summary.getByRole("button", { name: "Run review" })).toBeEnabled();
+      await expect(header.getByRole("button")).toHaveCount(0);
+    } else if (state === "fork") await expect(header.getByRole("button", { name: "Run review" })).toBeEnabled();
     else {
-      await expect(summary.getByRole("button", { name: state === "running" ? "Review in progress" : "Run review", exact: true })).toBeDisabled();
-      await expect(summary.getByRole("button", { name: "Show options" })).toBeDisabled();
-      await expect(page.getByLabel("Review connection")).toBeDisabled();
+      await expect(header.getByRole("button", { name: "Run review", exact: true })).toBeDisabled();
     }
     if (state === "merged" || state === "closed") {
       await expect(page.locator("#review-unavailable")).toHaveCount(0);
@@ -9636,17 +9618,13 @@ test("retired repository connections require explicit shared selection and use M
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({ connection_id: "connection", settings: { analysis_engine: "mortis" } });
 });
 
-test("retired review default blocks inference until an explicit shared override", async ({ page }) => {
-  const requests = await mock(page);
+test("retired review default directs users to repository settings", async ({ page }) => {
+  await mock(page);
   await mockPullDetail(page, () => ({ pull_request: pr, repository: { ...repo, connection_requires_setup: true }, runs: [run], findings: [], can_write: true }));
   await page.goto("/pulls/pr");
   const review = page.getByRole("button", { name: "Run review", exact: true });
   await expect(review).toBeDisabled();
-  await expect(page.getByText("The repository's connection is retired.", { exact: false })).toBeVisible();
-  await chooseOption(page, page.getByRole("combobox", { name: "Review connection", exact: true }), "Team reviews");
-  await expect(review).toBeEnabled();
-  await review.click();
-  await expect.poll(() => requests.find((request) => request.path === "/pulls/pr/runs")?.body).toEqual({ connection_id: "connection" });
+  await expect(review).toHaveAccessibleDescription("The repository's connection is retired. Update the default AI connection in repository settings.");
 });
 
 test("native review history stays readable after subscription setup is retired", async ({ page }) => {
