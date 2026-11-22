@@ -149,7 +149,7 @@ export function Repositories({ admin, section }: { admin: boolean; section?: "se
   const repositoryPath = `/repositories/${requested ?? selected?.id}`;
   const returnSearch = new URLSearchParams(params);
   if (section) returnSearch.delete("tab");
-  const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
+  const returnPath = repositoryPath + (returnSearch.size && section !== "custom-rules" ? `?${returnSearch}` : "");
   if (section) {
     if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
     if (section === "settings" && params.get("tab") === "review-rules") {

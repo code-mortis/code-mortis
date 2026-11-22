@@ -27,7 +27,7 @@ export function AppSidebar({ admin }: { admin: boolean }) {
   const listPath = base + (search.size ? `?${search}` : "");
   const savedList = repositoryReturn?.split("?")[0] === base ? repositoryReturn : null;
   const pullPath = route.pathname.replace(/\/+$/, "") === base ? listPath
-    : savedList ?? (section === "settings" || section === "custom-rules" ? listPath : base);
+    : savedList ?? (section === "settings" ? listPath : base);
   const running = ["queued", "running", "blocked"].includes(repository.security?.latest_status ?? "");
   const items = [
     { key: "overview", label: "Overview", path: base + "/overview", icon: House },

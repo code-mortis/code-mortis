@@ -9679,14 +9679,16 @@ test("Mortis is saved without an engine selector", async ({ page }, info) => {
   });
 });
 
-test("repository custom rules use the workspace width and persist confirmed changes", async ({ page }) => {
+test("repository custom rules use the workspace width and persist confirmed changes", async ({ page }, info) => {
   const requests = await mock(page);
   const legacy = { rules: [{ path: "**/*.py", rule: "Keep old checks" }] };
   const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
   const keepRule = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
+  const inactiveKeep = { ...keepRule, active: false };
   const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "src/**/*.py", active: true };
   let saved: Schema["ReviewRule"][] = [oldRule, keepRule];
-  let failDelete = true;
+  let failToggle = false;
+  let failDelete = false;
   let failEdit = false;
   const saves: Schema["ReviewRulesUpdate"][] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({
@@ -9694,6 +9696,10 @@ test("repository custom rules use the workspace width and persist confirmed chan
   }));
   await page.route("**/api/v1/repositories/22/review-rules", (route) => {
     const request: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
+    if (failToggle) {
+      failToggle = false;
+      return route.fulfill({ status: 503, json: { detail: "The rule status could not be saved." } });
+    }
     if (failDelete) {
       failDelete = false;
       return route.fulfill({ status: 503, json: { detail: "The rule could not be deleted. Try again." } });
@@ -9721,30 +9727,48 @@ test("repository custom rules use the workspace width and persist confirmed chan
   const panel = page.getByRole("region", { name: "Custom rules", exact: true });
   await expect(panel.getByText("Legacy repository rules still apply.", { exact: false })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Test a path" })).toHaveCount(0);
+  await expect(panel.getByRole("list", { name: "Repository review rules" }).getByRole("listitem")).toHaveCount(2);
   expect(await panel.evaluate((element) => element.clientWidth === element.parentElement?.clientWidth)).toBe(true);
   await noOverflow(page);
+  await panel.screenshot({ path: info.outputPath("custom-rules-list.png") });
 
-  const removeOld = panel.getByRole("button", { name: "Delete Old" });
+  const actionsFor = (name: string) => panel.getByRole("button", { name: `Actions for ${name}`, exact: true });
+  async function selectRuleAction(name: string, action: "Edit" | "Delete") {
+    await actionsFor(name).click();
+    await page.getByRole("menuitem", { name: action, exact: true }).click();
+  }
+  const oldActions = actionsFor("Old");
   const keepActive = panel.getByRole("switch", { name: "Active rule Keep" });
   const confirm = page.getByRole("dialog", { name: "Delete rule?", exact: true });
-  await keepActive.uncheck();
-  await removeOld.click();
+  failToggle = true;
+  await keepActive.click();
+  await expect(panel.getByRole("alert")).toContainText("The rule status could not be saved.");
+  await expect(keepActive).toBeChecked();
+  expect(saves).toEqual([]);
+  await keepActive.click();
+  await expect(keepActive).not.toBeChecked();
+  await expect(page.locator('[data-sonner-toaster][data-y-position="bottom"][data-x-position="right"]')
+    .getByText("Rule deactivated.", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+  expect(saves).toEqual([{ expected_rules: [oldRule, keepRule], rules: [oldRule, inactiveKeep] }]);
+  await selectRuleAction("Old", "Delete");
   await expect(confirm).toContainText("Delete Old from this repository?");
   await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
   await confirm.getByRole("button", { name: "Cancel" }).click();
-  await expect(removeOld).toBeFocused();
-  expect(saves).toEqual([]);
-  await removeOld.click();
+  await expect(oldActions).toBeFocused();
+  expect(saves).toHaveLength(1);
+  await selectRuleAction("Old", "Delete");
+  failDelete = true;
   await confirm.getByRole("button", { name: "Delete rule", exact: true }).click();
   await expect(confirm.getByRole("alert")).toContainText("The rule could not be deleted.");
   await confirm.getByRole("button", { name: "Cancel" }).click();
-  await expect(removeOld).toBeVisible();
-  await removeOld.click();
+  await expect(oldActions).toBeVisible();
+  await selectRuleAction("Old", "Delete");
   await confirm.getByRole("button", { name: "Delete rule", exact: true }).click();
   await expect(page.getByText("Rule deleted.", { exact: true })).toBeVisible();
-  await expect(removeOld).toHaveCount(0);
+  await expect(oldActions).toHaveCount(0);
   await expect(keepActive).not.toBeChecked();
-  expect(saves).toEqual([{ expected_rules: [oldRule, keepRule], rules: [keepRule] }]);
+  expect(saves.at(-1)).toEqual({ expected_rules: [oldRule, inactiveKeep], rules: [inactiveKeep] });
 
   const add = panel.getByRole("button", { name: "Add rule", exact: true });
   const dialog = page.getByRole("dialog", { name: "Add rule", exact: true });
@@ -9754,7 +9778,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await name.fill("Discarded");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(add).toBeFocused();
-  expect(saves).toHaveLength(1);
+  expect(saves).toHaveLength(2);
   await add.click();
   await expect(name).toHaveValue("");
   await name.fill(newRule.name);
@@ -9765,27 +9789,26 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page.getByText("Rule added.", { exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await expect(keepActive).not.toBeChecked();
-  expect(saves[1]).toEqual({ expected_rules: [keepRule], rules: [keepRule, newRule] });
+  expect(saves.at(-1)).toEqual({ expected_rules: [inactiveKeep], rules: [inactiveKeep, newRule] });
 
   await page.clock.install();
   await page.goto("/repositories/22/settings?tab=review-rules");
   await expect(page).toHaveURL("/repositories/22/custom-rules");
-  await expect(removeOld).toHaveCount(0);
-  await expect(keepActive).toBeChecked();
-  const edit = panel.getByRole("button", { name: "Edit Ownership" });
+  await expect(oldActions).toHaveCount(0);
+  await expect(keepActive).not.toBeChecked();
+  const ownershipActions = actionsFor("Ownership");
   const editDialog = page.getByRole("dialog", { name: "Edit rule", exact: true });
   const instructions = editDialog.getByLabel("Instructions", { exact: true });
-  await keepActive.uncheck();
-  await edit.click();
+  await selectRuleAction("Ownership", "Edit");
   await expect(editDialog.getByLabel("Name", { exact: true })).toHaveValue(newRule.name);
   await expect(instructions).toHaveValue(newRule.instructions);
   await expect(editDialog.getByLabel("Glob pattern (optional)", { exact: true })).toHaveValue(newRule.glob);
   await instructions.fill("Discard these edits.");
   await editDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(edit).toBeFocused();
-  expect(saves).toHaveLength(2);
+  await expect(ownershipActions).toBeFocused();
+  expect(saves).toHaveLength(3);
 
-  await edit.click();
+  await selectRuleAction("Ownership", "Edit");
   await expect(instructions).toHaveValue(newRule.instructions);
   await instructions.fill("Check ownership on every call.");
   failEdit = true;
@@ -9796,24 +9819,84 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await saveEdit.click();
   await expect(page.getByText("Rule saved.", { exact: true })).toBeVisible();
   await expect(editDialog).toHaveCount(0);
-  await expect(edit).toBeFocused();
+  await expect(ownershipActions).toBeFocused();
   await expect(keepActive).not.toBeChecked();
-  expect(saves[2]).toEqual({ expected_rules: [keepRule, newRule],
-    rules: [keepRule, { ...newRule, instructions: "Check ownership on every call." }] });
+  expect(saves.at(-1)).toEqual({ expected_rules: [inactiveKeep, newRule],
+    rules: [inactiveKeep, { ...newRule, instructions: "Check ownership on every call." }] });
   expect(requests).toEqual([]);
   await page.reload();
   await expect(panel.getByText("Check ownership on every call.", { exact: true })).toBeVisible();
-  await expect(keepActive).toBeChecked();
+  await expect(keepActive).not.toBeChecked();
   saved = [{ name: "Polled", instructions: "New server rule", active: true, glob: "" }];
   await page.clock.runFor(5500);
-  await expect(panel.getByRole("button", { name: "Edit Polled" })).toBeVisible();
-  await panel.getByRole("button", { name: "Edit Polled" }).click();
+  await expect(actionsFor("Polled")).toBeVisible();
+  await selectRuleAction("Polled", "Edit");
   await instructions.fill("Keep my draft.");
   saved = [{ name: "Other changes", instructions: "Keep server edits", active: true, glob: "" }];
   await page.clock.runFor(5500);
   await expect(instructions).toHaveValue("Keep my draft.");
   await editDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(panel.getByRole("button", { name: "Edit Other changes" })).toBeVisible();
+  await expect(actionsFor("Other changes")).toBeVisible();
+
+  saved = [];
+  await page.clock.runFor(5500);
+  await expect(panel.getByRole("heading", { name: "No custom rules yet" })).toBeVisible();
+  await expect(add).toBeEnabled();
+  await noOverflow(page);
+  await panel.screenshot({ path: info.outputPath("custom-rules-empty.png") });
+});
+
+test("repository custom rules use shared filters and sort the display order", async ({ page }) => {
+  await mock(page);
+  const original = [
+    { name: "Zulu", instructions: "Review database changes", glob: "", active: true },
+    { name: "Alpha", instructions: "Review build configuration", glob: "src/workflows/**", active: true },
+    { name: "Beta", instructions: "Review API changes", glob: "", active: false },
+  ];
+  let saved: Schema["ReviewRule"][] = original;
+  const writes: Schema["ReviewRulesUpdate"][] = [];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, review_rules: saved }] }));
+  await page.route("**/api/v1/repositories/22/review-rules", (route) => {
+    const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
+    writes.push(body);
+    saved = body.rules;
+    return route.fulfill({ json: saved });
+  });
+  await page.goto("/repositories/22/custom-rules");
+  const panel = page.getByRole("region", { name: "Custom rules", exact: true });
+  const names = panel.getByRole("list", { name: "Repository review rules" }).getByRole("heading");
+  await expect(names).toHaveText(["Zulu", "Alpha", "Beta"]);
+  await panel.getByRole("button", { name: "Sort by Rule order" }).click();
+  await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
+  await expect(names).toHaveText(["Alpha", "Beta", "Zulu"]);
+  await panel.getByRole("button", { name: "Sort descending" }).click();
+  await expect(names).toHaveText(["Zulu", "Beta", "Alpha"]);
+
+  const alpha = panel.getByRole("switch", { name: "Active rule Alpha" });
+  await alpha.click();
+  await expect(alpha).not.toBeChecked();
+  expect(writes).toEqual([{ expected_rules: original, rules: [original[0], { ...original[1], active: false }, original[2]] }]);
+
+  await panel.getByRole("button", { name: "Filters", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Status", exact: true }).click();
+  await page.getByRole("group", { name: "Status", exact: true }).getByRole("checkbox", { name: /^Inactive/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(names).toHaveText(["Beta", "Alpha"]);
+  const search = panel.getByRole("textbox", { name: "Search custom rules" });
+  await search.fill("WORKFLOWS");
+  await expect(names).toHaveText(["Alpha"]);
+  await page.reload();
+  await expect(search).toHaveValue("WORKFLOWS");
+  await expect(names).toHaveText(["Alpha"]);
+  await search.fill("no matching rules");
+  await expect(panel.getByRole("heading", { name: "No matching rules" })).toBeVisible();
+  await panel.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue("");
+  await expect(names).toHaveText(["Zulu", "Beta", "Alpha"]);
+  await openNavigation(page);
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }))
+    .toHaveAttribute("href", "/repositories/22");
 });
 
 test("historical OCR reviews preserve origin and publication recovery without resuming inference", async ({ page }) => {

@@ -49,7 +49,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
     search.delete("tab");
     const listPath = repositoryPath + (search.size ? `?${search}` : "");
     const savedList = repositoryReturn?.split("?")[0] === repositoryPath ? repositoryReturn : null;
-    const returnPath = pullListRoute ? listPath : savedList ?? (repositorySettingsRoute || customRulesRoute ? listPath : repositoryPath);
+    const returnPath = pullListRoute ? listPath : savedList ?? (repositorySettingsRoute ? listPath : repositoryPath);
     const returnState = { inbox: inboxReturn, repository: returnPath };
     crumbs.push({ label: repo.full_name.split("/").at(-1) || repo.full_name, to: repositoryPath + "/overview", state: returnState });
     if (overviewRoute || analyticsRoute) {

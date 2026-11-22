@@ -311,6 +311,11 @@
   .settings-member-role { grid-column: auto; padding-inline-start: 0; }
   .settings-member-actions { grid-column: auto; grid-row: auto; }
 }
+@container settings (width < 40rem) {
+  li.settings-rule-row { position: relative; }
+  .settings-rule-row > .settings-identity { padding-inline-end: 2.75rem; }
+  .settings-rule-row > .settings-actions { position: absolute; inset-block-start: 0.5rem; inset-inline-end: 0.5rem; }
+}
 @container settings (min-width: 40rem) {
   .settings-record {
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 7rem);
@@ -321,6 +326,9 @@
   }
   .settings-connection-row {
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) 11rem;
+  }
+  .settings-rule-row {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 7rem 2rem;
   }
   .settings-identity, .settings-actions { grid-column: auto; }
   .settings-list-heading { display: grid; }
