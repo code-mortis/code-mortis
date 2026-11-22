@@ -718,7 +718,7 @@ async function mock(
 
 async function openNavigation(page: Page) {
   const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
-  if (page.viewportSize()!.width < 1024 && /^\/(?:repositories\/[^/]+(?:\/(?:settings|overview|analytics))?|pulls\/[^/]+|runs\/[^/]+|security\/(?:repositories|scans)\/[^/]+)\/?$/.test(new URL(page.url()).pathname)) {
+  if (page.viewportSize()!.width < 1024 && /^\/(?:repositories\/[^/]+(?:\/(?:settings|custom-rules|overview|analytics))?|pulls\/[^/]+|runs\/[^/]+|security\/(?:repositories|scans)\/[^/]+)\/?$/.test(new URL(page.url()).pathname)) {
     await expect(toggle).toBeVisible();
     await toggle.click();
   }
@@ -979,7 +979,7 @@ test("home has only Inbox while organization and repository pickers open scoped 
   await expect(page).toHaveURL("/repositories/23/overview");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Repository sections" });
-  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Security", "Repository settings"]);
+  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Custom rules", "Security", "Repository settings"]);
   await expect(nav.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
   await nav.getByRole("link", { name: "Pull requests", exact: true }).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);
@@ -1338,9 +1338,14 @@ test("organization directory handles long names, empty access and member navigat
   await directory.getByRole("link", { name: `${name}-39`, exact: true }).click();
   await expect(page).toHaveURL("/repositories/61/overview");
   await openNavigation(page);
-  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Repository settings" })).toHaveCount(0);
+  const nav = page.getByRole("navigation", { name: "Repository sections" });
+  await expect(nav.getByRole("link", { name: "Repository settings" })).toHaveCount(0);
+  await expect(nav.getByRole("link", { name: "Custom rules", exact: true })).toHaveCount(0);
   await closeNavigation(page);
   await noOverflow(page);
+  await page.goto("/repositories/61/custom-rules");
+  await expect(page).toHaveURL(/\/repositories\/61(?:\?state=open)?$/);
+  await expect(page.getByRole("heading", { name: "Custom rules", exact: true })).toHaveCount(0);
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [] }));
   await page.goto(`/organizations/${owner}/repositories`);
   await expect(page.getByRole("heading", { name: "No repositories available", exact: true })).toBeVisible();
@@ -1606,7 +1611,7 @@ test("repository sensitivity preserves custom rules and saves all three policies
   await expect(slider).toHaveValue("0");
   await expect(slider).toHaveAttribute("aria-valuetext", "Low noise");
   await expect(slider).toHaveAccessibleDescription("Material bugs with likely triggers.");
-  await expect(page.getByRole("textbox", { name: "Custom review rules (JSON)" })).toHaveValue(JSON.stringify(rules, null, 2));
+  await expect(page.getByRole("textbox", { name: "Custom review rules (JSON)" })).toHaveCount(0);
   await expect(slider).toHaveValue("0");
   expect(saves).toHaveLength(0);
   expect(requests).toHaveLength(0);
@@ -1626,7 +1631,9 @@ test("repository sensitivity preserves custom rules and saves all three policies
     expect(layout.contentWidth).toBeLessThanOrEqual(layout.availableWidth);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText("Repository settings saved.", { exact: true }).last()).toBeVisible();
-    expect(saves.at(-1)).toMatchObject({ review_sensitivity: value, rules });
+    expect(saves.at(-1)).toMatchObject({ review_sensitivity: value });
+    expect(saves.at(-1)).not.toHaveProperty("rules");
+    expect(savedSettings.rules).toEqual(rules);
     expect(saves.at(-1)).not.toHaveProperty("background");
     await page.goto("/repositories/22/settings");
     await expect(slider).toHaveValue(String(index));
@@ -2556,7 +2563,7 @@ test("PR summary stays mounted and still while polling GitHub sync state", async
   await noOverflow(page);
 });
 
-test("repository settings exposes the rules draft, run limits, and unsaved state", async ({ page }) => {
+test("repository settings exposes run limits and unsaved state", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings");
   const form = page.getByRole("form", { name: "Repository settings" });
@@ -2578,34 +2585,7 @@ test("repository settings exposes the rules draft, run limits, and unsaved state
   await time.fill("900");
   await expect(unsaved).toHaveCount(0);
 
-  const disclosure = form.getByText("Custom review rules", { exact: true });
-  const rules = form.getByRole("textbox", { name: "Custom review rules (JSON)" });
-  await expect(rules).toBeHidden();
-  await disclosure.click();
-  await rules.fill("{");
-  await disclosure.click();
-  await repositorySection(page, "Security scans");
-  await expect(unsaved).toBeVisible();
-  await save.click();
-  await expect(rules).toBeFocused();
-  await expect(rules).toHaveValue("{");
-  await expect(form.getByRole("alert")).toContainText("Rules must contain valid JSON");
   expect(requests).toEqual([]);
-
-  await rules.fill('{"rules":[]}');
-  await save.click();
-  await expect(page.getByText("Repository settings saved.", { exact: true })).toBeVisible();
-  await expect(unsaved).toHaveCount(0);
-  expect(requests).toHaveLength(1);
-  expect(requests[0]).toMatchObject({ path: "/repositories/22", body: { settings: { rules: { rules: [] } } } });
-
-  await rules.fill("");
-  await save.click();
-  await expect(rules).toBeHidden();
-  await expect(unsaved).toHaveCount(0);
-  expect(requests[1]).toMatchObject({ path: "/repositories/22", body: { settings: { rules: null } } });
-  await disclosure.click();
-  await expect(rules).toBeEditable();
 });
 
 test("repository settings keeps later edits marked unsaved after an in-flight save", async ({ page }) => {
@@ -2627,17 +2607,16 @@ test("repository settings keeps later edits marked unsaved after an in-flight sa
   await save.click();
   await expect(form.getByRole("button", { name: "Saving…" })).toBeDisabled();
   await bots.uncheck();
-  await form.getByText("Custom review rules", { exact: true }).click();
-  const rules = form.getByRole("textbox", { name: "Custom review rules (JSON)" });
-  await rules.fill('{"rules":[]}');
+  const time = form.getByLabel("Time limit (seconds)", { exact: true });
+  await time.fill("1200");
   release();
   await expect(save).toBeEnabled();
   await expect(unsaved).toBeVisible();
-  await expect(rules).toHaveValue('{"rules":[]}');
+  await expect(time).toHaveValue("1200");
   await save.click();
   await expect(unsaved).toHaveCount(0);
   expect(settings.map((draft) => draft.include_bot_prs)).toEqual([true, false]);
-  expect(settings.map((draft) => draft.rules)).toEqual([null, { rules: [] }]);
+  expect(settings.map((draft) => draft.timeout_seconds)).toEqual([900, 1200]);
 });
 
 test("repository configuration validates hidden fields and retains drafts after a failed save", async ({ page }) => {
@@ -9682,7 +9661,7 @@ for (const status of ["completed", "partial"] as const) test(`Mortis ${status} h
 });
 
 
-test("Mortis is saved without an engine selector while custom review rules remain editable", async ({ page }, info) => {
+test("Mortis is saved without an engine selector", async ({ page }, info) => {
   const requests = await mock(page);
   const legacySettings: Partial<Schema["RepositoryOut"]["settings"]> = { ...repo.settings, effort: "medium" };
   delete legacySettings.analysis_engine;
@@ -9692,16 +9671,120 @@ test("Mortis is saved without an engine selector while custom review rules remai
   await expect(page.getByLabel("Review engine", { exact: true })).toHaveCount(0);
   await repositorySection(page, "Pull request reviews");
   await expect(page.getByLabel("Analysis token budget", { exact: true })).toHaveValue("200000");
-  const rules = { rules: [{ path: "**/*.py", rule: "Preserve ownership checks" }] };
-  await page.getByText("Custom review rules", { exact: true }).click();
-  await page.getByRole("textbox", { name: "Custom review rules (JSON)", exact: true }).fill(JSON.stringify(rules));
-  await expect(page.getByRole("link", { name: "Rule file documentation" })).toHaveCount(0);
   await noOverflow(page);
   await page.screenshot({ path: info.outputPath("mortis-only-settings.png"), fullPage: true });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
-    settings: { analysis_engine: "mortis", rules, token_budget: 200000 },
+    settings: { analysis_engine: "mortis", token_budget: 200000 },
   });
+});
+
+test("repository custom rules use the workspace width and persist confirmed changes", async ({ page }) => {
+  const requests = await mock(page);
+  const legacy = { rules: [{ path: "**/*.py", rule: "Keep old checks" }] };
+  const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
+  const keepRule = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
+  const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "src/**/*.py", active: true };
+  let saved: Schema["ReviewRule"][] = [oldRule, keepRule];
+  let failDelete = true;
+  const saves: Schema["ReviewRulesUpdate"][] = [];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({
+    json: [{ ...repo, review_rules: saved, settings: { ...repo.settings, rules: legacy } }],
+  }));
+  await page.route("**/api/v1/repositories/22/review-rules", (route) => {
+    const request: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
+    if (failDelete) {
+      failDelete = false;
+      return route.fulfill({ status: 503, json: { detail: "The rule could not be deleted. Try again." } });
+    }
+    saves.push(request);
+    saved = request.rules;
+    return route.fulfill({ json: saved });
+  });
+  await page.goto("/repositories/22/settings");
+  const settingsNav = page.getByRole("navigation", { name: "Repository settings sections" });
+  await expect(settingsNav.getByRole("link", { name: /rules/i })).toHaveCount(0);
+  await openNavigation(page);
+  const link = page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Custom rules", exact: true });
+  await link.click();
+  await expect(page).toHaveURL("/repositories/22/custom-rules");
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" }).locator('[aria-current="page"]')).toHaveText("Custom rules");
+  await openNavigation(page);
+  await expect(link).toHaveAttribute("aria-current", "page");
+  await closeNavigation(page);
+  await expect(settingsNav).toHaveCount(0);
+  const panel = page.getByRole("region", { name: "Custom rules", exact: true });
+  await expect(panel.getByText("Legacy repository rules still apply.", { exact: false })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Test a path" })).toHaveCount(0);
+  expect(await panel.evaluate((element) => element.clientWidth === element.parentElement?.clientWidth)).toBe(true);
+  await noOverflow(page);
+
+  const removeOld = panel.getByRole("button", { name: "Delete Old" });
+  const keepActive = panel.getByRole("switch", { name: "Active rule Keep" });
+  const confirm = page.getByRole("dialog", { name: "Delete rule?", exact: true });
+  await keepActive.uncheck();
+  await removeOld.click();
+  await expect(confirm).toContainText("Delete Old from this repository?");
+  await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(removeOld).toBeFocused();
+  expect(saves).toEqual([]);
+  await removeOld.click();
+  await confirm.getByRole("button", { name: "Delete rule", exact: true }).click();
+  await expect(confirm.getByRole("alert")).toContainText("The rule could not be deleted.");
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(removeOld).toBeVisible();
+  await removeOld.click();
+  await confirm.getByRole("button", { name: "Delete rule", exact: true }).click();
+  await expect(page.getByText("Rule deleted.", { exact: true })).toBeVisible();
+  await expect(removeOld).toHaveCount(0);
+  await expect(keepActive).not.toBeChecked();
+  expect(saves).toEqual([{ expected_rules: [oldRule, keepRule], rules: [keepRule] }]);
+
+  const add = panel.getByRole("button", { name: "Add rule", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Add rule", exact: true });
+  await add.click();
+  const name = dialog.getByLabel("Name", { exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("Discarded");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(add).toBeFocused();
+  expect(saves).toHaveLength(1);
+  await add.click();
+  await expect(name).toHaveValue("");
+  await name.fill(newRule.name);
+  await dialog.getByLabel("Instructions", { exact: true }).fill(newRule.instructions);
+  await dialog.getByLabel("Glob pattern (optional)", { exact: true }).fill(newRule.glob);
+  await noOverflow(page);
+  await dialog.getByRole("button", { name: "Add rule", exact: true }).click();
+  await expect(page.getByText("Rule added.", { exact: true })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  await expect(keepActive).not.toBeChecked();
+  expect(saves[1]).toEqual({ expected_rules: [keepRule], rules: [keepRule, newRule] });
+
+  await page.clock.install();
+  await page.goto("/repositories/22/settings?tab=review-rules");
+  await expect(page).toHaveURL("/repositories/22/custom-rules");
+  await expect(removeOld).toHaveCount(0);
+  await expect(keepActive).toBeChecked();
+  await panel.getByRole("button", { name: "Edit Ownership" }).click();
+  const instructions = panel.getByLabel("Instructions", { exact: true });
+  await expect(instructions).toHaveValue(newRule.instructions);
+  await instructions.fill("Check ownership on every call.");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Custom rules saved.", { exact: true })).toBeVisible();
+  expect(saves[2]).toEqual({ expected_rules: [keepRule, newRule],
+    rules: [keepRule, { ...newRule, instructions: "Check ownership on every call." }] });
+  expect(requests).toEqual([]);
+  saved = [{ name: "Polled", instructions: "New server rule", active: true, glob: "" }];
+  await page.clock.runFor(5500);
+  await expect(panel.getByRole("button", { name: "Edit Polled" })).toBeVisible();
+  await panel.getByRole("button", { name: "Edit Polled" }).click();
+  await panel.getByLabel("Instructions", { exact: true }).fill("Keep my draft.");
+  saved = [{ name: "Other changes", instructions: "Keep server edits", active: true, glob: "" }];
+  await page.clock.runFor(5500);
+  await expect(panel.getByLabel("Instructions", { exact: true })).toHaveValue("Keep my draft.");
+  await expect(panel.getByRole("button", { name: "Edit Other changes" })).toHaveCount(0);
 });
 
 test("historical OCR reviews preserve origin and publication recovery without resuming inference", async ({ page }) => {

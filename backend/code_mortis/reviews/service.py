@@ -124,6 +124,7 @@ def create_run(
     *,
     ignore_file_limit: bool = False,
     request_key: str | None = None,
+    original_rule_settings: dict | None = None,
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
     db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update()
@@ -145,6 +146,11 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.for_execution(repo.settings)
+    if original_rule_settings is not None:
+        options["rules"] = original_rule_settings.get("rules")
+        options.pop("review_rules", None)
+        if rules := original_rule_settings.get("review_rules"):
+            options["review_rules"] = rules
     require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None

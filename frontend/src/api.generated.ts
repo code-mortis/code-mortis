@@ -277,6 +277,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/review-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Review Rules */
+        put: operations["update_review_rules_api_v1_repositories__repository_id__review_rules_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/review-rules/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Review Rules */
+        post: operations["preview_review_rules_api_v1_repositories__repository_id__review_rules_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/code-graph": {
         parameters: {
             query?: never;
@@ -2363,6 +2397,21 @@ export interface components {
             /** Role */
             role: string;
         };
+        /** AppliedReviewRule */
+        AppliedReviewRule: {
+            /** Name */
+            name: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "mortis" | "repository" | "legacy_settings" | "trusted_base";
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+        };
         /** AssessmentProgress */
         AssessmentProgress: {
             /**
@@ -4049,6 +4098,8 @@ export interface components {
              */
             connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettingsWithSummary"];
+            /** Review Rules */
+            review_rules?: components["schemas"]["ReviewRule"][];
             scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs
@@ -4134,6 +4185,55 @@ export interface components {
              * @default 10
              */
             page_size: number;
+        };
+        /** ReviewRule */
+        ReviewRule: {
+            /** Name */
+            name: string;
+            /** Instructions */
+            instructions: string;
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+        };
+        /** ReviewRulesPreview */
+        ReviewRulesPreview: {
+            /** Branch */
+            branch: string;
+            /** Base Sha */
+            base_sha: string;
+            /** Reviewable */
+            reviewable: boolean;
+            /** Matches */
+            matches: components["schemas"]["AppliedReviewRule"][];
+            /** Instructions */
+            instructions: string;
+            /**
+             * Rule Size Exceeds Limit
+             * @default false
+             */
+            rule_size_exceeds_limit: boolean;
+        };
+        /** ReviewRulesPreviewInput */
+        ReviewRulesPreviewInput: {
+            /** Path */
+            path: string;
+            /** Rules */
+            rules: components["schemas"]["ReviewRule"][];
+        };
+        /** ReviewRulesUpdate */
+        ReviewRulesUpdate: {
+            /** Rules */
+            rules: components["schemas"]["ReviewRule"][];
+            /** Expected Rules */
+            expected_rules: components["schemas"]["ReviewRule"][];
         };
         /** RunDetail */
         RunDetail: {
@@ -5628,6 +5728,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_review_rules_api_v1_repositories__repository_id__review_rules_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewRulesUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRule"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_review_rules_api_v1_repositories__repository_id__review_rules_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewRulesPreviewInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRulesPreview"];
                 };
             };
             /** @description Validation Error */

@@ -15,6 +15,9 @@ from code_mortis.core.errors import ReviewStopped
 LEGACY_VERSION = "mortis-pr-plan/v1"
 VERSION = "mortis-pr-plan/v2"
 RULES_VERSION = "mortis-rules/v1"
+TRUSTED_RULE_PATH = ".opencodereview/rule.json"
+MAX_TRUSTED_RULE_BYTES = 512 * 1024
+DEFAULT_UNIT_BYTES = 49152
 # Language admission is independent of the optional structural graph's parsers.
 CODE_SUFFIXES = set((
     "java kt kts scala groovy py pyi js jsx ts tsx mjs cjs c h cpp cc cxx hpp hxx cs vb fs fsi fsx "
@@ -74,10 +77,18 @@ def fingerprint(value):
                                      separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def _brace_patterns(pattern):
+def unit_byte_limit(prompt_token_ceiling):
+    # Leave room for framing/escaping; the gateway checks the actual encoded request.
+    return (max(1024, min(DEFAULT_UNIT_BYTES, (prompt_token_ceiling - 8192) // 2))
+            if prompt_token_ceiling is not None else DEFAULT_UNIT_BYTES)
+
+
+def _brace_patterns(pattern, *, check=None):
     """Expand bounded alternatives without evaluating shell syntax."""
     pending, result = [pattern], []
     while pending:
+        if check is not None:
+            check()
         value = pending.pop(0)
         match = re.search(r"\{([^{}]*)\}", value)
         if not match:
@@ -90,14 +101,16 @@ def _brace_patterns(pattern):
     return result
 
 
-def rule_matches(path, pattern):
+def rule_matches(path, pattern, *, check=None):
     """Rule globs are case insensitive; * stays within one path component."""
     parts = path.lower().split("/")
-    for expanded in _brace_patterns(pattern.lower()):
+    for expanded in _brace_patterns(pattern.lower(), check=check):
         components = expanded.split("/")
 
         pending, visited = [(0, 0)], set()
         while pending:
+            if check is not None:
+                check()
             index, offset = pending.pop()
             if (index, offset) in visited:
                 continue
@@ -125,7 +138,7 @@ def _entry(repo, env, sha, path, stopped):
     return {"blob_sha": match[2], "size": int(match[3])}
 
 
-def _rule_layer(value):
+def _rule_layer(value, *, check=None):
     if value is None:
         value = {}
     if not isinstance(value, dict):
@@ -146,25 +159,33 @@ def _rule_layer(value):
                         "merge_system_rule": entry.get("merge_system_rule", False)})
     result["rules"] = entries
     for pattern in [*result["include"], *result["exclude"], *(e["path"] for e in entries)]:
-        rule_matches("validation", pattern)
+        rule_matches("validation", pattern, check=check)
     return result
 
 
 def load_rules(repo, env, base_sha, options, stopped):
     """Read inert rules only from the trusted base; never consult a worker's home."""
+    return load_legacy_rules(
+        base_sha, options,
+        lambda path: _entry(repo, env, base_sha, path, stopped),
+        lambda path, _entry: source.read_source(repo, env, base_sha, path, stopped, literal=True),
+    )
+
+
+def load_legacy_rules(base_sha, options, entry_at, read_at, *, check=None):
     warnings, layers, inputs = [], [], []
-    custom = _rule_layer(options.get("rules"))
-    path = ".opencodereview/rule.json"
-    entry = _entry(repo, env, base_sha, path, stopped)
+    custom = _rule_layer(options.get("rules"), check=check)
+    path = TRUSTED_RULE_PATH
+    entry = entry_at(path)
     project = {}
     if entry:
-        if entry["size"] > 512 * 1024:
+        if entry["size"] > MAX_TRUSTED_RULE_BYTES:
             raise ValueError("Trusted-base review configuration exceeds 512 KiB.")
-        content = source.read_source(repo, env, base_sha, path, stopped)
+        content = read_at(path, entry)
         inputs.append({"path": path, **entry})
         project = json.loads(content)
     resolved_bytes = len(json.dumps([custom, project], ensure_ascii=False).encode())
-    for layer in (custom, _rule_layer(project)):
+    for layer in (custom, _rule_layer(project, check=check)):
         for item in layer["rules"]:
             text = item["rule"]
             if "\n" not in text and " " not in text and PurePosixPath(text).suffix.lower() in {".md", ".txt", ".markdown"}:
@@ -175,42 +196,42 @@ def load_rules(repo, env, base_sha, options, stopped):
                     policy = file_policy.policy(options)
                     if (file_policy.excluded(policy_path, policy)
                             or any(file_policy.matches(text, pattern) for pattern in policy["exclusions"])
-                            or any(rule_matches(text, pattern) for pattern in custom["exclude"])):
+                            or any(rule_matches(text, pattern, check=check) for pattern in custom["exclude"])):
                         raise ValueError("Rule reference is excluded by repository policy.")
-                    reference = _entry(repo, env, base_sha, text, stopped)
-                    if not reference or reference["size"] > 512 * 1024:
+                    reference = entry_at(text)
+                    if not reference or reference["size"] > MAX_TRUSTED_RULE_BYTES:
                         raise ValueError("Rule reference is missing or exceeds 512 KiB.")
                     resolved_bytes += reference["size"]
-                    if resolved_bytes > 512 * 1024:
+                    if resolved_bytes > MAX_TRUSTED_RULE_BYTES:
                         raise ValueError("Resolved review rules exceed 512 KiB.")
-                    item["rule"] = source.read_source(repo, env, base_sha, text, stopped).rstrip("\n")
+                    item["rule"] = read_at(text, reference).rstrip("\n")
                     inputs.append({"path": text, **reference})
                 except ValueError:
                     item["rule"] = ""
                     raise ValueError(f"Trusted-base review rule reference {text!r} is unavailable or prohibited.") from None
         layers.append(layer)
-        if len(json.dumps(layers, ensure_ascii=False).encode()) > 512 * 1024:
+        if len(json.dumps(layers, ensure_ascii=False).encode()) > MAX_TRUSTED_RULE_BYTES:
             raise ValueError("Resolved trusted-base review rules exceed 512 KiB.")
     result = {"version": RULES_VERSION, "base_sha": base_sha, "layers": layers, "inputs": inputs,
               "warnings": warnings}
     return {**result, "digest": fingerprint(result)}
 
 
-def allowed_path(path, options, rules):
+def allowed_path(path, options, rules, *, check=None):
     if file_policy.excluded(path, file_policy.policy(options)):
         return False
     # The runtime custom layer always contains mandatory excludes and text includes,
     # preserving its priority over project-local include/exclude configuration.
     custom = rules["layers"][0]
-    if any(rule_matches(path, pattern) for pattern in custom["exclude"]):
+    if any(rule_matches(path, pattern, check=check) for pattern in custom["exclude"]):
         return False
-    if any(rule_matches(path, pattern) for pattern in [*custom["include"], *file_policy.TEXT_CONTEXT]):
+    if any(rule_matches(path, pattern, check=check) for pattern in [*custom["include"], *file_policy.TEXT_CONTEXT]):
         return True
     suffix = PurePosixPath(path).suffix.lstrip(".").lower()
     if suffix and suffix not in CODE_SUFFIXES:
         return False
     return not (any(part.lower() in DEFAULT_DIRS for part in PurePosixPath(path).parts)
-                or any(rule_matches(path, pattern) for pattern in DEFAULT_PATTERNS))
+                or any(rule_matches(path, pattern, check=check) for pattern in DEFAULT_PATTERNS))
 
 
 def allowed_context(repo, env, base_sha, head_sha, paths, options, stopped, *, rules=None):
@@ -228,12 +249,33 @@ def allowed_context(repo, env, base_sha, head_sha, paths, options, stopped, *, r
     return allowed
 
 
-def rule_for(path, rules):
-    for layer in rules["layers"]:
+def _legacy_match(path, rules, *, check):
+    for origin, layer in zip(("legacy_settings", "trusted_base"), rules["layers"], strict=True):
         for entry in layer["rules"]:
-            if ((entry["rule"] or entry["merge_system_rule"]) and rule_matches(path, entry["path"])):
-                return "\n\n".join(filter(None, (system_rule(path) if entry["merge_system_rule"] else "", entry["rule"])))
-    return system_rule(path)
+            if ((entry["rule"] or entry["merge_system_rule"]) and rule_matches(path, entry["path"], check=check)):
+                return origin, entry
+    return None, None
+
+
+def resolve_rules(path, legacy, review_rules=(), *, check=None):
+    origin, old = _legacy_match(path, legacy, check=check)
+    active = [rule for rule in review_rules if rule["active"]
+              and (not rule["glob"] or rule_matches(path, rule["glob"], check=check))]
+    instructions, matches = [], []
+    if active or old is None or old["merge_system_rule"]:
+        instructions.append(system_rule(path))
+        matches.append({"name": "Mortis built-in rule", "source": "mortis", "glob": ""})
+    if old is not None:
+        instructions.append(old["rule"])
+        matches.append({"name": "Legacy review rule", "source": origin, "glob": old["path"]})
+    for rule in active:
+        instructions.append(rule["instructions"])
+        matches.append({"name": rule["name"], "source": "repository", "glob": rule["glob"]})
+    return "\n\n".join(filter(None, instructions)), matches
+
+
+def rule_for(path, rules, review_rules=()):
+    return resolve_rules(path, rules, review_rules)[0]
 
 
 @dataclass
@@ -331,7 +373,7 @@ def split_units(path, old_path, status, sha, text, patch, rule, maximum):
 
 
 def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
-                max_unit_bytes=49152, max_batch_bytes=98304, max_source_bytes=20_000_000,
+                max_unit_bytes=DEFAULT_UNIT_BYTES, max_batch_bytes=98304, max_source_bytes=20_000_000,
                 planner_version=VERSION):
     if planner_version not in (LEGACY_VERSION, VERSION):
         raise ValueError("The saved PR planner version is unsupported.")
@@ -345,8 +387,10 @@ def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
     if source.git(repo, env, "merge-base", base_sha, head_sha, stopped=stopped).strip() != merge_base:
         raise ValueError("PR planning cannot substitute a different merge base.")
     rules = load_rules(repo, env, base_sha, options, stopped)
-    plan = ReviewPlan(base_sha, head_sha, merge_base, fingerprint({"file_policy": file_policy.policy(options), "rules": rules["digest"]}),
-                      rules["digest"], rules, [], [])
+    review_rules = options.get("review_rules", [])
+    rules_digest = fingerprint({"legacy": rules["digest"], "review_rules": review_rules}) if review_rules else rules["digest"]
+    plan = ReviewPlan(base_sha, head_sha, merge_base, fingerprint({"file_policy": file_policy.policy(options), "rules": rules_digest}),
+                      rules_digest, rules, [], [])
     binary = _binary_paths(repo, env, merge_base, head_sha, stopped)
     for path, old_path, status in _changes(repo, env, merge_base, head_sha, stopped):
         if not all(allowed_path(value, options, rules) for value in (path, old_path) if value):
@@ -383,7 +427,7 @@ def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
             if used + size > max_source_bytes:
                 raise ValueError("Required source and diff exceed the aggregate PR source admission limit.")
             units = split_units(selected.path, selected.old_path, selected.status, head_sha,
-                                text, patch, rule_for(selected.path, rules), max_unit_bytes)
+                                text, patch, rule_for(selected.path, rules, review_rules), max_unit_bytes)
             size = sum(len((unit.source + unit.patch).encode()) for unit in units)
             if used + size > max_source_bytes:
                 raise ValueError("Required split context exceeds the aggregate PR source admission limit.")

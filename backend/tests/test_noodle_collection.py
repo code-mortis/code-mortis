@@ -118,6 +118,8 @@ EXPECTED_SESSION_ONLY = {
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/auth/logout"),
     ("PUT", "/api/v1/repositories/{repository_id}"),
+    ("PUT", "/api/v1/repositories/{repository_id}/review-rules"),
+    ("POST", "/api/v1/repositories/{repository_id}/review-rules/preview"),
     ("GET", "/api/v1/repositories/{repository_id}/activity"),
     ("GET", "/api/v1/repositories/{repository_id}/code-graph"),
     ("POST", "/api/v1/repositories/{repository_id}/code-graph/retry"),

@@ -51,6 +51,7 @@ import { FilterBar } from "./components/filter-bar";
 import { label } from "./lib/inbox-filters";
 import { RepositoryHeader, RepositorySettingsShortcut, RepositorySummaryCard, repositoryActivityLink } from "./components/repository-header";
 import { RepositoryPulls } from "./components/repository-pulls";
+import { RepositoryReviewRules } from "./components/repository-review-rules";
 import { getRepositoryReturn } from "./lib/navigation";
 import { Textarea } from "./components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
@@ -123,7 +124,7 @@ function RunFeedback({ run, repositoryId, admin }: {
   );
 }
 
-export function Repositories({ admin, configure = false }: { admin: boolean; configure?: boolean }) {
+export function Repositories({ admin, section }: { admin: boolean; section?: "settings" | "custom-rules" }) {
   const { repositoryId } = useParams();
   const location = useLocation();
   const repos = useApi<Repository[]>("/repositories", true);
@@ -140,17 +141,25 @@ export function Repositories({ admin, configure = false }: { admin: boolean; con
     const legacyConfigure = admin && params.has("configure");
     if (legacyConfigure && params.get("configure") === "limits") search.set("tab", "limits");
     search.delete("configure");
-    return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}${configure || legacyConfigure ? "/settings" : ""}`, search: search.toString(), hash: legacyConfigure ? "" : location.hash }} state={location.state} replace />;
+    const destination = section ?? (legacyConfigure ? "settings" : undefined);
+    return <Navigate to={{ pathname: `/repositories/${encodeURIComponent(target)}${destination ? `/${destination}` : ""}`, search: search.toString(), hash: legacyConfigure ? "" : location.hash }} state={location.state} replace />;
   }
   if (repos.isPending) return <Loading />;
   if (repos.error && (!repos.data || denied)) return <div className="space-y-3"><ErrorNotice error={repos.error} /><Button variant="outline" onClick={() => repos.refetch()}>Retry repositories</Button></div>;
   const repositoryPath = `/repositories/${requested ?? selected?.id}`;
   const returnSearch = new URLSearchParams(params);
-  if (configure) returnSearch.delete("tab");
+  if (section) returnSearch.delete("tab");
   const returnPath = repositoryPath + (returnSearch.size ? `?${returnSearch}` : "");
-  if (configure) {
+  if (section) {
     if (!admin || !selected) return <Navigate to={returnPath} state={location.state} replace />;
-    return <>{repos.error && <div className="mb-4 space-y-3"><ErrorNotice error={repos.error} /><Button variant="outline" onClick={() => repos.refetch()}>Retry repositories</Button></div>}<RepositorySettings key={selected.id} repository={selected} /></>;
+    if (section === "settings" && params.get("tab") === "review-rules") {
+      return <Navigate to={{ pathname: `${repositoryPath}/custom-rules`, search: returnSearch.toString(), hash: location.hash }} state={location.state} replace />;
+    }
+    return <>
+      {repos.error && <div className="mb-4 space-y-3"><ErrorNotice error={repos.error} /><Button variant="outline" onClick={() => repos.refetch()}>Retry repositories</Button></div>}
+      {section === "custom-rules" ? <RepositoryReviewRules key={selected.id} repository={selected} />
+        : <RepositorySettings key={selected.id} repository={selected} />}
+    </>;
   }
   const syncPath = `/repositories/${selected?.id}/sync`;
   const syncHere = action.variables?.path === syncPath;

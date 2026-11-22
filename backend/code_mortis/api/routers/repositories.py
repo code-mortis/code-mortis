@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, time, timedelta
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import service as graphs
 from code_mortis.code_graph import store
 from code_mortis.core.db import now
+from code_mortis.core.security import unseal
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
@@ -28,7 +30,8 @@ from code_mortis.models import (
     SecurityOccurrence,
     SecurityScan,
 )
-from code_mortis.reviews import background, inbox
+from code_mortis.reviews import background, inbox, rules_preview
+from code_mortis.reviews.context import execution_credentials
 from code_mortis.reviews.service import enqueue
 from code_mortis.schemas.analytics import (
     RepositoryActivity,
@@ -45,6 +48,10 @@ from code_mortis.schemas.common import (
     RepositoryInput,
     RepositoryOut,
     RepositoryPullFilters,
+    ReviewRule,
+    ReviewRulesPreview,
+    ReviewRulesPreviewInput,
+    ReviewRulesUpdate,
     RunOut,
 )
 
@@ -155,6 +162,10 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         effective_settings["project_summary"] = repo.settings.get("project_summary")
     if effective_settings["project_summary"] is None:
         effective_settings.pop("project_summary")
+    if "rules" not in body.settings.model_fields_set:
+        effective_settings["rules"] = repo.settings.get("rules")
+    if "review_rules" in repo.settings:
+        effective_settings["review_rules"] = repo.settings["review_rules"]
     if body.code_graph_enabled is not None or body.code_graph_limits is not None:
         graphs.browser_only()
     if body.connection_id and not db.get(Connection, body.connection_id):
@@ -193,6 +204,38 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         enqueue(db, "scan_repository", {"repository_id": repo.id})
     db.flush()
     return repo_out(db, repo)
+
+
+@router.put("/repositories/{repository_id}/review-rules", response_model=list[ReviewRule])
+def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, user: SESSION_ADMIN):
+    db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update()
+              .execution_options(populate_existing=True))
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    if repo.settings.get("review_rules", []) != [rule.model_dump() for rule in body.expected_rules]:
+        raise HTTPException(409, "Review rules changed while you were editing. Reload settings and try again.")
+    repo.settings = {**repo.settings, "review_rules": [rule.model_dump() for rule in body.rules]}
+    return body.rules
+
+
+@router.post("/repositories/{repository_id}/review-rules/preview", response_model=ReviewRulesPreview)
+def preview_review_rules(repository_id: int, body: ReviewRulesPreviewInput, db: DB, user: SESSION_ADMIN):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    token = github.repository_read_token(db, repo.installation_id, repo.id)
+    connection = db.get(Connection, repo.connection_id) if repo.connection_id else None
+    shared = connection if connection and connection.kind == "api" else None
+    secret = json.loads(unseal(shared.secret)) if shared else {}
+    credentials = execution_credentials(db, repo.id, secret, token)
+    options = {**repo.settings, "review_rules": [rule.model_dump() for rule in body.rules]}
+    ceiling = shared.options.get("prompt_token_ceiling") if shared else None
+    try:
+        return rules_preview.preview(repo.full_name, remote.get("default_branch"), token, body.path, options, credentials,
+                                     prompt_token_ceiling=ceiling)
+    except TimeoutError as exc:
+        raise HTTPException(504, str(exc)) from exc
 
 
 @router.get("/repositories/{repository_id}/code-graph", response_model=CodeGraphStatus)

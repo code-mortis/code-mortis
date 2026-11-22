@@ -3,7 +3,18 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    UUID4,
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
@@ -149,6 +160,50 @@ class ScanSettings(ScanLimits):
 ProjectSummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]
 
 
+class ReviewRule(StrictModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    instructions: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    glob: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+    active: bool = Field(default=True, strict=True)
+
+    @field_validator("glob")
+    @classmethod
+    def bounded_glob(cls, value):
+        from code_mortis.reviews.planning import rule_matches
+
+        rule_matches("validation", value)
+        return value
+
+
+ReviewRules = Annotated[list[ReviewRule], Field(max_length=50)]
+_review_rules = TypeAdapter(ReviewRules)
+
+
+class ReviewRulesUpdate(StrictModel):
+    rules: ReviewRules
+    expected_rules: ReviewRules
+
+
+class ReviewRulesPreviewInput(StrictModel):
+    path: str = Field(min_length=1, max_length=4096)
+    rules: ReviewRules
+
+
+class AppliedReviewRule(StrictModel):
+    name: str
+    source: Literal["mortis", "repository", "legacy_settings", "trusted_base"]
+    glob: str = ""
+
+
+class ReviewRulesPreview(StrictModel):
+    branch: str
+    base_sha: str
+    reviewable: bool
+    matches: list[AppliedReviewRule]
+    instructions: str
+    rule_size_exceeds_limit: bool = False
+
+
 class RepoSettings(RunLimits):
     analysis_engine: Literal["mortis"] = "mortis"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -190,7 +245,11 @@ class RepoSettings(RunLimits):
 
     @classmethod
     def for_execution(cls, settings):
-        return cls.model_validate({key: value for key, value in settings.items() if key != "project_summary"}).model_dump()
+        options = cls.model_validate({key: value for key, value in settings.items()
+                                      if key not in {"project_summary", "review_rules"}}).model_dump()
+        if rules := settings.get("review_rules"):
+            options["review_rules"] = _review_rules.dump_python(_review_rules.validate_python(rules))
+        return options
 
 
 class RepoSettingsWithSummary(RepoSettings):
@@ -388,12 +447,22 @@ class RepositoryOut(ORMModel):
     connection_id: str | None
     connection_requires_setup: bool = False
     settings: RepoSettingsWithSummary
+    review_rules: ReviewRules = Field(
+        default_factory=list, validation_alias=AliasChoices("review_rules", AliasPath("settings", "review_rules")),
+    )
     scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False
     last_pr_sync_check_at: datetime | None = None
     latest_completed_review: RepositoryReviewSummary | None = None
     security: SecuritySummary | None = None
+
+    @field_validator("settings", mode="before")
+    @classmethod
+    def repository_settings(cls, value):
+        if isinstance(value, dict) and "review_rules" in value:
+            return {key: setting for key, setting in value.items() if key != "review_rules"}
+        return value
 
 
 class SummaryGroup(StrictModel):
