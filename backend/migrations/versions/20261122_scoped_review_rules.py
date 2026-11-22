@@ -49,7 +49,9 @@ def upgrade():
         saved = settings["review_rules"]
         if saved is not None and not isinstance(saved, list):
             raise ValueError(f"Invalid custom review rules for repository {repository_id}.")
-        for position, definition in enumerate(saved or []):
+        if not saved:
+            continue
+        for position, definition in enumerate(saved):
             try:
                 if not isinstance(definition, dict):
                     raise ValueError("Review rule definition must be an object.")

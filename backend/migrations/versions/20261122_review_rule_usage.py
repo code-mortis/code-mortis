@@ -11,7 +11,7 @@ branch_labels = None
 depends_on = None
 
 
-def _update_rule_ids(*, add):
+def _assign_rule_ids():
     repositories = sa.table("repositories", sa.column("id", sa.BigInteger()), sa.column("settings", sa.JSON()))
     connection = op.get_bind()
     for identity, settings in connection.execute(sa.select(repositories.c.id, repositories.c.settings)):
@@ -20,13 +20,8 @@ def _update_rule_ids(*, add):
             continue
         changed = False
         for rule in rules:
-            if not isinstance(rule, dict):
-                continue
-            if add and not rule.get("rule_id"):
+            if isinstance(rule, dict) and not rule.get("rule_id"):
                 rule["rule_id"] = str(uuid4())
-                changed = True
-            elif not add and "rule_id" in rule:
-                del rule["rule_id"]
                 changed = True
         if changed:
             connection.execute(repositories.update().where(repositories.c.id == identity).values(settings=settings))
@@ -45,10 +40,10 @@ def upgrade():
     )
     op.create_index("ix_review_rule_uses_rule_date", "review_rule_uses", ["rule_id", "used_at"])
     # Assign identities to current definitions only. Saved review settings and history remain intact.
-    _update_rule_ids(add=True)
+    _assign_rule_ids()
 
 
 def downgrade():
-    _update_rule_ids(add=False)
+    # Preserve stable identities when the tracking schema is downgraded and re-applied.
     op.drop_table("review_rule_uses")
     op.drop_column("review_runs", "rule_tracking")

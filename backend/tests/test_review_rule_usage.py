@@ -198,6 +198,7 @@ def test_only_dated_confirmations_and_exact_verified_occurrences_are_joined(seed
 
 def test_migration_assigns_existing_rule_ids_without_touching_old_runs(seed, github_stub):
     draft = rule("Existing", "Keep the definition\0 and order.")
+    existing_id = "784e9c1f-5c75-4268-b205-d334507fe35d"
     original = new_run(assessed=True, parallel=True)
     claim(original)
     with transaction() as db:
@@ -208,7 +209,16 @@ def test_migration_assigns_existing_rule_ids_without_touching_old_runs(seed, git
         command.downgrade(config, "20261120_activity_snapshots")
         with transaction() as db:
             repo = db.get(Repository, 22)
-            repo.settings = {**repo.settings, "review_rules": [draft, draft], "background": "Legacy\0background"}
+            repo.settings = {**repo.settings, "review_rules": [{**draft, "rule_id": existing_id}, draft],
+                             "background": "Legacy\0background"}
+        command.upgrade(config, "20261122_review_rule_usage")
+        with transaction() as db:
+            tracked = db.get(Repository, 22).settings["review_rules"]
+            assert tracked[0]["rule_id"] == existing_id
+            assert tracked[1]["rule_id"] != existing_id
+        command.downgrade(config, "20261120_activity_snapshots")
+        with transaction() as db:
+            assert db.get(Repository, 22).settings["review_rules"] == tracked
     finally:
         command.upgrade(config, "head")
     service.save_analysis(original, "test-claim", "completed", report("README.md"), [])
@@ -219,6 +229,7 @@ def test_migration_assigns_existing_rule_ids_without_touching_old_runs(seed, git
         records = rules.by_repository(db, [22])[22]
         assert len({row.rule_id for row in records}) == 2
         assert all(row.rule_id.version == 4 for row in records)
+        assert [str(row.rule_id) for row in records] == [item["rule_id"] for item in tracked]
         assert [row.for_execution() for row in records] == [draft, draft]
         assert db.get(ReviewRun, original).config["settings"]["review_rules"] == [draft, draft]
         assert db.get(ReviewRun, original).rule_tracking is None
@@ -280,6 +291,26 @@ def test_scoped_rule_migration_preserves_ids_order_and_history_on_round_trip(see
             assert settings["rules"] == legacy and settings["background"] == "Keep\0me"
             use = db.get(ReviewRuleUse, (original, dated_id, "c" * 64))
             assert use.version == tracking[0]["version"] and use.used_at == STAMP
+    finally:
+        command.upgrade(config, "head")
+
+
+@pytest.mark.parametrize("saved", [[], None])
+def test_scoped_rule_migration_preserves_empty_settings_on_round_trip(seed, saved):
+    config = Config("alembic.ini")
+    try:
+        command.downgrade(config, "20261122_review_rule_usage")
+        with transaction() as db:
+            repo = db.get(Repository, 22)
+            original = {**repo.settings, "review_rules": saved}
+            repo.settings = original
+        command.upgrade(config, "head")
+        with transaction() as db:
+            assert db.get(Repository, 22).settings == original
+            assert not list(db.scalars(select(CustomReviewRule)))
+        command.downgrade(config, "20261122_review_rule_usage")
+        with transaction() as db:
+            assert db.get(Repository, 22).settings == original
     finally:
         command.upgrade(config, "head")
 
