@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { Schema } from "../src/api";
 
 const commit = "a".repeat(40), base = "/repositories/22/code-graph";
-const service = "src/service.ts", hidden = "modules/file-04999.ts";
+const service = "src/service.ts", lastFile = "modules/file-04999.ts";
 const file = (path: string, incoming = 0, outgoing = 0): Schema["RepositoryGraphNode"] =>
   ({ id: `file:${path}`, kind: "file", path, language: "typescript", incoming, outgoing, file_count: 1 });
 const files = [file(service, 1, 1), file("src/consumer.ts", 0, 1), file("src/dependency.ts", 1), file("src/unlinked.ts")];
@@ -12,13 +12,12 @@ const graph = (data: Partial<Schema["RepositoryGraphView"]> = {}): Schema["Repos
   mode: "files", nodes: files, edges, total_files: 4, total_links: 2, max_connections: 2, truncated: false, ...data,
 });
 
-async function mockRepository(page: Page, options: { dense?: boolean; denied?: boolean; disabled?: boolean } = {}) {
+async function mockRepository(page: Page, options: { admin?: boolean; dense?: boolean; denied?: boolean; disabled?: boolean } = {}) {
   const calls: URL[] = [];
-  const groups: Schema["RepositoryGraphNode"][] = Array.from({ length: 250 }, (_, i) => ({
-    id: `group:${i}`, kind: "folder", path: `package-${i}`, language: null, file_count: 20, incoming: 4, outgoing: 4,
-  }));
-  const groupEdges = groups.flatMap((group, i) => Array.from({ length: 4 }, (_, offset) => ({
-    source: group.id, target: groups[(i + offset + 1) % groups.length].id,
+  const denseFiles = options.dense ? Array.from({ length: 5000 }, (_, i) =>
+    file(`modules/file-${String(i).padStart(5, "0")}.ts`, 4, 4)) : [];
+  const denseEdges = denseFiles.flatMap((node, i) => [1, 7, 43, 251].map((offset) => ({
+    source: node.id, target: denseFiles[(i + offset) % denseFiles.length].id,
   })));
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
@@ -26,14 +25,14 @@ async function mockRepository(page: Page, options: { dense?: boolean; denied?: b
     const path = url.pathname.slice("/api/v1".length);
     let body: unknown = [];
     if (path === "/setup/status") body = { configured: true, public_url: url.origin };
-    else if (path === "/auth/me") body = { id: 7, login: "developer", role: "member", csrf: "csrf", avatar_url: "" };
+    else if (path === "/auth/me") body = { id: 7, login: "developer", role: options.admin ? "admin" : "member", csrf: "csrf", avatar_url: "" };
     else if (path === "/repositories") body = [{ id: 22, installation_id: 10, full_name: "acme/project", private: true,
       active: true, enabled: true, code_graph_enabled: !options.disabled, connection_id: null, open_prs: 0, settings: {} }];
     else if (path === `${base}/view`) {
       const focus = url.searchParams.get("focus");
       if (options.disabled) body = graph({ status: "disabled", snapshot_id: null, commit_sha: null, nodes: [], edges: [],
         total_files: 0, total_links: 0, max_connections: 0 });
-      else if (focus === hidden) body = graph({ nodes: [file(hidden)], edges: [], total_files: 1, total_links: 0 });
+      else if (options.dense && focus) body = graph({ nodes: [file(focus)], edges: [], total_files: 1, total_links: 0 });
       else if (focus) {
         if (options.denied) return route.fulfill({ status: 403, json: { detail: "Graph access was revoked." } });
         await new Promise((resolve) => setTimeout(resolve, 150));
@@ -41,9 +40,9 @@ async function mockRepository(page: Page, options: { dense?: boolean; denied?: b
         body = graph({ nodes: files.slice(0, incoming ? 2 : 3), edges: incoming ? edges.slice(0, 1) : edges,
           total_files: incoming ? 2 : 3, total_links: incoming ? 1 : 2 });
       } else if (url.searchParams.get("folder") || url.searchParams.get("hide_unlinked")) body = graph({ nodes: files.slice(0, 3), total_files: 3 });
-      else if (options.dense) body = graph({ mode: "folders", nodes: groups, edges: groupEdges, total_files: 5000, total_links: 20000 });
+      else if (options.dense) body = graph({ nodes: denseFiles, edges: denseEdges, total_files: 5000, total_links: 20000, max_connections: 8 });
       else body = graph();
-    } else if (path === `${base}/files`) body = { files: options.dense ? [file(hidden)] : [files[0]], truncated: false };
+    } else if (path === `${base}/files`) body = { files: options.dense ? [file(lastFile)] : [files[0]], truncated: false };
     await route.fulfill({ json: body });
   });
   return calls;
@@ -82,17 +81,28 @@ test("node colors use the three connection bands even in a small repository", as
   })).toBe(true);
 });
 
-test("clicking a node focuses its connections and keeps the revision first in the pinned footer", async ({ page }) => {
-  const calls = await mockRepository(page);
+test("the graph header holds Filters and settings and the toolbar holds the revision", async ({ page }) => {
+  const calls = await mockRepository(page, { admin: true });
   await page.route(`**/api/v1${base}/view`, (route) => route.fulfill({
     json: graph({ nodes: [files[0]], edges: [], total_files: 1, total_links: 0 }),
   }));
   await page.goto(base);
-  const revision = page.getByText(commit.slice(0, 7), { exact: true });
-  const footer = page.locator("footer").filter({ has: revision });
-  const badge = footer.getByTitle(commit);
-  await expect(footer.getByText("main", { exact: true })).toBeVisible();
-  const unfocusedBadge = (await badge.boundingBox())!;
+  const header = page.locator("header").filter({ has: page.getByRole("heading", { name: "Code graph", exact: true }) });
+  const filters = header.getByRole("button", { name: "Filters" });
+  const settings = header.getByRole("link", { name: "Code graph settings" });
+  await expect(filters).toBeVisible();
+  await expect(settings).toHaveAttribute("href", "/repositories/22/settings?tab=code-graph");
+  const settingsBox = (await settings.boundingBox())!;
+  const filtersBox = (await filters.boundingBox())!;
+  expect(settingsBox.x).toBeGreaterThan(filtersBox.x + filtersBox.width);
+
+  const badge = page.getByTitle(commit);
+  await expect(badge.getByText(commit.slice(0, 7), { exact: true })).toBeVisible();
+  const badgeBox = (await badge.boundingBox())!;
+  expect(badgeBox.y).toBeGreaterThan(settingsBox.y + settingsBox.height);
+  expect(badgeBox.x + badgeBox.width).toBeCloseTo(settingsBox.x + settingsBox.width, 0);
+
+  const footer = page.locator("footer");
   const footerBox = (await footer.boundingBox())!;
   expect(footerBox.y + footerBox.height).toBeCloseTo(page.viewportSize()!.height, 0);
 
@@ -102,9 +112,7 @@ test("clicking a node focuses its connections and keeps the revision first in th
   await expect(footer.getByText("service.ts", { exact: true })).toBeVisible();
   const imports = footer.getByText("1 imports · 1 imported by", { exact: true });
   await expect(imports).toBeVisible();
-  const focusedBadge = (await badge.boundingBox())!;
-  expect(focusedBadge.x).toBeCloseTo(unfocusedBadge.x, 0);
-  expect(focusedBadge.x + focusedBadge.width).toBeLessThan((await imports.boundingBox())!.x);
+  await expect(footer.getByTitle(commit)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Close file" })).toHaveCount(0);
   expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
 });
@@ -149,18 +157,44 @@ test("selecting a search result focuses the file at the indexed revision without
   expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
 });
 
-test("bounded 5,000-file graph stays searchable beyond displayed folders", async ({ page }, info) => {
+test("the 5,000-file overview is interactive before it settles and stays searchable", async ({ page }, info) => {
+  test.setTimeout(45_000);
   const calls = await mockRepository(page, { dense: true });
+  const workerScript = "**/assets/repository-graph-layout.worker-*.js";
+  let releaseWorker = () => {};
+  const workerGate = new Promise<void>((resolve) => { releaseWorker = resolve; });
+  await page.route(workerScript, async (route) => {
+    await workerGate;
+    await route.continue();
+  });
   const start = Date.now();
-  await page.goto(base);
-  await expect(page.getByText("5000 files · 20000 resolved imports")).toBeVisible();
-  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  try {
+    await Promise.all([page.waitForRequest(workerScript), page.goto(base, { waitUntil: "domcontentloaded" })]);
+    await expect(page.getByText("5000 files · 20000 resolved imports")).toBeVisible();
+    await expect(canvas(page)).toHaveAttribute("data-ready", "false");
+    const wheelAllowed = await canvas(page).evaluate((element) => element.dispatchEvent(new WheelEvent("wheel", {
+      deltaY: -120, bubbles: true, cancelable: true,
+    })));
+    expect(wheelAllowed).toBe(true);
+  } finally {
+    releaseWorker();
+  }
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true", { timeout: 15_000 });
+  await expect(canvas(page)).toHaveAttribute("data-settled", "false");
+  await expect(zoom(page)).toHaveText("100%");
   const overviewMs = Date.now() - start;
+  await page.getByRole("button", { name: "Zoom out" }).click();
+  await expect(zoom(page)).toHaveText("83%");
+  await expect(canvas(page)).toHaveAttribute("data-settled", "true", { timeout: 30_000 });
+  await expect(zoom(page)).toHaveText("83%");
   if (info.project.name === "desktop") await page.screenshot({ path: info.outputPath("repository-code-graph.png") });
   await openFirstNode(page);
-  await expect(page.getByText("3 files · 2 resolved imports")).toBeVisible();
-  expect(calls.some((url) => url.searchParams.get("folder") === "package-0")).toBe(true);
+  await expect(page.locator("footer").getByText("file-00000.ts", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 files · 0 resolved imports")).toBeVisible();
+  expect(calls.some((url) => url.searchParams.get("focus") === "modules/file-00000.ts")).toBe(true);
   await page.getByRole("button", { name: "Repository graph" }).click();
+  await expect(canvas(page)).toHaveAttribute("data-settled", "true");
+  await expect(zoom(page)).toHaveText("83%");
   const search = page.getByRole("combobox", { name: "Find a file" });
   const focusStart = Date.now();
   await search.fill("file-04999");
@@ -170,7 +204,7 @@ test("bounded 5,000-file graph stays searchable beyond displayed folders", async
   await expect(page.locator("footer").getByText("file-04999.ts", { exact: true })).toBeVisible();
   await expect(canvas(page)).toHaveAttribute("data-ready", "true");
   info.annotations.push({ type: "timing", description: `Overview ${overviewMs} ms. Search and focus ${Date.now() - focusStart} ms.` });
-  expect(calls.some((url) => url.searchParams.get("focus") === hidden)).toBe(true);
+  expect(calls.some((url) => url.searchParams.get("focus") === lastFile)).toBe(true);
 });
 
 test("access loss withholds the current graph", async ({ page }) => {

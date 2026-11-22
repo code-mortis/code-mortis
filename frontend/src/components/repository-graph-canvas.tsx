@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { createPortal } from "react-dom";
 import { Maximize, Minus, Plus } from "lucide-react";
 import type { Schema } from "../api";
-import { nodeRadius, type Point } from "../lib/repository-graph-layout";
+import { nodeRadius, type LayoutFrame, type Point } from "../lib/repository-graph-layout";
 import { Button } from "./ui/button";
 
 export type GraphView = Schema["RepositoryGraphView"];
@@ -41,13 +41,12 @@ export function RepositoryGraphCanvas({
   const canvas = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new Map<string, Point>());
   const cameras = useRef(new Map<string, Camera>());
-  const drag = useRef<{ id: number; point: Point; moved: boolean } | null>(null);
+  const drag = useRef<{ id: number; point: Point; moved: boolean; nodeId?: string } | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [coordinates, setCoordinates] = useState<Record<string, Point>>({});
+  const [layout, setLayout] = useState<(LayoutFrame & { graph: GraphView; failed?: boolean }) | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [keyboard, setKeyboard] = useState<string | null>(null);
   const [cameraVersion, setCameraVersion] = useState(0);
-  const [layoutError, setLayoutError] = useState(false);
 
   useEffect(() => {
     const element = canvas.current;
@@ -60,37 +59,51 @@ export function RepositoryGraphCanvas({
   }, []);
 
   useEffect(() => {
+    setHover(null);
     const nodes = graph.nodes.map((node) => ({
       id: node.id, incoming: node.incoming, outgoing: node.outgoing, position: cache.current.get(node.id),
     }));
-    setLayoutError(false);
     if (nodes.every((node) => node.position)) {
-      setCoordinates(Object.fromEntries(nodes.map((node) => [node.id, node.position!])));
+      setLayout({ graph, positions: Object.fromEntries(nodes.map((node) => [node.id, node.position!])), settled: true });
       return;
     }
     const worker = new Worker(new URL("../lib/repository-graph-layout.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<Record<string, Point>>) => {
-      for (const [id, position] of Object.entries(event.data)) cache.current.set(id, position);
-      setCoordinates(event.data);
+    worker.onmessage = ({ data }: MessageEvent<LayoutFrame>) => {
+      if (data.settled) {
+        for (const [id, position] of Object.entries(data.positions)) cache.current.set(id, position);
+        worker.terminate();
+      }
+      setHover(null);
+      setLayout({ graph, ...data });
     };
-    worker.onerror = () => setLayoutError(true);
+    worker.onerror = () => {
+      setLayout((previous) => previous?.graph === graph
+        ? { ...previous, failed: true } : { graph, positions: {}, settled: false, failed: true });
+      worker.terminate();
+    };
     const ids = new Set(nodes.map((node) => node.id));
     worker.postMessage({ nodes, edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)) });
-    return () => worker.terminate();
-  }, [graph.nodes, graph.edges]);
+    return () => {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.terminate();
+    };
+  }, [graph]);
 
+  const currentLayout = layout?.graph === graph ? layout : null;
   const nodes = useMemo(() => graph.nodes.flatMap((node) => {
-    const point = coordinates[node.id];
+    const point = currentLayout?.positions[node.id];
     return point ? [{ ...node, ...point, radius: nodeRadius(node) }] : [];
-  }), [graph.nodes, coordinates]);
+  }), [graph.nodes, currentLayout]);
   const ready = nodes.length === graph.nodes.length;
+  const settled = ready && !!currentLayout?.settled;
   const camera = useMemo(() => {
     const previous = cameras.current.get(viewKey);
     const computed = previous ?? fit(nodes, size);
-    if (!previous && ready && nodes.length && size.width && size.height) cameras.current.set(viewKey, computed);
+    if (!previous && settled && nodes.length && size.width && size.height) cameras.current.set(viewKey, computed);
     return computed;
     // State changes caused by pan and zoom update the stored camera.
-  }, [cameraVersion, nodes, size, viewKey, ready]);
+  }, [cameraVersion, nodes, size, viewKey, settled]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
   useEffect(() => {
@@ -166,29 +179,35 @@ export function RepositoryGraphCanvas({
       }
       if (camera.zoom > 0.55) {
         const boxes: { x: number; y: number; width: number; height: number }[] = [];
-        const order = (node: PositionedNode) => node.id === emphasis ? 0 : neighbors.has(node.id) ? 1 : 2;
+        const order = (node: PositionedNode) => node.id === emphasis ? 0 : node.id === focused ? 1 : neighbors.has(node.id) ? 2 : 3;
         const ordered = [...nodes].sort((a, b) => order(a) - order(b) || (b.incoming + b.outgoing) - (a.incoming + a.outgoing));
+        const dense = nodes.length > 300;
+        const labelLimit = Math.min(Math.floor(8 + camera.zoom * 21), dense ? 16 : nodes.length);
+        let checked = 0;
         ctx.font = "500 12px Inter, sans-serif";
         ctx.textBaseline = "top";
         ctx.lineWidth = 3;
         ctx.strokeStyle = background;
         for (const node of ordered) {
-          if (boxes.length >= Math.min(nodes.length, Math.floor(8 + camera.zoom * 21))) break;
+          if (boxes.length >= labelLimit) break;
           const point = points.get(node.id)!;
+          if (point.x < 0 || point.x > size.width || point.y < 0 || point.y > size.height) continue;
+          if (dense && ++checked > 24) break;
+          const priority = node.id === emphasis || node.id === focused;
           const label = nameOf(node);
           const width = ctx.measureText(label).width + 4;
           const x = point.x - width / 2;
           const y = point.y + node.radius * scale + 4;
           if (x < 0 || x + width > size.width || y < 0 || y + 14 > size.height
             || boxes.some((box) => x < box.x + box.width && x + width > box.x && y < box.y + box.height && y + 14 > box.y)
-            || nodes.some((other) => {
+            || !priority && nodes.some((other) => {
               const position = points.get(other.id)!;
               const radius = other.radius * scale;
               return other.id !== node.id && x < position.x + radius && x + width > position.x - radius
                 && y < position.y + radius && y + 14 > position.y - radius;
             })) continue;
           boxes.push({ x, y, width, height: 14 });
-          ctx.globalAlpha = highlighted && order(node) === 2 ? 0.36 : 1;
+          ctx.globalAlpha = highlighted && order(node) === 3 ? 0.36 : 1;
           ctx.fillStyle = node.id === emphasis ? primary : foreground;
           ctx.strokeText(label, x + 2, y);
           ctx.fillText(label, x + 2, y);
@@ -220,6 +239,7 @@ export function RepositoryGraphCanvas({
     const element = canvas.current;
     if (!element) return;
     function wheel(event: WheelEvent) {
+      if (!ready) return;
       event.preventDefault();
       if (!element) return;
       const rect = element.getBoundingClientRect();
@@ -252,13 +272,14 @@ export function RepositoryGraphCanvas({
   const tooltip = hoverNode ? project(hoverNode, camera, size) : null;
   const activeNode = keyboard ? byId.get(keyboard) : undefined;
   return <>
-    <canvas ref={canvas} data-testid="repository-code-graph-canvas" data-ready={ready && !layoutError} tabIndex={0}
+    <canvas ref={canvas} data-testid="repository-code-graph-canvas" data-ready={ready} data-settled={settled} tabIndex={0}
       aria-label="File dependency graph. Use arrow keys to select a node and Enter to focus its connections."
       className="absolute inset-0 size-full cursor-grab touch-none focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing"
       onPointerDown={(event) => {
-        if (event.button !== 0) return;
+        if (!ready || event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { id: event.pointerId, point: pointerPoint(event), moved: false };
+        const point = pointerPoint(event);
+        drag.current = { id: event.pointerId, point, moved: false, nodeId: hit(point)?.id };
       }}
       onPointerMove={(event) => {
         const point = pointerPoint(event);
@@ -277,7 +298,8 @@ export function RepositoryGraphCanvas({
       }}
       onPointerUp={(event) => {
         if (drag.current?.id !== event.pointerId) return;
-        const selected = !drag.current.moved && hit(pointerPoint(event));
+        const { moved, nodeId } = drag.current;
+        const selected = !moved && nodeId ? byId.get(nodeId) : undefined;
         drag.current = null;
         if (selected) {
           setHover(null);
@@ -300,8 +322,9 @@ export function RepositoryGraphCanvas({
           onSelect(activeNode);
         }
       }} />
-    {layoutError && <p role="alert" className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm text-muted-foreground">Graph layout is unavailable. Search for an indexed file.</p>}
-    {!ready && !layoutError && <p role="status" className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm text-muted-foreground">Arranging files…</p>}
+    {!ready && (currentLayout?.failed
+      ? <p role="alert" className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm text-muted-foreground">Graph layout is unavailable. Search for an indexed file.</p>
+      : <p role="status" className="pointer-events-none absolute inset-x-0 top-4 text-center text-sm text-muted-foreground">Arranging files…</p>)}
     {activeNode && <span aria-live="polite" className="sr-only">{activeNode.path}</span>}
     {hoverNode && tooltip && <div role="tooltip" className="pointer-events-none absolute z-10 max-w-52 rounded-md border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-sm"
       style={{ left: Math.max(0, Math.min(tooltip.x + 10, size.width - 210)), top: Math.max(0, tooltip.y - 68) }}>

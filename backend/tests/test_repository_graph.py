@@ -135,9 +135,10 @@ def test_repository_graph_checks_sensitive_metadata_and_the_entire_source(graph,
     assert "github-user-token" not in response.text
 
 
-def test_repository_graph_caps_and_searches_a_5000_file_snapshot(graph, client):
+def test_repository_graph_shows_all_files_and_imports_in_a_5000_file_snapshot(graph, client):
     row, _ = run(service.enqueue_snapshot(22))
     paths = [f"pkg{i % 64:02}/sub/{i:04}.py" for i in range(4999)]
+    paths[-3:-1] = ["docs/bearer", "docs/readme.md"]
     with transaction() as db:
         db.execute(insert(CodeGraphFile), [indexed_file(row.id, path) for path in paths])
         db.execute(insert(CodeGraphImport), [
@@ -150,9 +151,15 @@ def test_repository_graph_caps_and_searches_a_5000_file_snapshot(graph, client):
     print(f"5,000-file repository overview with stubbed GitHub checks: {(perf_counter() - start) * 1000:.0f} ms")
     assert response.status_code == 200, response.text
     overview = response.json()
-    assert overview["mode"] == "folders" and overview["total_files"] == 5000
+    assert overview["mode"] == "files" and not overview["truncated"]
+    assert overview["total_files"] == 5000 and overview["total_links"] == 9998
     assert overview["max_connections"] == 4999
-    assert len(overview["nodes"]) == 65 and len(overview["edges"]) == repository.MAX_LINKS and overview["truncated"]
+    assert len(overview["nodes"]) == 5000 and all(node["kind"] == "file" for node in overview["nodes"])
+    assert {node["path"] for node in overview["nodes"]} == {"a.py", *paths}
+    assert len(overview["edges"]) == 9998
+    assert {edge["source"] for edge in overview["edges"] if edge["target"] == "file:a.py"} == {
+        f"file:{path}" for path in paths
+    }
     assert client.get(BASE + "/view").json() == overview
 
     focused = client.get(BASE + "/view", params={"focus": "a.py", "direction": "incoming"}).json()

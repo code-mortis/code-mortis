@@ -3,12 +3,13 @@ import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY
 export type Point = { x: number; y: number };
 export type LayoutNode = { id: string; incoming: number; outgoing: number; position?: Point };
 export type LayoutEdge = { source: string; target: string };
+export type LayoutFrame = { positions: Record<string, Point>; settled: boolean };
 
 export function nodeRadius(node: Pick<LayoutNode, "incoming" | "outgoing">): number {
   return Math.min(11, 4.5 + (node.incoming + node.outgoing) * 0.65);
 }
 
-export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[]): Record<string, Point> {
+export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[], publish: (frame: LayoutFrame) => void) {
   const particles = nodes.map((node) => ({
     id: node.id,
     radius: nodeRadius(node),
@@ -18,7 +19,7 @@ export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[]): Record<
     y: node.position?.y ?? NaN,
   }));
   const boundary = Math.max(46, Math.sqrt(nodes.length) * 16);
-  forceSimulation(particles)
+  const simulation = forceSimulation(particles)
     .stop()
     .force("links", forceLink<(typeof particles)[number], LayoutEdge>(edges.map((edge) => ({ ...edge }))).id((node) => node.id).distance(43))
     .force("charge", forceManyBody().strength(-34))
@@ -35,7 +36,10 @@ export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[]): Record<
         if ("vx" in node && typeof node.vx === "number") node.vx -= node.x * spring;
         if ("vy" in node && typeof node.vy === "number") node.vy -= node.y * spring;
       }
-    })
-    .tick(160);
-  return Object.fromEntries(particles.map(({ id, x, y }) => [id, { x, y }]));
+    });
+  const stages = nodes.length > 300 || edges.length > 1000 ? [12, 48, 100] : [160];
+  for (const [index, ticks] of stages.entries()) {
+    simulation.tick(ticks);
+    publish({ positions: Object.fromEntries(particles.map(({ id, x, y }) => [id, { x, y }])), settled: index === stages.length - 1 });
+  }
 }

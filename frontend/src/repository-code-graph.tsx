@@ -1,10 +1,11 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, FileCode2, GitBranch, Search, SlidersHorizontal } from "lucide-react";
 import { api, type ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components/common";
 import { RepositoryGraphCanvas, type GraphNode, type GraphView } from "./components/repository-graph-canvas";
+import { RepositorySettingsShortcut } from "./components/repository-header";
 import { Button } from "./components/ui/button";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "./components/ui/combobox";
 import { Input } from "./components/ui/input";
@@ -34,6 +35,16 @@ function useGraphRead<T>(scope: string, path: string | null) {
 const needsRefresh = (error: ApiError | null) => !!error && [401, 403, 404, 409].includes(error.status);
 const filename = (path: string) => path.split("/").at(-1) || path;
 
+function CodeGraphHeader({ actions }: { actions: ReactNode }) {
+  return <header>
+    <div className="flex items-start justify-between gap-2">
+      <h1 id="repository-code-graph-title" className="text-2xl font-semibold tracking-tight sm:text-3xl">Code graph</h1>
+      <div className="flex shrink-0 items-center gap-2 empty:hidden">{actions}</div>
+    </div>
+    <p className="mt-1 text-sm text-muted-foreground">Explore imports across the indexed repository.</p>
+  </header>;
+}
+
 export default function RepositoryCodeGraph({ admin }: { admin: boolean }) {
   const { repositoryId } = useParams<{ repositoryId: string }>();
   const base = `/repositories/${repositoryId}/code-graph`;
@@ -41,27 +52,31 @@ export default function RepositoryCodeGraph({ admin }: { admin: boolean }) {
   const overview = useGraphRead<GraphView>(scope, `${base}/view`);
   const [attempt, setAttempt] = useState(0);
   const snapshot = overview.error ? undefined : overview.data;
+  const settings = admin && repositoryId ? <RepositorySettingsShortcut repositoryId={repositoryId} section="code-graph" /> : null;
   function refresh() {
     setAttempt((previous) => previous + 1);
     void overview.refetch();
   }
   return <section className="pb-24" aria-labelledby="repository-code-graph-title">
-    <h1 id="repository-code-graph-title" className="text-2xl font-semibold tracking-tight sm:text-3xl">Code graph</h1>
-    <p className="mt-1 text-sm text-muted-foreground">Explore imports across the indexed repository.</p>
-    {overview.error ? <div className="mt-6 space-y-3"><ErrorNotice error={overview.error} /><Button onClick={refresh} variant="outline">Refresh graph</Button></div>
-      : overview.isPending ? <Loading />
-        : snapshot?.commit_sha && snapshot.snapshot_id && (snapshot.status === "ready" || snapshot.status === "partial")
-          ? <GraphWorkspace key={`${repositoryId}:${snapshot.snapshot_id}:${attempt}`} base={base} scope={scope} snapshot={snapshot} commit={snapshot.commit_sha} refresh={refresh} />
-          : <div className="mt-6"><Empty title={snapshot?.status === "disabled" ? "Code graph is off" : "Code graph index unavailable"}>
-            <p>{snapshot?.status === "disabled" ? "Enable code graph to explore imports." : "Wait for a usable default branch index, then refresh."}</p>
-            {admin && snapshot?.status === "disabled"
-              ? <Button asChild variant="outline" className="mt-3"><Link to={`/repositories/${repositoryId}/settings?tab=code-graph`}>Repository settings</Link></Button>
-              : <Button variant="outline" className="mt-3" onClick={refresh} disabled={overview.isFetching}>Refresh graph</Button>}
-          </Empty></div>}
+    {snapshot?.commit_sha && snapshot.snapshot_id && (snapshot.status === "ready" || snapshot.status === "partial")
+      ? <GraphWorkspace key={`${repositoryId}:${snapshot.snapshot_id}:${attempt}`} base={base} scope={scope} snapshot={snapshot} commit={snapshot.commit_sha} refresh={refresh} settings={settings} />
+      : <>
+        <CodeGraphHeader actions={settings} />
+        {overview.error ? <div className="mt-6 space-y-3"><ErrorNotice error={overview.error} /><Button onClick={refresh} variant="outline">Refresh graph</Button></div>
+          : overview.isPending ? <Loading />
+            : <div className="mt-6"><Empty title={snapshot?.status === "disabled" ? "Code graph is off" : "Code graph index unavailable"}>
+              <p>{snapshot?.status === "disabled" ? "Enable code graph to explore imports." : "Wait for a usable default branch index, then refresh."}</p>
+              {admin && snapshot?.status === "disabled"
+                ? <Button asChild variant="outline" className="mt-3"><Link to={`/repositories/${repositoryId}/settings?tab=code-graph`}>Repository settings</Link></Button>
+                : <Button variant="outline" className="mt-3" onClick={refresh} disabled={overview.isFetching}>Refresh graph</Button>}
+            </Empty></div>}
+      </>}
   </section>;
 }
 
-function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: string; scope: string; snapshot: GraphView; commit: string; refresh: () => void }) {
+function GraphWorkspace({ base, scope, snapshot, commit, refresh, settings }: {
+  base: string; scope: string; snapshot: GraphView; commit: string; refresh: () => void; settings: ReactNode;
+}) {
   const [filters, setFilters] = useState(defaultFilters);
   const [focus, setFocus] = useState<GraphNode | null>(null);
   const [depth, setDepth] = useState<1 | 2>(1);
@@ -121,13 +136,17 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
     searchInput.current?.focus();
   }
 
-  if (accessError || revisionChanged) return <div className="mt-6 space-y-3">
-    {accessError ? <ErrorNotice error={accessError} /> : <Empty title="Indexed revision changed">Refresh to open the current index.</Empty>}
-    <Button variant="outline" onClick={refresh}>Refresh graph</Button>
-  </div>;
+  if (accessError || revisionChanged) return <>
+    <CodeGraphHeader actions={settings} />
+    <div className="mt-6 space-y-3">
+      {accessError ? <ErrorNotice error={accessError} /> : <Empty title="Indexed revision changed">Refresh to open the current index.</Empty>}
+      <Button variant="outline" onClick={refresh}>Refresh graph</Button>
+    </div>
+  </>;
 
-  return <div className="mt-6">
-    <div className="flex flex-wrap items-center justify-between gap-2">
+  return <>
+    <CodeGraphHeader actions={<><GraphFilters filters={filters} focused={!!focus} onChange={setFilters} />{settings}</>} />
+    <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
         <Combobox items={found.map((node) => node.path)} value={null} inputValue={search} filter={null} autoHighlight
           onInputValueChange={(value, event) => { if (event.reason === "input-change") setSearch(value); }}
@@ -158,7 +177,11 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
           {([1, 2] as const).map((value) => <Button key={value} size="xs" variant={depth === value ? "outline" : "ghost"}
             aria-pressed={depth === value} onClick={() => setDepth(value)}>{value} {value === 1 ? "hop" : "hops"}</Button>)}
         </div>}
-        <GraphFilters filters={filters} focused={!!focus} onChange={setFilters} />
+        <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border bg-card px-2.5 text-sm" title={commit}>
+          <GitBranch className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {snapshot.branch && <span className="max-w-20 truncate font-medium sm:max-w-40">{snapshot.branch}</span>}
+          <code className="border-l pl-2 text-xs text-muted-foreground">{commit.slice(0, 7)}</code>
+        </span>
       </div>
     </div>
     {(snapshot.status === "partial" || (snapshot.observed_sha && snapshot.observed_sha !== commit) || graph?.mode === "folders" || graph?.truncated) && (
@@ -187,27 +210,20 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
     </div>
     <footer className={`fixed inset-x-0 bottom-0 z-10 bg-background px-5 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-8 ${sidebarOpen ? "lg:left-(--sidebar-width)" : ""}`}>
       <div className="mx-auto flex min-h-9 max-w-6xl flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border bg-card px-2.5 text-sm" title={commit}>
-            <GitBranch className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            {snapshot.branch && <span className="max-w-20 truncate font-medium sm:max-w-40">{snapshot.branch}</span>}
-            <code className="border-l pl-2 text-xs text-muted-foreground">{commit.slice(0, 7)}</code>
-          </span>
-          {focus && <div className="flex min-w-0 items-start gap-2">
-            <FileCode2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-primary" />
-            <div className="min-w-0"><p className="wrap-anywhere text-sm font-semibold">{filename(focus.path)}</p>
-              <p className="text-xs text-muted-foreground">{focus.outgoing} imports · {focus.incoming} imported by</p></div>
-          </div>}
-        </div>
+        {focus && <div className="flex min-w-0 items-start gap-2">
+          <FileCode2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-primary" />
+          <div className="min-w-0"><p className="wrap-anywhere text-sm font-semibold">{filename(focus.path)}</p>
+            <p className="text-xs text-muted-foreground">{focus.outgoing} imports · {focus.incoming} imported by</p></div>
+        </div>}
         <div ref={setZoomControls} className="ml-auto" />
       </div>
     </footer>
-  </div>;
+  </>;
 }
 
 function GraphFilters({ filters, focused, onChange }: { filters: Filters; focused: boolean; onChange: (filters: Filters) => void }) {
   return <Popover>
-    <PopoverTrigger asChild><Button variant="outline"><SlidersHorizontal />Filters</Button></PopoverTrigger>
+    <PopoverTrigger asChild><Button variant="outline" size="sm" className="h-11 sm:h-8 pointer-coarse:h-11"><SlidersHorizontal />Filters</Button></PopoverTrigger>
     <PopoverContent align="end" className="grid w-60 gap-3">
       <h2 className="text-sm font-semibold">Filters</h2>
       <form key={JSON.stringify(filters)} className="grid gap-3 text-sm" onSubmit={(event) => {

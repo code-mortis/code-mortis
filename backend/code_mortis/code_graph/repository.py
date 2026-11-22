@@ -1,4 +1,4 @@
-"""Bounded browser views over an authorized repository's indexed revisions."""
+"""Browser views over an authorized repository's indexed revisions."""
 
 from collections import Counter, defaultdict
 
@@ -118,43 +118,15 @@ def graph_view(files, pairs, filters: RepositoryGraphFilters, result: Repository
         paths = [path for path in paths if path in linked or path == filters.focus]
 
     result.total_files, result.total_links = len(paths), len(links)
-    oversized = len(paths) > MAX_NODES or len(links) > MAX_LINKS
-    if oversized and not filters.focus:
-        groups = {}
-        counts = Counter()
-        for path in paths:
-            folder, separator, _ = path[len(prefix):].partition("/")
-            node = ("folder", prefix + folder) if separator else ("file", path)
-            groups[path] = node
-            counts[node] += 1
-
-        grouped_links = sorted({(groups[a], groups[b]) for a, b in links if groups[a] != groups[b]})
-        grouped_incoming, grouped_outgoing = degree(grouped_links)
-        group_nodes = sorted(counts, key=lambda node: (node[0] != "folder", node[1]))
-        nodes = []
-        for kind, path in group_nodes[:MAX_NODES]:
-            if kind == "file":
-                nodes.append(file_node(path, files[path].language, incoming, outgoing))
-            else:
-                pair = (kind, path)
-                nodes.append(RepositoryGraphNode(id=f"folder:{path}", kind="folder", path=path, language=None,
-                                                 incoming=grouped_incoming[pair], outgoing=grouped_outgoing[pair],
-                                                 file_count=counts[pair]))
-        if any(kind == "folder" for kind, _ in group_nodes):
-            result.mode = "folders"
-        result.nodes = nodes
-        ids = {node.id for node in nodes}
-        edges = [(f"{a_kind}:{a}", f"{b_kind}:{b}") for (a_kind, a), (b_kind, b) in grouped_links]
-        result.truncated = len(group_nodes) > MAX_NODES
-    else:
-        result.nodes = [file_node(path, files[path].language, incoming, outgoing) for path in paths[:MAX_NODES]]
-        ids = {node.id for node in result.nodes}
-        edges = [(f"file:{a}", f"file:{b}") for a, b in links]
+    if filters.focus:
         result.truncated = len(paths) > MAX_NODES
-
-    edges = [(a, b) for a, b in edges if a in ids and b in ids]
-    result.truncated |= len(edges) > MAX_LINKS
-    result.edges = [RepositoryGraphEdge(source=a, target=b) for a, b in edges[:MAX_LINKS]]
+        paths = paths[:MAX_NODES]
+        shown = set(paths)
+        links = [(a, b) for a, b in links if a in shown and b in shown]
+        result.truncated |= len(links) > MAX_LINKS
+        links = links[:MAX_LINKS]
+    result.nodes = [file_node(path, files[path].language, incoming, outgoing) for path in paths]
+    result.edges = [RepositoryGraphEdge(source=f"file:{a}", target=f"file:{b}") for a, b in links]
     return result
 
 
@@ -176,7 +148,8 @@ def view(repository_id, user_id, filters):
                 result.status, result.snapshot_id = row.status, row.id
                 files = retrieval.visible_files(db, row)
                 graph_view(files, import_pairs(db, row.id, files), filters, result)
-        return result, "\n".join([branch or "", *(node.path for node in result.nodes)])
+        # Keep credential patterns from spanning adjacent filenames.
+        return result, "\n|\n".join([branch or "", *(node.path for node in result.nodes)])
 
     return authorized_read(repository_id, user_id, load, allow_disabled=True)
 
