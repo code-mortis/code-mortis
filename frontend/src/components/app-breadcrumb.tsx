@@ -33,6 +33,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
   const organizationRoute = useMatch("/organizations/:owner/repositories");
   const overviewRoute = useMatch("/repositories/:repositoryId/overview");
   const analyticsRoute = useMatch("/repositories/:repositoryId/analytics");
+  const codeGraphRoute = useMatch("/repositories/:repositoryId/code-graph");
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
   const customRulesRoute = useMatch("/repositories/:repositoryId/custom-rules");
   const pullListRoute = useMatch("/repositories/:repositoryId");
@@ -54,6 +55,8 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
     crumbs.push({ label: repo.full_name.split("/").at(-1) || repo.full_name, to: repositoryPath + "/overview", state: returnState });
     if (overviewRoute || analyticsRoute) {
       crumbs.push({ label: analyticsRoute ? "Analytics" : "Overview", to: path });
+    } else if (codeGraphRoute) {
+      crumbs.push({ label: "Code graph", to: path });
     } else if ((repositorySettingsRoute || customRulesRoute) && admin) {
       crumbs.push({ label: customRulesRoute ? "Custom rules" : "Repository settings", to: path });
     } else if (securityPath) {
@@ -64,7 +67,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
       if (pull) crumbs.push({ label: `#${pull.number}`, to: `/pulls/${pull.id}`, state: returnState });
       if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
     }
-  } else if (path === "/repositories" || pullListRoute || repositorySettingsRoute || customRulesRoute || overviewRoute || analyticsRoute) {
+  } else if (path === "/repositories" || pullListRoute || repositorySettingsRoute || customRulesRoute || overviewRoute || analyticsRoute || codeGraphRoute) {
     crumbs.push({ label: analyticsRoute ? "Analytics" : overviewRoute ? "Overview" : "Repositories", to: path });
   } else if (organizationRoute) {
     crumbs.push({ label: organizationRoute.params.owner ?? "Repositories", to: path });

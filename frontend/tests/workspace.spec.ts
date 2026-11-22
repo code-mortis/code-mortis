@@ -979,7 +979,7 @@ test("home has only Inbox while organization and repository pickers open scoped 
   await expect(page).toHaveURL("/repositories/23/overview");
   await openNavigation(page);
   const nav = page.getByRole("navigation", { name: "Repository sections" });
-  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Custom rules", "Security", "Repository settings"]);
+  await expect(nav.getByRole("link")).toHaveText(["Overview", "Analytics", "Pull requests", "Custom rules", "Security", "Code graph", "Repository settings"]);
   await expect(nav.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
   await nav.getByRole("link", { name: "Pull requests", exact: true }).click();
   await expect(page).toHaveURL(/\/repositories\/23\?state=open$/);

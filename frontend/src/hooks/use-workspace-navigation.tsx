@@ -15,6 +15,7 @@ function useNavigation() {
   const customRulesRoute = useMatch("/repositories/:repositoryId/custom-rules");
   const overviewRoute = useMatch("/repositories/:repositoryId/overview");
   const analyticsRoute = useMatch("/repositories/:repositoryId/analytics");
+  const codeGraphRoute = useMatch("/repositories/:repositoryId/code-graph");
   const securityRoute = useMatch("/security/repositories/:repositoryId");
   const scanRoute = useMatch("/security/scans/:scanId");
   const organizationRoute = useMatch("/organizations/:owner/repositories");
@@ -24,7 +25,7 @@ function useNavigation() {
     && !detail.error && ["closed", "merged"].includes(detail.data?.pull_request.state ?? "") && !detail.data?.has_active_run;
   const directory = useApi<Repository[]>("/repositories", (data) => idleCode && !data?.some(hasActivity) ? 60000 : 5000);
   const repositories = directory.error ? [] : directory.data ?? [];
-  const repositoryId = (repositoryRoute ?? settingsRoute ?? customRulesRoute ?? overviewRoute ?? analyticsRoute ?? securityRoute)?.params.repositoryId
+  const repositoryId = (repositoryRoute ?? settingsRoute ?? customRulesRoute ?? overviewRoute ?? analyticsRoute ?? codeGraphRoute ?? securityRoute)?.params.repositoryId
     ?? (detailPath && !detail.error ? detail.data?.repository.id : undefined)
     ?? (scanRoute && !scan.error ? scan.data?.repository.id : undefined);
   const repository = repositories.find((repo) => String(repo.id) === String(repositoryId));
@@ -35,7 +36,7 @@ function useNavigation() {
   const owner = repository?.full_name.split("/")[0] ?? organizationRoute?.params.owner;
   const organization = organizations.find((name) => name.toLowerCase() === owner?.toLowerCase());
   const section = overviewRoute ? "overview" : analyticsRoute ? "analytics" : settingsRoute ? "settings"
-    : customRulesRoute ? "custom-rules" : securityRoute || scanRoute ? "security" : "pulls";
+    : customRulesRoute ? "custom-rules" : codeGraphRoute ? "code-graph" : securityRoute || scanRoute ? "security" : "pulls";
   return { directory, repositories, organizations, organization, repository, section, sync };
 }
 

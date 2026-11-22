@@ -50,6 +50,7 @@ import "./index.css";
 const Analytics = lazy(() => import("./analytics"));
 const SecurityRepository = lazy(() => import("./security").then((module) => ({ default: module.SecurityRepository })));
 const SecurityScan = lazy(() => import("./security").then((module) => ({ default: module.SecurityScan })));
+const RepositoryCodeGraph = lazy(() => import("./repository-code-graph"));
 
 function NavigationError() {
   const { directory } = useWorkspaceNavigation();
@@ -331,6 +332,7 @@ function App() {
               <Route path="/analytics" element={<LegacyAnalytics />} />
               <Route path="/repositories/:repositoryId/overview" element={<RepositoryOverview admin={session.data.role === "admin"} />} />
               <Route path="/repositories/:repositoryId/analytics" element={<RepositoryOverview analytics />} />
+              <Route path="/repositories/:repositoryId/code-graph" element={<Suspense fallback={<WorkspaceProgressFallback />}><RepositoryCodeGraph key={`${session.data.id}:${session.data.csrf}`} admin={session.data.role === "admin"} /></Suspense>} />
               <Route path="/organizations/:owner/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/repositories" element={<RepositoryDirectory admin={session.data.role === "admin"} />} />
               <Route path="/security" element={<Navigate to="/repositories" replace />} />
