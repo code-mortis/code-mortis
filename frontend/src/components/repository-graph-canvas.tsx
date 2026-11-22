@@ -305,12 +305,13 @@ export function RepositoryGraphCanvas({
   }
 
   function zoomBy(factor: number, origin?: Point) {
-    const zoom = Math.min(8, Math.max(0.1, camera.zoom * factor));
-    if (zoom === camera.zoom) return;
+    const latest = cameras.current.get(viewKey) ?? camera;
+    const zoom = Math.min(8, Math.max(0.1, latest.zoom * factor));
+    if (zoom === latest.zoom) return;
     const dx = (origin?.x ?? size.width / 2) - size.width / 2;
     const dy = (origin?.y ?? size.height / 2) - size.height / 2;
-    const change = 1 / (camera.scale * camera.zoom) - 1 / (camera.scale * zoom);
-    moveCamera({ ...camera, zoom, x: camera.x + dx * change, y: camera.y + dy * change });
+    const change = 1 / (latest.scale * latest.zoom) - 1 / (latest.scale * zoom);
+    moveCamera({ ...latest, zoom, x: latest.x + dx * change, y: latest.y + dy * change });
   }
 
   useEffect(() => {

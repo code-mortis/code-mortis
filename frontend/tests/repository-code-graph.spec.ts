@@ -71,6 +71,19 @@ async function openFirstNode(page: Page) {
   await canvas(page).press("Enter");
 }
 
+test("wheel events in the same frame accumulate zoom", async ({ page }) => {
+  await mockRepository(page);
+  await page.goto(base);
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  await expect(zoom(page)).toHaveText("100%");
+  await canvas(page).evaluate((element) => {
+    for (let i = 0; i < 2; i++) {
+      element.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, cancelable: true }));
+    }
+  });
+  await expect(zoom(page)).toHaveText("132%");
+});
+
 test("settled graph dots pop on load and file navigation without moving their centers", async ({ page }) => {
   type Circle = [x: number, y: number, radius: number];
   await mockRepository(page);
