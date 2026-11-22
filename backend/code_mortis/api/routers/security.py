@@ -16,6 +16,7 @@ from code_mortis.core.db import now
 from code_mortis.core.ordering import FindingOrdering, SnapshotOrdering, list_order, sort_snapshots
 from code_mortis.integrations import github
 from code_mortis.models import SecurityActivity, SecurityFinding, SecurityOccurrence, SecurityScan
+from code_mortis.reviews import rules
 from code_mortis.schemas.common import RepositoryOut
 from code_mortis.schemas.security import (
     SecurityActivityOut,
@@ -102,8 +103,11 @@ def repositories(db: DB, user: USER,
         rows.sort(key=lambda repo: (repo.id not in updated, direction * updated[repo.id].timestamp() if repo.id in updated else 0))
     elif ordering.startswith("-"):
         rows.reverse()
-    return SecurityRepositoryPage(items=[SecurityRepositoryOut(repository=RepositoryOut.model_validate(repo),
-        summary=summaries[repo.id]) for repo in rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]],
+    page_rows = rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+    configured_rules = rules.by_repository(db, [repo.id for repo in page_rows])
+    return SecurityRepositoryPage(items=[SecurityRepositoryOut(
+        repository=RepositoryOut.model_validate(repo).model_copy(update={"review_rules": configured_rules[repo.id]}),
+        summary=summaries[repo.id]) for repo in page_rows],
         total=len(rows), registered_total=len(repos), grade_counts=dict(grade_counts), status_counts=dict(status_counts),
         page=page, page_size=PAGE_SIZE)
 

@@ -148,6 +148,25 @@ class Repository(Base):
     code_graph_limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
 
 
+class CustomReviewRule(Base):
+    __tablename__ = "review_rules"
+    __table_args__ = (
+        CheckConstraint("(scope = 'repository' AND repository_id IS NOT NULL) OR "
+                        "(scope = 'workspace' AND repository_id IS NULL)", name="ck_review_rule_scope"),
+        CheckConstraint("position >= 0", name="ck_review_rule_position"),
+        UniqueConstraint("repository_id", "position", name="uq_review_rule_repository_position"),
+        Index("uq_review_rule_workspace_position", "position", unique=True, postgresql_where=text("scope = 'workspace'")),
+    )
+
+    rule_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    repository_id: Mapped[int | None] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    scope: Mapped[str] = mapped_column(String(16))
+    position: Mapped[int] = mapped_column(Integer)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CodeGraphRepository(Base):
     __tablename__ = "code_graph_repositories"
     repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)

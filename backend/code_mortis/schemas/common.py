@@ -6,14 +6,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     UUID4,
-    AliasChoices,
-    AliasPath,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
-    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -198,7 +195,6 @@ class StoredReviewRule(ReviewRule):
 
 REVIEW_RULE_LIMIT = 50
 ReviewRules = Annotated[list[StoredReviewRule], Field(max_length=REVIEW_RULE_LIMIT)]
-review_rules_adapter = TypeAdapter(ReviewRules)
 
 
 class AddReviewRule(StrictModel):
@@ -229,7 +225,7 @@ class ReviewRulesPreviewInput(StrictModel):
 
 class AppliedReviewRule(StrictModel):
     name: str
-    source: Literal["mortis", "repository", "legacy_settings", "trusted_base"]
+    source: Literal["mortis", "repository", "legacy_settings", "trusted_base", "workspace"]
     glob: str = ""
     files: list[str] = Field(default_factory=list, exclude_if=not_)
     globs: list[str] = Field(default_factory=list, exclude_if=not_)
@@ -285,11 +281,8 @@ class RepoSettings(RunLimits):
 
     @classmethod
     def for_execution(cls, settings):
-        options = cls.model_validate({key: value for key, value in settings.items()
-                                      if key not in {"project_summary", "review_rules"}}).model_dump()
-        if rules := settings.get("review_rules"):
-            options["review_rules"] = [rule.for_execution() for rule in review_rules_adapter.validate_python(rules)]
-        return options
+        return cls.model_validate({key: value for key, value in settings.items()
+                                   if key not in {"project_summary", "review_rules"}}).model_dump()
 
 
 class RepoSettingsWithSummary(RepoSettings):
@@ -487,9 +480,7 @@ class RepositoryOut(ORMModel):
     connection_id: str | None
     connection_requires_setup: bool = False
     settings: RepoSettingsWithSummary
-    review_rules: ReviewRules = Field(
-        default_factory=list, validation_alias=AliasChoices("review_rules", AliasPath("settings", "review_rules")),
-    )
+    review_rules: ReviewRules = Field(default_factory=list)
     scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False

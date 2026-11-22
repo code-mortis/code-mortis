@@ -20,7 +20,7 @@ def _oid(value):
     return value
 
 
-def preview(full_name, branch, token, path, options, credentials, *, prompt_token_ceiling):
+def preview(full_name, branch, token, path, options, credentials, *, prompt_token_ceiling, workspace_count=0):
     source.repository_path(path)
     safe_repo_name(full_name)
     if not isinstance(branch, str) or not branch or len(branch) > 255:
@@ -108,7 +108,8 @@ def preview(full_name, branch, token, path, options, credentials, *, prompt_toke
 
     legacy = planning.load_legacy_rules(base_sha, options, entry_at,
                                         lambda _path, entry: read_blob(entry["blob_sha"], entry["size"]), check=check)
-    instructions, matches = planning.resolve_rules(path, legacy, options["review_rules"], check=check)
+    instructions, matches = planning.resolve_rules(path, legacy, options["review_rules"],
+                                                  workspace_count=workspace_count, check=check)
     reviewable = planning.allowed_path(path, options, legacy, check=check)
     safe = context.sanitize({"rule": instructions, "path": path}, credentials)
     for match in matches:

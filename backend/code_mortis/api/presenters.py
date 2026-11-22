@@ -11,12 +11,14 @@ from code_mortis.models import (
     Repository,
     ReviewRun,
 )
+from code_mortis.reviews import rules
 from code_mortis.schemas.common import (
     ConnectionOut,
     PullRequestOut,
     RepositoryOut,
     RepositoryReviewSummary,
     RunOut,
+    StoredReviewRule,
 )
 
 
@@ -40,10 +42,11 @@ def latest_repository_reviews(db: Session, repository_ids: list[int]) -> dict[in
     }
 
 
-def repo_out(db: Session, repo: Repository) -> RepositoryOut:
+def repo_out(db: Session, repo: Repository, *, review_rules: list[StoredReviewRule] | None = None) -> RepositoryOut:
     from code_mortis.models import CodeGraphRepository
 
     result = RepositoryOut.model_validate(repo)
+    result.review_rules = rules.by_repository(db, [repo.id])[repo.id] if review_rules is None else review_rules
     graph = db.get(CodeGraphRepository, repo.id)
     result.code_graph_enabled = bool(graph and graph.enabled)
     result.open_prs, result.has_running_review, connection_kind = db.execute(

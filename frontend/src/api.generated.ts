@@ -2431,7 +2431,7 @@ export interface components {
              * Source
              * @enum {string}
              */
-            source: "mortis" | "repository" | "legacy_settings" | "trusted_base";
+            source: "mortis" | "repository" | "legacy_settings" | "trusted_base" | "workspace";
             /**
              * Glob
              * @default

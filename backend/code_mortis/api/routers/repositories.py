@@ -19,6 +19,7 @@ from code_mortis.mcp import provenance as mcp
 from code_mortis.models import (
     CodeGraphRepository,
     Connection,
+    CustomReviewRule,
     Finding,
     FindingVerification,
     Job,
@@ -30,7 +31,7 @@ from code_mortis.models import (
     SecurityOccurrence,
     SecurityScan,
 )
-from code_mortis.reviews import background, inbox, rules_preview
+from code_mortis.reviews import background, inbox, rules, rules_preview
 from code_mortis.reviews.context import execution_credentials
 from code_mortis.reviews.service import enqueue
 from code_mortis.schemas.analytics import (
@@ -55,7 +56,6 @@ from code_mortis.schemas.common import (
     ReviewRulesUpdate,
     RunOut,
     StoredReviewRule,
-    review_rules_adapter,
 )
 
 router = APIRouter()
@@ -66,9 +66,11 @@ def repositories(db: DB, user: USER):
     from code_mortis.security_scans.service import summaries
 
     repos = github.visible_repositories(db, user)
-    security = summaries(db, [repo.id for repo in repos])
-    reviews = latest_repository_reviews(db, [repo.id for repo in repos])
-    result = [repo_out(db, repo) for repo in repos]
+    repository_ids = [repo.id for repo in repos]
+    security = summaries(db, repository_ids)
+    reviews = latest_repository_reviews(db, repository_ids)
+    configured_rules = rules.by_repository(db, repository_ids)
+    result = [repo_out(db, repo, review_rules=configured_rules[repo.id]) for repo in repos]
     for repo in result:
         repo.security = security[repo.id]
         repo.latest_completed_review = reviews.get(repo.id)
@@ -167,8 +169,6 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
         effective_settings.pop("project_summary")
     if "rules" not in body.settings.model_fields_set:
         effective_settings["rules"] = repo.settings.get("rules")
-    if "review_rules" in repo.settings:
-        effective_settings["review_rules"] = repo.settings["review_rules"]
     if body.code_graph_enabled is not None or body.code_graph_limits is not None:
         graphs.browser_only()
     if body.connection_id and not db.get(Connection, body.connection_id):
@@ -216,28 +216,32 @@ def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, use
     repo, remote = repo_access(db, user, repository_id, write=True)
     if type(remote.get("id")) is not int or remote["id"] != repo.id:
         raise HTTPException(403, "GitHub repository identity changed.")
-    rules = review_rules_adapter.validate_python(repo.settings.get("review_rules", []))
-    if rules != body.expected_rules:
+    rows = rules.repository_rows(db, [repo.id])
+    records = [rules.record(row) for row in rows]
+    if records != body.expected_rules:
         raise HTTPException(409, "Review rules changed while you were editing. Reload settings and try again.")
     change = body.change
     if change.operation == "add":
-        if len(rules) >= REVIEW_RULE_LIMIT:
+        if len(records) >= REVIEW_RULE_LIMIT:
             raise HTTPException(422, f"A repository can have at most {REVIEW_RULE_LIMIT} custom rules.")
         timestamp = now()
-        rules.append(StoredReviewRule(**change.rule.model_dump(), rule_id=uid(), created_at=timestamp, updated_at=timestamp))
-    elif change.index >= len(rules):
+        row = CustomReviewRule(rule_id=uid(), scope="repository", repository_id=repo.id,
+                               position=rows[-1].position + 1 if rows else 0, definition=change.rule.model_dump(),
+                               created_at=timestamp, updated_at=timestamp)
+        db.add(row)
+        records.append(rules.record(row))
+    elif change.index >= len(records):
         raise HTTPException(422, "Review rule index is out of range.")
     elif change.operation == "delete":
-        del rules[change.index]
+        db.delete(rows[change.index])
+        del records[change.index]
     else:
-        current = rules[change.index]
+        row = rows[change.index]
         updated = change.rule.model_dump()
-        if updated == current.for_execution():
-            return rules
-        rules[change.index] = StoredReviewRule(**updated, rule_id=current.rule_id or uid(),
-                                             created_at=current.created_at, updated_at=now())
-    repo.settings = {**repo.settings, "review_rules": review_rules_adapter.dump_python(rules, mode="json")}
-    return rules
+        if updated != records[change.index].for_execution():
+            row.definition, row.updated_at = updated, now()
+            records[change.index] = rules.record(row)
+    return records
 
 
 @router.get("/repositories/{repository_id}/review-rules/files", response_model=list[RepositoryPath])
@@ -262,11 +266,12 @@ def preview_review_rules(repository_id: int, body: ReviewRulesPreviewInput, db: 
     shared = connection if connection and connection.kind == "api" else None
     secret = json.loads(unseal(shared.secret)) if shared else {}
     credentials = execution_credentials(db, repo.id, secret, token)
-    options = {**repo.settings, "review_rules": [rule.for_execution() for rule in body.rules]}
+    records, workspace_count = rules.effective(db, repo.id, repository_draft=body.rules)
+    options = {**repo.settings, "review_rules": [rule.for_execution() for rule in records]}
     ceiling = shared.options.get("prompt_token_ceiling") if shared else None
     try:
         return rules_preview.preview(repo.full_name, remote.get("default_branch"), token, body.path, options, credentials,
-                                     prompt_token_ceiling=ceiling)
+                                     prompt_token_ceiling=ceiling, workspace_count=workspace_count)
     except TimeoutError as exc:
         raise HTTPException(504, str(exc)) from exc
 

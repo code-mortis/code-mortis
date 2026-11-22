@@ -10,11 +10,11 @@ from code_mortis.reviews.planning import matching_custom_rules
 def snapshot(saved_rules, execution_rules):
     # Rule names, activation and target ordering do not change the instruction or its scope.
     records = [
-        {"id": saved["rule_id"], "version": fingerprint({
+        {"id": str(saved.rule_id), "version": fingerprint({
             "instructions": rule["instructions"],
             "files": sorted(set(rule.get("files", ()))),
             "globs": sorted(set(filter(None, [rule["glob"], *rule.get("globs", ())]))),
-        })} if saved.get("rule_id") else None
+        })} if saved.rule_id else None
         for saved, rule in zip(saved_rules, execution_rules, strict=True)
     ]
     return records if any(records) else None

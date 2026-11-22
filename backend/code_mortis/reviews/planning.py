@@ -274,9 +274,9 @@ def matching_custom_rules(path, review_rules, *, check=None):
             if rule["active"] and _target_matches(path, rule, check=check))
 
 
-def resolve_rules(path, legacy, review_rules=(), *, check=None):
+def resolve_rules(path, legacy, review_rules=(), *, workspace_count=0, check=None):
     origin, old = _legacy_match(path, legacy, check=check)
-    active = [rule for _, rule in matching_custom_rules(path, review_rules, check=check)]
+    active = list(matching_custom_rules(path, review_rules, check=check))
     instructions, matches = [], []
     if active or old is None or old["merge_system_rule"]:
         instructions.append(system_rule(path))
@@ -284,9 +284,10 @@ def resolve_rules(path, legacy, review_rules=(), *, check=None):
     if old is not None:
         instructions.append(old["rule"])
         matches.append({"name": "Legacy review rule", "source": origin, "glob": old["path"]})
-    for rule in active:
+    for index, rule in active:
         instructions.append(rule["instructions"])
-        matches.append({"name": rule["name"], "source": "repository", "glob": rule["glob"],
+        matches.append({"name": rule["name"], "source": "workspace" if index < workspace_count else "repository",
+                        "glob": rule["glob"],
                         **{key: rule[key] for key in ("files", "globs") if rule.get(key)}})
     return "\n\n".join(filter(None, instructions)), matches
 

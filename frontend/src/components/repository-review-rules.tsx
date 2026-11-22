@@ -345,8 +345,7 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
       <ul aria-label="Repository review rules" className="divide-y">
         {rows.map(({ rule, index }) => {
           const name = rule.name.trim() || "Untitled rule";
-          const files = rule.files ?? [];
-          const globs = ruleGlobs(rule);
+          const targets = [rule.files?.length && "Files", ruleGlobs(rule).length && "Globs"].filter(Boolean).join(" · ");
           return <li key={index} className="settings-record settings-rule-row px-4 py-4 text-sm md:px-5 md:py-3">
             <div className="settings-identity flex min-w-0 items-center gap-3">
               <ListChecks aria-hidden="true" className="size-4 shrink-0 text-primary" />
@@ -355,11 +354,9 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
                 <p className="mt-2 truncate text-xs text-muted-foreground">{rule.instructions}</p>
               </div>
             </div>
-            <div className="text-xs">
-              <span className="settings-cell-label mb-1 text-muted-foreground">Targets</span>
-              {files.length + globs.length === 0 ? <span className="text-muted-foreground">All files</span> :
-                files.length + globs.length === 1 ? <><span className="text-muted-foreground">{files.length ? "File" : "Glob"}</span> <code className="break-all">{files[0] ?? globs[0]}</code></> :
-                  [files.length && `${files.length} ${files.length === 1 ? "file" : "files"}`, globs.length && `${globs.length} ${globs.length === 1 ? "glob" : "globs"}`].filter(Boolean).join(" · ")}
+            <div className="text-xs text-muted-foreground">
+              <span className="settings-cell-label mb-1">Targets</span>
+              <span>{targets || "All files"}</span>
             </div>
             {([["Created", rule.created_at], ["Updated", rule.updated_at]] as const).map(([label, timestamp]) => (
               <div key={label} className="text-xs text-muted-foreground">

@@ -48,6 +48,7 @@ from code_mortis.reviews import (
     pipeline,
     planning,
     rule_usage,
+    rules,
     verification,
 )
 from code_mortis.reviews import summary as pr_summary
@@ -157,9 +158,15 @@ def create_run(
     if original_rules_from is not None:
         original_rule_settings = original_rules_from.config["settings"]
         options["rules"] = original_rule_settings.get("rules")
-        options.pop("review_rules", None)
-        if rules := original_rule_settings.get("review_rules"):
-            options["review_rules"] = rules
+        if original_rules := original_rule_settings.get("review_rules"):
+            options["review_rules"] = original_rules
+        rule_tracking = original_rules_from.rule_tracking
+    else:
+        configured, _ = rules.effective(db, repo.id)
+        execution_rules = [rule.for_execution() for rule in configured]
+        if execution_rules:
+            options["review_rules"] = execution_rules
+        rule_tracking = rule_usage.snapshot(configured, execution_rules)
     require_available_engine(options)
     if ignore_file_limit:
         options["max_files"] = None
@@ -211,8 +218,7 @@ def create_run(
         base_sha=pr.base_sha,
         head_sha=pr.head_sha,
         config=config,
-        rule_tracking=(original_rules_from.rule_tracking if original_rules_from is not None else
-                       rule_usage.snapshot(repo.settings.get("review_rules") or (), options.get("review_rules", ()))),
+        rule_tracking=rule_tracking,
         connection_id=connection.id,
         owner_id=connection.owner_id,
         engine=config["analysis_engine"] if connection.kind == "api" else connection.kind,

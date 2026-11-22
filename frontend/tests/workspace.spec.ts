@@ -9690,7 +9690,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   const requests = await mock(page);
   const legacy = { rules: [{ path: "**/*.py", rule: "Keep old checks" }] };
   const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
-  const keepDraft = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
+  const keepDraft = { name: "Keep", instructions: "Keep this rule", glob: "", active: true, files: ["docs/owner.md"] };
   const keepRule = { ...keepDraft, rule_id: "329ce63c-65b7-462f-b566-abffc75107c0" };
   const inactiveKeep = { ...keepDraft, active: false };
   const savedKeep = { ...keepRule, active: false, updated_at: at };
@@ -9740,6 +9740,9 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(panel.getByRole("heading", { name: "Test a path" })).toHaveCount(0);
   const list = panel.getByRole("list", { name: "Repository review rules" });
   await expect(list.getByRole("listitem")).toHaveCount(2);
+  await expect(list.getByText("All files", { exact: true })).toBeVisible();
+  await expect(list.getByText("Files", { exact: true })).toBeVisible();
+  await expect(list).not.toContainText(keepDraft.files[0]);
   const icons = list.locator('svg.lucide-list-checks[aria-hidden="true"]');
   await expect(icons).toHaveCount(2);
   const iconOffsets = await icons.evaluateAll((elements) => elements.map((icon) => {
@@ -9819,6 +9822,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page.getByText("Rule added.", { exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await expect(keepActive).not.toBeChecked();
+  await expect(list.getByText("Files · Globs", { exact: true })).toBeVisible();
   expect(saves.at(-1)).toEqual({ expected_rules: [savedKeep], change: { operation: "add", rule: newRule } });
 
   await page.clock.install();
@@ -9895,6 +9899,9 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
     return route.fulfill({ json: applyRuleChange([legacy], body.change) });
   });
   await page.goto("/repositories/22/custom-rules");
+  const list = page.getByRole("list", { name: "Repository review rules" });
+  await expect(list.getByText("Globs", { exact: true })).toBeVisible();
+  await expect(list).not.toContainText(legacy.glob);
   await page.getByRole("button", { name: "Actions for Auth" }).click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Edit rule" });
