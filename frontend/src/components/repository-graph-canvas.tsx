@@ -132,24 +132,28 @@ export function RepositoryGraphCanvas({
       const neighbors = new Set<string>();
       const scale = camera.scale * camera.zoom;
       const points = new Map(nodes.map((node) => [node.id, project(node, camera, size)]));
-      for (const edge of graph.edges) {
+      const raisedEdges: GraphView["edges"] = [];
+      const drawEdge = (edge: GraphView["edges"][number], raised = false) => {
         const from = points.get(edge.source);
         const to = points.get(edge.target);
         const target = byId.get(edge.target);
-        if (!from || !to || !target) continue;
+        if (!from || !to || !target) return;
         const outgoing = edge.source === emphasis;
         const incoming = edge.target === emphasis;
-        if (outgoing) neighbors.add(edge.target);
-        if (incoming) neighbors.add(edge.source);
+        const angle = Math.atan2(to.y - from.y, to.x - from.x);
+        const tangentX = Math.cos(angle);
+        const tangentY = Math.sin(angle);
+        const startOffset = raised ? byId.get(edge.source)!.radius * scale : 0;
+        const endOffset = target.radius * scale + 2;
+        if (raised && Math.hypot(to.x - from.x, to.y - from.y) <= startOffset + endOffset) return;
+        const endX = to.x - tangentX * endOffset;
+        const endY = to.y - tangentY * endOffset;
         ctx.lineWidth = 1;
         ctx.globalAlpha = outgoing || incoming ? 0.9 : highlighted ? 0.1 : 0.32;
         ctx.strokeStyle = outgoing ? primary : muted;
         ctx.setLineDash(incoming ? [4, 4] : []);
-        const angle = Math.atan2(to.y - from.y, to.x - from.x);
-        const endX = to.x - Math.cos(angle) * (target.radius * scale + 2);
-        const endY = to.y - Math.sin(angle) * (target.radius * scale + 2);
         ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
+        ctx.moveTo(from.x + tangentX * startOffset, from.y + tangentY * startOffset);
         ctx.lineTo(endX, endY);
         ctx.stroke();
         if (outgoing || incoming) {
@@ -160,16 +164,27 @@ export function RepositoryGraphCanvas({
           ctx.lineTo(endX - 6 * Math.cos(angle + Math.PI / 6), endY - 6 * Math.sin(angle + Math.PI / 6));
           ctx.stroke();
         }
+      };
+      for (const edge of graph.edges) {
+        const outgoing = edge.source === emphasis;
+        const incoming = edge.target === emphasis;
+        if (outgoing) neighbors.add(edge.target);
+        if (incoming) neighbors.add(edge.source);
+        if (highlighted && (outgoing || incoming)) raisedEdges.push(edge);
+        else drawEdge(edge);
       }
       for (const node of nodes) {
         const point = points.get(node.id)!;
         const count = node.incoming + node.outgoing;
         const share = node.kind === "file" && graph.max_connections > 0 ? count / graph.max_connections : 0;
         const emphasized = node.id === emphasis;
-        ctx.globalAlpha = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
-        ctx.fillStyle = share <= 1 / 3 ? muted : share <= 2 / 3 ? caution : success;
         ctx.beginPath();
         ctx.arc(point.x, point.y, node.radius * scale, 0, Math.PI * 2);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = background;
+        ctx.fill();
+        ctx.globalAlpha = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
+        ctx.fillStyle = share <= 1 / 3 ? muted : share <= 2 / 3 ? caution : success;
         ctx.fill();
         if (node.id === keyboard) {
           ctx.strokeStyle = primary;
@@ -177,6 +192,7 @@ export function RepositoryGraphCanvas({
           ctx.stroke();
         }
       }
+      for (const edge of raisedEdges) drawEdge(edge, true);
       if (camera.zoom > 0.55) {
         const boxes: { x: number; y: number; width: number; height: number }[] = [];
         const order = (node: PositionedNode) => node.id === emphasis ? 0 : node.id === focused ? 1 : neighbors.has(node.id) ? 2 : 3;

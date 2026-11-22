@@ -72,7 +72,9 @@ test("node colors use the three connection bands even in a small repository", as
     const sample = sampleCanvas.getContext("2d")!;
     const style = getComputedStyle(element);
     return ["--muted-foreground", "--code-number", "--code-added"].every((token) => {
-      sample.clearRect(0, 0, 1, 1);
+      sample.globalAlpha = 1;
+      sample.fillStyle = style.getPropertyValue("--background").trim();
+      sample.fillRect(0, 0, 1, 1);
       sample.globalAlpha = 0.82;
       sample.fillStyle = style.getPropertyValue(token).trim();
       sample.fillRect(0, 0, 1, 1);
@@ -83,6 +85,60 @@ test("node colors use the three connection bands even in a small repository", as
       return false;
     });
   })).toBe(true);
+});
+
+test("only the hovered connections are painted above the dots", async ({ page }) => {
+  await mockRepository(page);
+  await page.route("**/api/v1" + base + "/view", (route) => route.fulfill({
+    json: graph({ edges: [...edges, { source: files[1].id, target: files[2].id }], total_links: 3 }),
+  }));
+  await page.route("**/assets/repository-graph-layout.worker-*.js", (route) => route.fulfill({
+    contentType: "text/javascript",
+    body: "self.onmessage = ({ data }) => self.postMessage({ settled: true, positions: Object.fromEntries(data.nodes.map((node, i) => [node.id, { x: [0, -80, 80, 35][i], y: 0 }])) })",
+  }));
+  await page.addInitScript(() => {
+    const context = CanvasRenderingContext2D.prototype;
+    const { clearRect, fill, stroke } = context;
+    context.clearRect = function (...args) {
+      if (this.canvas.dataset.testid === "repository-code-graph-canvas") this.canvas.dataset.paint = "";
+      clearRect.apply(this, args);
+    };
+    context.fill = function (...args: unknown[]) {
+      if (this.canvas.dataset.paint !== undefined) this.canvas.dataset.paint += "dot\n";
+      Reflect.apply(fill, this, args);
+    };
+    context.stroke = function (...args: unknown[]) {
+      if (this.canvas.dataset.paint !== undefined) this.canvas.dataset.paint +=
+        [this.strokeStyle, this.lineWidth, this.getLineDash().length ? "dashed" : "solid"].join(" ") + "\n";
+      Reflect.apply(stroke, this, args);
+    };
+  });
+  await page.goto(base);
+  const paint = () => canvas(page).evaluate((element) => {
+    const drawn = element.getAttribute("data-paint")?.trim().split("\n") ?? [];
+    const swatch = document.createElement("canvas").getContext("2d")!;
+    const stroke = (token: string, dash = "solid") => {
+      swatch.strokeStyle = getComputedStyle(element).getPropertyValue(token).trim();
+      return swatch.strokeStyle + " 1 " + dash;
+    };
+    return {
+      back: drawn.slice(0, Math.max(0, drawn.indexOf("dot"))),
+      front: drawn.slice(drawn.lastIndexOf("dot") + 1),
+      muted: stroke("--muted-foreground"),
+      incoming: stroke("--muted-foreground", "dashed"),
+      outgoing: stroke("--primary"),
+    };
+  });
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  await expect.poll(async () => (await paint()).back.length).toBe(3);
+  expect((await paint()).front).toEqual([]);
+  await canvas(page).hover();
+  await expect(page.getByRole("tooltip")).toContainText("service.ts");
+  await expect.poll(async () => {
+    const { back, front, muted, incoming, outgoing } = await paint();
+    return back.length === 1 && back[0] === muted
+      && front.join("\n") === [incoming, muted, outgoing, outgoing].join("\n");
+  }).toBe(true);
 });
 
 test("the graph header holds Filters and settings and the toolbar holds the revision", async ({ page }) => {
