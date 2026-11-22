@@ -9687,6 +9687,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "src/**/*.py", active: true };
   let saved: Schema["ReviewRule"][] = [oldRule, keepRule];
   let failDelete = true;
+  let failEdit = false;
   const saves: Schema["ReviewRulesUpdate"][] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({
     json: [{ ...repo, review_rules: saved, settings: { ...repo.settings, rules: legacy } }],
@@ -9696,6 +9697,10 @@ test("repository custom rules use the workspace width and persist confirmed chan
     if (failDelete) {
       failDelete = false;
       return route.fulfill({ status: 503, json: { detail: "The rule could not be deleted. Try again." } });
+    }
+    if (failEdit) {
+      failEdit = false;
+      return route.fulfill({ status: 503, json: { detail: "The rule could not be saved. Try again." } });
     }
     saves.push(request);
     saved = request.rules;
@@ -9767,24 +9772,48 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page).toHaveURL("/repositories/22/custom-rules");
   await expect(removeOld).toHaveCount(0);
   await expect(keepActive).toBeChecked();
-  await panel.getByRole("button", { name: "Edit Ownership" }).click();
-  const instructions = panel.getByLabel("Instructions", { exact: true });
+  const edit = panel.getByRole("button", { name: "Edit Ownership" });
+  const editDialog = page.getByRole("dialog", { name: "Edit rule", exact: true });
+  const instructions = editDialog.getByLabel("Instructions", { exact: true });
+  await keepActive.uncheck();
+  await edit.click();
+  await expect(editDialog.getByLabel("Name", { exact: true })).toHaveValue(newRule.name);
+  await expect(instructions).toHaveValue(newRule.instructions);
+  await expect(editDialog.getByLabel("Glob pattern (optional)", { exact: true })).toHaveValue(newRule.glob);
+  await instructions.fill("Discard these edits.");
+  await editDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(edit).toBeFocused();
+  expect(saves).toHaveLength(2);
+
+  await edit.click();
   await expect(instructions).toHaveValue(newRule.instructions);
   await instructions.fill("Check ownership on every call.");
-  await panel.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Custom rules saved.", { exact: true })).toBeVisible();
+  failEdit = true;
+  const saveEdit = editDialog.getByRole("button", { name: "Save", exact: true });
+  await saveEdit.click();
+  await expect(editDialog.getByRole("alert")).toContainText("The rule could not be saved.");
+  await expect(instructions).toHaveValue("Check ownership on every call.");
+  await saveEdit.click();
+  await expect(page.getByText("Rule saved.", { exact: true })).toBeVisible();
+  await expect(editDialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+  await expect(keepActive).not.toBeChecked();
   expect(saves[2]).toEqual({ expected_rules: [keepRule, newRule],
     rules: [keepRule, { ...newRule, instructions: "Check ownership on every call." }] });
   expect(requests).toEqual([]);
+  await page.reload();
+  await expect(panel.getByText("Check ownership on every call.", { exact: true })).toBeVisible();
+  await expect(keepActive).toBeChecked();
   saved = [{ name: "Polled", instructions: "New server rule", active: true, glob: "" }];
   await page.clock.runFor(5500);
   await expect(panel.getByRole("button", { name: "Edit Polled" })).toBeVisible();
   await panel.getByRole("button", { name: "Edit Polled" }).click();
-  await panel.getByLabel("Instructions", { exact: true }).fill("Keep my draft.");
+  await instructions.fill("Keep my draft.");
   saved = [{ name: "Other changes", instructions: "Keep server edits", active: true, glob: "" }];
   await page.clock.runFor(5500);
-  await expect(panel.getByLabel("Instructions", { exact: true })).toHaveValue("Keep my draft.");
-  await expect(panel.getByRole("button", { name: "Edit Other changes" })).toHaveCount(0);
+  await expect(instructions).toHaveValue("Keep my draft.");
+  await editDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "Edit Other changes" })).toBeVisible();
 });
 
 test("historical OCR reviews preserve origin and publication recovery without resuming inference", async ({ page }) => {

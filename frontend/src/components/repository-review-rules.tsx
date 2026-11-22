@@ -1,11 +1,11 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { api, type Repository, type Schema } from "../api";
 import { ErrorNotice, Field, PageTitle } from "./common";
 import { Button } from "./ui/button";
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
@@ -14,23 +14,6 @@ type Rule = Required<Schema["ReviewRule"]>;
 
 function asDraft(rules: Schema["ReviewRule"][] = []): Rule[] {
   return rules.map(({ glob = "", active = true, ...rule }) => ({ ...rule, glob, active }));
-}
-
-function RuleFields({ rule, disabled, onChange, nameRef }: {
-  rule: Rule;
-  disabled: boolean;
-  onChange: (changes: Partial<Rule>) => void;
-  nameRef?: Ref<HTMLInputElement>;
-}) {
-  return <>
-    <Field label="Name">{(id) => <Input ref={nameRef} id={id} required maxLength={150} value={rule.name}
-      disabled={disabled} onChange={(event) => onChange({ name: event.target.value })} />}</Field>
-    <Field label="Instructions">{(id) => <Textarea id={id} required rows={4} maxLength={4000} value={rule.instructions}
-      disabled={disabled} onChange={(event) => onChange({ instructions: event.target.value })} />}</Field>
-    <Field label="Glob pattern (optional)" hint="Leave blank to match every file.">{(id) => <Input id={id}
-      maxLength={500} placeholder="src/**/*.py" value={rule.glob} disabled={disabled}
-      onChange={(event) => onChange({ glob: event.target.value })} />}</Field>
-  </>;
 }
 
 export function RepositoryReviewRules({ repository }: { repository: Repository }) {
@@ -47,27 +30,23 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
   });
   const [saved, setSaved] = useState(() => asDraft(repository.review_rules));
   const [rules, setRules] = useState(saved);
-  const [editing, setEditing] = useState<number | null>(null);
-  const [newRule, setNewRule] = useState<Rule | null>(null);
+  const [editor, setEditor] = useState<{ index: number | null; draft: Rule } | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<unknown>();
-  const nameInput = useRef<HTMLInputElement>(null);
   const addButton = useRef<HTMLButtonElement>(null);
+  const editorTrigger = useRef<HTMLButtonElement>(null);
   const deleteTrigger = useRef<HTMLButtonElement>(null);
   const dirty = JSON.stringify(rules) !== JSON.stringify(saved);
-
-  useLayoutEffect(() => {
-    if (editing !== null) nameInput.current?.focus();
-  }, [editing]);
+  const editing = editor?.index != null;
+  const canSubmit = editor && (editing || rules.length < 50) && editor.draft.name.trim() && editor.draft.instructions.trim();
 
   useEffect(() => {
-    if (dirty || save.isPending || deleting !== null) return;
+    if (dirty || save.isPending || editing || deleting !== null) return;
     const incoming = asDraft(repository.review_rules);
     if (JSON.stringify(incoming) === JSON.stringify(saved)) return;
     setSaved(incoming);
     setRules(incoming);
-    setEditing(null);
-  }, [deleting, dirty, repository.review_rules, save.isPending, saved]);
+  }, [deleting, dirty, editing, repository.review_rules, save.isPending, saved]);
 
   function change(index: number, draft: Partial<Rule>) {
     setRules(rules.map((rule, i) => i === index ? { ...rule, ...draft } : rule));
@@ -86,65 +65,75 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     }
   }
 
-  function saveRules() {
-    const invalid = rules.findIndex((rule) => !rule.name.trim() || !rule.instructions.trim());
-    if (invalid >= 0) {
-      setEditing(invalid);
-      setSaveError(new Error("Enter a name and instructions for each rule."));
-      return;
-    }
-    void persistRules(rules, (persisted) => {
-      setRules(persisted);
-      setEditing(null);
-    }, "Custom rules saved.");
+  function openEditor(index: number | null, trigger: HTMLButtonElement) {
+    editorTrigger.current = trigger;
+    setSaveError(undefined);
+    setEditor({ index, draft: index === null ? { name: "", instructions: "", glob: "", active: true } : saved[index] });
+  }
+
+  function changeDraft(changes: Partial<Rule>) {
+    setEditor((current) => current && { ...current, draft: { ...current.draft, ...changes } });
+    setSaveError(undefined);
+  }
+
+  function saveRule() {
+    if (!editor || !canSubmit || save.isPending) return;
+    const { index, draft } = editor;
+    const next = index === null ? [...saved, draft] : saved.map((rule, i) => i === index ? draft : rule);
+    void persistRules(next, (persisted) => {
+      // Keep pending activation changes in the list when saving this rule's fields.
+      setRules(persisted.map((rule, i) => ({ ...rule, active: rules[i]?.active ?? rule.active })));
+      setEditor(null);
+    }, index === null ? "Rule added." : "Rule saved.");
   }
 
   function deleteRule(index: number) {
     void persistRules(saved.filter((_, i) => i !== index), () => {
       setRules(rules.filter((_, i) => i !== index));
-      setEditing(editing === index ? null : editing !== null && editing > index ? editing - 1 : editing);
       deleteTrigger.current = null;
       setDeleting(null);
     }, "Rule deleted.");
   }
 
   return <section aria-labelledby={`${id}-heading`} className="min-w-0 space-y-6">
-    <Dialog open={newRule !== null} onOpenChange={(open) => {
-      if (save.isPending) return;
-      setSaveError(undefined);
-      setNewRule(open ? { name: "", instructions: "", glob: "", active: true } : null);
+    <PageTitle title="Custom rules" headingProps={{ id: `${id}-heading` }} actions={
+      <Button ref={addButton} type="button" variant="outline" aria-haspopup="dialog" disabled={save.isPending || rules.length >= 50}
+        onClick={(event) => openEditor(null, event.currentTarget)}>
+        <Plus aria-hidden="true" /> Add rule
+      </Button>
+    }>
+      Give Mortis instructions for matching files in pull request reviews.
+    </PageTitle>
+    <Dialog open={editor !== null} onOpenChange={(open) => {
+      if (!open && !save.isPending) {
+        setSaveError(undefined);
+        setEditor(null);
+      }
     }}>
-      <PageTitle title="Custom rules" headingProps={{ id: `${id}-heading` }} actions={
-        <DialogTrigger asChild>
-          <Button ref={addButton} type="button" variant="outline" disabled={save.isPending || rules.length >= 50}>
-            <Plus aria-hidden="true" /> Add rule
-          </Button>
-        </DialogTrigger>
-      }>
-        Give Mortis instructions for matching files in pull request reviews.
-      </PageTitle>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" showCloseButton={!save.isPending}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto" showCloseButton={!save.isPending} onCloseAutoFocus={(event) => {
+        event.preventDefault();
+        editorTrigger.current?.focus();
+      }}>
         <DialogHeader>
-          <DialogTitle>Add rule</DialogTitle>
+          <DialogTitle>{editing ? "Edit rule" : "Add rule"}</DialogTitle>
           <DialogDescription>Give Mortis instructions for reviewing matching files.</DialogDescription>
         </DialogHeader>
-        {newRule && <form className="space-y-4" onSubmit={(event) => {
+        {editor && <form className="space-y-4" onSubmit={(event) => {
           event.preventDefault();
-          if (save.isPending || rules.length >= 50 || !newRule.name.trim() || !newRule.instructions.trim()) return;
-          void persistRules([...saved, newRule], (persisted) => {
-            setRules([...rules, ...persisted.slice(saved.length)]);
-            setNewRule(null);
-          }, "Rule added.");
+          saveRule();
         }}>
-          <RuleFields rule={newRule} disabled={save.isPending} onChange={(changes) => {
-            setNewRule({ ...newRule, ...changes });
-            setSaveError(undefined);
-          }} />
+          <Field label="Name">{(id) => <Input id={id} required maxLength={150} value={editor.draft.name}
+            disabled={save.isPending} onChange={(event) => changeDraft({ name: event.target.value })} />}</Field>
+          <Field label="Instructions">{(id) => <Textarea id={id} required rows={4} maxLength={4000} value={editor.draft.instructions}
+            disabled={save.isPending} onChange={(event) => changeDraft({ instructions: event.target.value })} />}</Field>
+          <Field label="Glob pattern (optional)" hint="Leave blank to match every file.">{(id) => <Input id={id}
+            maxLength={500} placeholder="src/**/*.py" value={editor.draft.glob} disabled={save.isPending}
+            onChange={(event) => changeDraft({ glob: event.target.value })} />}</Field>
           <ErrorNotice error={saveError} />
           <DialogFooter>
             <DialogClose asChild><Button type="button" variant="outline" disabled={save.isPending}>Cancel</Button></DialogClose>
-            <Button type="submit" disabled={save.isPending || rules.length >= 50 || !newRule.name.trim() || !newRule.instructions.trim()}>
-              {save.isPending ? "Adding…" : "Add rule"}
+            <Button type="submit" disabled={save.isPending || !canSubmit}>
+              {save.isPending ? "Saving…" : editing ? "Save" : "Add rule"}
             </Button>
           </DialogFooter>
         </form>}
@@ -153,14 +142,13 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
 
     {rules.length > 0 ? <ul aria-label="Repository review rules" className="divide-y rounded-lg border bg-card">
       {rules.map((rule, index) => {
-        const open = editing === index;
         const name = rule.name.trim() || "Untitled rule";
         return <li key={index} className="space-y-4 p-4">
           <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
             <div className="min-w-0 flex-1 basis-36">
               <p className="break-words text-sm font-medium">{name}</p>
               <p className="break-all text-xs text-muted-foreground">{rule.glob ? <code>{rule.glob}</code> : "All files"}</p>
-              {!open && <p className="mt-2 line-clamp-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">{rule.instructions}</p>}
+              <p className="mt-2 line-clamp-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">{rule.instructions}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -168,11 +156,8 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
                   onCheckedChange={(active) => change(index, { active })} />
                 {rule.active ? "Active" : "Inactive"}
               </label>
-              {open ? <Button type="button" variant="ghost" size="sm" disabled={save.isPending} onClick={() => {
-                setEditing(null);
-                requestAnimationFrame(() => document.getElementById(`${id}-edit-${index}`)?.focus());
-              }}>Done</Button> : <Button id={`${id}-edit-${index}`} type="button" variant="ghost" size="sm" disabled={save.isPending}
-                aria-label={`Edit ${name}`} onClick={() => setEditing(index)}>Edit</Button>}
+              <Button type="button" variant="ghost" size="sm" disabled={save.isPending} aria-haspopup="dialog"
+                aria-label={`Edit ${name}`} onClick={(event) => openEditor(index, event.currentTarget)}>Edit</Button>
               <Button type="button" variant="ghost" size="sm" disabled={save.isPending} aria-label={`Delete ${name}`} aria-haspopup="dialog"
                 onClick={(event) => {
                   deleteTrigger.current = event.currentTarget;
@@ -181,9 +166,6 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
                 }}>Delete</Button>
             </div>
           </div>
-          {open && <div className="space-y-4 border-t pt-4">
-            <RuleFields rule={rule} disabled={save.isPending} nameRef={nameInput} onChange={(changes) => change(index, changes)} />
-          </div>}
         </li>;
       })}
     </ul> : <p className="text-sm text-muted-foreground">Add a rule to supply your own review instructions.</p>}
@@ -217,14 +199,14 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
       </DialogContent>
     </Dialog>
 
-    <footer className="sticky bottom-0 z-10 space-y-3 bg-background py-4">
-      {!newRule && deleting === null && <ErrorNotice error={saveError} />}
+    {dirty && <footer className="sticky bottom-0 z-10 space-y-3 bg-background py-4">
+      {!editor && deleting === null && <ErrorNotice error={saveError} />}
       <div className="flex items-center justify-end gap-2">
-        <p role="status" className="mr-auto text-sm text-muted-foreground empty:sr-only">{dirty ? "Unsaved changes" : ""}</p>
-        <Button type="button" disabled={!dirty || save.isPending} onClick={saveRules}>
+        <p role="status" className="mr-auto text-sm text-muted-foreground">Unsaved changes</p>
+        <Button type="button" disabled={save.isPending} onClick={() => void persistRules(rules, setRules, "Custom rules saved.")}>
           {save.isPending ? "Saving…" : "Save"}
         </Button>
       </div>
-    </footer>
+    </footer>}
   </section>;
 }
