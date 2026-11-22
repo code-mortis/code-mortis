@@ -57,6 +57,7 @@ function RuleFileInput({ id, repository, value, selected, disabled, onChange, on
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const typedPath = value.trim();
   const canSuggest = !!repository.code_graph_enabled && open && !disabled;
   const term = value ? query : "";
   useEffect(() => {
@@ -96,12 +97,12 @@ function RuleFileInput({ id, repository, value, selected, disabled, onChange, on
               onKeyDown={(event) => {
                 if (event.key === "Enter" && value && !event.currentTarget.getAttribute("aria-activedescendant")) {
                   event.preventDefault();
-                  add(value);
+                  if (typedPath) add(typedPath);
                 }
               }} />
           </div>
         </PopoverAnchor>
-        <Button type="button" variant="outline" disabled={disabled || !value} onClick={() => add(value)}>Add file</Button>
+        <Button type="button" variant="outline" disabled={disabled || !typedPath} onClick={() => add(typedPath)}>Add file</Button>
       </div>
       <PopoverContent role="presentation" align="start" sideOffset={6} collisionPadding={16}
         className="w-(--radix-popover-trigger-width) max-w-[calc(100vw-2rem)] p-0"

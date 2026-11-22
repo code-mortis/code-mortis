@@ -9806,10 +9806,17 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(name).toHaveValue("");
   await name.fill(newRule.name);
   await dialog.getByLabel("Instructions", { exact: true }).fill(newRule.instructions);
-  for (const file of newRule.files) {
-    await dialog.getByLabel("Files", { exact: true }).fill(file);
-    await dialog.getByRole("button", { name: "Add file", exact: true }).click();
-  }
+  const files = dialog.getByLabel("Files", { exact: true });
+  const addFile = dialog.getByRole("button", { name: "Add file", exact: true });
+  await files.fill("   ");
+  await expect(addFile).toBeDisabled();
+  await files.press("Enter");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("list", { name: "Selected files" })).toHaveCount(0);
+  await files.fill(`  ${newRule.files[0]}  `);
+  await addFile.click();
+  await files.fill(`  ${newRule.files[1]}  `);
+  await files.press("Enter");
   for (const glob of newRule.globs) {
     await dialog.getByLabel("Glob patterns", { exact: true }).fill(glob);
     await dialog.getByRole("button", { name: "Add glob", exact: true }).click();
@@ -9884,6 +9891,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
 test("repository custom rules suggest indexed exact files and keep legacy globs distinct", async ({ page }, info) => {
   await mock(page);
   const legacy = { name: "Auth", instructions: "Review auth.", active: true, glob: "{src/auth/session.py,tests/**/*.py}" };
+  const indexedFile = "src/auth/session.py ";
   const writes: Schema["ReviewRulesUpdate"][] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({
     json: [{ ...repo, code_graph_enabled: true, review_rules: [legacy] }],
@@ -9891,7 +9899,7 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
   await page.route("**/api/v1/repositories/22/review-rules/files?*", (route) => {
     const query = new URL(route.request().url()).searchParams.get("q");
     return route.fulfill({ json: query === "" ? ["docs/README.md", "src/auth/session.py"]
-      : query === "session" ? ["src/auth/session.py"] : [] });
+      : query === "session" ? [indexedFile] : [] });
   });
   await page.route("**/api/v1/repositories/22/review-rules", (route) => {
     const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
@@ -9928,7 +9936,7 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
   await files.fill("session");
   await suggestion.click();
   await expect(files).toHaveAttribute("aria-expanded", "false");
-  await expect(dialog.getByRole("list", { name: "Selected files" })).toContainText("src/auth/session.py");
+  expect(await dialog.getByRole("list", { name: "Selected files" }).locator("code").textContent()).toBe(indexedFile);
   await dialog.getByLabel("Files", { exact: true }).fill("docs/auth.md");
   await dialog.getByRole("button", { name: "Add file", exact: true }).click();
   await dialog.getByRole("button", { name: "Remove file src/auth/session.py", exact: true }).click();
