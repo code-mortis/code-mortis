@@ -9866,10 +9866,17 @@ test("repository custom rules use shared filters and sort the display order", as
   const panel = page.getByRole("region", { name: "Custom rules", exact: true });
   const names = panel.getByRole("list", { name: "Repository review rules" }).getByRole("heading");
   await expect(names).toHaveText(["Zulu", "Alpha", "Beta"]);
-  await panel.getByRole("button", { name: "Sort by Rule order" }).click();
+  const sortDescending = panel.getByRole("button", { name: "Sort descending" });
+  const sortAscending = panel.getByRole("button", { name: "Sort ascending" });
+  await expect(sortDescending).toHaveAttribute("title", "Oldest first");
+  await sortDescending.click();
+  await expect(names).toHaveText(["Beta", "Alpha", "Zulu"]);
+  await expect(sortAscending).toHaveAttribute("title", "Newest first");
+  await sortAscending.click();
+  await panel.getByRole("button", { name: "Sort by Created" }).click();
   await page.getByRole("menuitemradio", { name: "Name", exact: true }).click();
   await expect(names).toHaveText(["Alpha", "Beta", "Zulu"]);
-  await panel.getByRole("button", { name: "Sort descending" }).click();
+  await sortDescending.click();
   await expect(names).toHaveText(["Zulu", "Beta", "Alpha"]);
 
   const alpha = panel.getByRole("switch", { name: "Active rule Alpha" });

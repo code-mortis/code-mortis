@@ -16,7 +16,7 @@ import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 
 type Rule = Required<Schema["ReviewRule"]>;
-const ruleOrderings = { position: "Rule order", name: "Name" };
+const ruleOrderings = { created_at: "Created", name: "Name" };
 
 function normalizeRules(rules: Schema["ReviewRule"][] = []): Rule[] {
   return rules.map(({ glob = "", active = true, ...rule }) => ({ ...rule, glob, active }));
@@ -49,15 +49,17 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
   const query = (params.get("q") ?? "").trim().slice(0, INBOX_QUERY_MAX_LENGTH);
   const needle = query.toLowerCase();
   const statuses = [...new Set(params.getAll("status").filter((value) => value === "active" || value === "inactive"))];
-  const ordering = normalizeOrdering(params.get("ordering"), ruleOrderings, "position");
+  const requestedOrdering = params.get("ordering");
+  const ordering = normalizeOrdering(requestedOrdering === "-position" ? "-created_at" : requestedOrdering, ruleOrderings, "created_at");
   const matches = rules.map((rule, index) => ({ rule, index })).filter(({ rule }) =>
     [rule.name, rule.instructions, rule.glob].some((value) => value.toLowerCase().includes(needle)));
   const activeCount = matches.filter(({ rule }) => rule.active).length;
   const rows = matches.filter(({ rule }) => !statuses.length || statuses.includes(rule.active ? "active" : "inactive"));
+  // New rules are appended, so list position gives creation order without timestamps.
   if (ordering === "name" || ordering === "-name") {
     const direction = ordering === "name" ? 1 : -1;
     rows.sort((a, b) => direction * a.rule.name.localeCompare(b.rule.name, undefined, { sensitivity: "base" }));
-  } else if (ordering === "-position") rows.reverse();
+  } else if (ordering === "-created_at") rows.reverse();
 
   useEffect(() => {
     if (save.isPending || editing || deleting !== null) return;
@@ -179,9 +181,9 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
           values.forEach((value) => next.append("status", value));
           setParams(next, { state });
         }}
-        ordering={{ value: ordering, defaultValue: "position", options: ruleOrderings, onChange: (value) => {
+        ordering={{ value: ordering, defaultValue: "created_at", options: ruleOrderings, onChange: (value) => {
           const next = new URLSearchParams(params);
-          if (value === "position") next.delete("ordering"); else next.set("ordering", value);
+          if (value === "created_at") next.delete("ordering"); else next.set("ordering", value);
           setParams(next, { state });
         } }}>
         <span role="status" className="sr-only">{rows.length} of {rules.length} rules</span>
