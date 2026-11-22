@@ -153,9 +153,10 @@ export function RepositoryGraphCanvas({
       for (const node of nodes) {
         const point = points.get(node.id)!;
         const count = node.incoming + node.outgoing;
+        const share = node.kind === "file" && graph.max_connections > 0 ? count / graph.max_connections : 0;
         const emphasized = node.id === emphasis;
         ctx.globalAlpha = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
-        ctx.fillStyle = count <= 3 ? muted : count <= 6 ? caution : success;
+        ctx.fillStyle = share <= 1 / 3 ? muted : share <= 2 / 3 ? caution : success;
         ctx.beginPath();
         ctx.arc(point.x, point.y, node.radius * scale, 0, Math.PI * 2);
         ctx.fill();
@@ -201,7 +202,7 @@ export function RepositoryGraphCanvas({
     const observer = new MutationObserver(draw);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [byId, camera, focus, graph.edges, hover, keyboard, nodes, size]);
+  }, [byId, camera, focus, graph.edges, graph.max_connections, hover, keyboard, nodes, size]);
 
   function moveCamera(next: Camera) {
     cameras.current.set(viewKey, next);

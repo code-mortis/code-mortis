@@ -9,7 +9,7 @@ const files = [file(service, 1, 1), file("src/consumer.ts", 0, 1), file("src/dep
 const edges = [{ source: files[1].id, target: files[0].id }, { source: files[0].id, target: files[2].id }];
 const graph = (data: Partial<Schema["RepositoryGraphView"]> = {}): Schema["RepositoryGraphView"] => ({
   status: "ready", commit_sha: commit, observed_sha: commit, branch: "main", snapshot_id: "snapshot",
-  mode: "files", nodes: files, edges, total_files: 4, total_links: 2, truncated: false, ...data,
+  mode: "files", nodes: files, edges, total_files: 4, total_links: 2, max_connections: 2, truncated: false, ...data,
 });
 
 async function mockRepository(page: Page, options: { dense?: boolean; denied?: boolean; disabled?: boolean } = {}) {
@@ -31,7 +31,8 @@ async function mockRepository(page: Page, options: { dense?: boolean; denied?: b
       active: true, enabled: true, code_graph_enabled: !options.disabled, connection_id: null, open_prs: 0, settings: {} }];
     else if (path === `${base}/view`) {
       const focus = url.searchParams.get("focus");
-      if (options.disabled) body = graph({ status: "disabled", snapshot_id: null, commit_sha: null, nodes: [], edges: [], total_files: 0, total_links: 0 });
+      if (options.disabled) body = graph({ status: "disabled", snapshot_id: null, commit_sha: null, nodes: [], edges: [],
+        total_files: 0, total_links: 0, max_connections: 0 });
       else if (focus === hidden) body = graph({ nodes: [file(hidden)], edges: [], total_files: 1, total_links: 0 });
       else if (focus) {
         await new Promise((resolve) => setTimeout(resolve, 150));
@@ -65,6 +66,31 @@ async function openFirstNode(page: Page) {
   await canvas(page).press("ArrowRight");
   await canvas(page).press("Enter");
 }
+
+test("node colors use the three connection bands even in a small repository", async ({ page }) => {
+  await mockRepository(page);
+  await page.goto(base);
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  await expect.poll(() => canvas(page).evaluate((element: HTMLCanvasElement) => {
+    const ctx = element.getContext("2d")!;
+    const pixels = ctx.getImageData(0, 0, element.width, element.height).data;
+    const sampleCanvas = document.createElement("canvas");
+    sampleCanvas.width = sampleCanvas.height = 1;
+    const sample = sampleCanvas.getContext("2d")!;
+    const style = getComputedStyle(element);
+    return ["--muted-foreground", "--code-number", "--code-added"].every((token) => {
+      sample.clearRect(0, 0, 1, 1);
+      sample.globalAlpha = 0.82;
+      sample.fillStyle = style.getPropertyValue(token).trim();
+      sample.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = sample.getImageData(0, 0, 1, 1).data;
+      for (let offset = 0; offset < pixels.length; offset += 4) {
+        if (pixels[offset] === r && pixels[offset + 1] === g && pixels[offset + 2] === b && pixels[offset + 3] === a) return true;
+      }
+      return false;
+    });
+  })).toBe(true);
+});
 
 test("file focus and source share an exact revision and the repository camera is restored", async ({ page }, info) => {
   const calls = await mockRepository(page);

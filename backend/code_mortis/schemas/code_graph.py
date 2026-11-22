@@ -22,7 +22,7 @@ MAX_RESULT_BYTES = 32 * 1024 * 1024
 MAX_FACTS = 100_000
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 EXTRACTION_SECONDS = 120
-EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/6"
+EXTRACTOR_VERSION = "tree-sitter/0.25.2-mortis/7"
 
 
 class StrictModel(BaseModel):
@@ -149,14 +149,14 @@ class CodeGraphSymbol(CodeGraphLocation):
 class CodeGraphImport(CodeGraphLocation):
     specifier: GraphText = Field(min_length=1, max_length=2000)
     target_path: RepositoryPath | None = None
-    provenance: Literal["relative_path", "unresolved"]
+    provenance: Literal["relative_path", "absolute_path", "unresolved"]
 
     @model_validator(mode="after")
     def resolution(self) -> Self:
         if (self.target_path is None) != (self.provenance == "unresolved"):
             raise ValueError("Unresolved imports must have no target")
-        if self.target_path is not None and not self.specifier.startswith("."):
-            raise ValueError("Only relative-file import resolution is supported")
+        if self.target_path is not None and (self.provenance == "relative_path") != self.specifier.startswith("."):
+            raise ValueError("Resolved import provenance must match its specifier")
         return self
 
 

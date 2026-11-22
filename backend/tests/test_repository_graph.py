@@ -38,7 +38,8 @@ def test_repository_graph_pins_default_revision_and_bounds_focus(graph, client):
         db.execute(insert(CodeGraphFile), [indexed_file(row.id, path) for path in
                                          ("pkg/b.py", "pkg/c.py", "pkg/d.py", "pkg/unlinked.py")])
         db.execute(insert(CodeGraphImport), [stored_import(row.id, a, b, i) for i, (a, b) in enumerate([
-            ("a.py", "pkg/b.py"), ("a.py", "pkg/b.py"), ("pkg/b.py", "pkg/c.py"), ("pkg/d.py", "a.py"),
+            ("a.py", "pkg/b.py"), ("a.py", "pkg/b.py"), ("pkg/b.py", "pkg/c.py"),
+            ("pkg/c.py", "a.py"), ("pkg/d.py", "a.py"),
             ("a.py", "skip.py"), ("a.py", None),
         ])])
         jobs = db.scalar(select(func.count()).select_from(Job))
@@ -51,19 +52,21 @@ def test_repository_graph_pins_default_revision_and_bounds_focus(graph, client):
     view = response.json()
     assert (view["commit_sha"], view["snapshot_id"], view["branch"]) == (graph["first"], row.id, "main")
     assert newer.id != view["snapshot_id"]
-    assert view["total_links"] == 3
+    assert (view["total_links"], view["max_connections"]) == (4, 3)
     root = next(node for node in view["nodes"] if node["path"] == "a.py")
-    assert (root["incoming"], root["outgoing"]) == (1, 1)
+    assert (root["incoming"], root["outgoing"]) == (2, 1)
     assert "skip.py" not in response.text and "pkg/unlinked.py" in response.text
 
     one = client.get(BASE + "/view", params={"focus": "a.py", "direction": "outgoing"}).json()
     assert [node["path"] for node in one["nodes"]] == ["a.py", "pkg/b.py"]
+    assert one["max_connections"] == view["max_connections"]
     two = client.get(BASE + "/view", params={"focus": "a.py", "direction": "outgoing", "depth": 2}).json()
     assert [node["path"] for node in two["nodes"]] == ["a.py", "pkg/b.py", "pkg/c.py"]
     assert len(two["edges"]) == 2
     filtered = client.get(BASE + "/view", params={"folder": "pkg", "hide_unlinked": True}).json()
     assert {node["path"] for node in filtered["nodes"]} == {"pkg/b.py", "pkg/c.py"}
     assert filtered["edges"] == [{"source": "file:pkg/b.py", "target": "file:pkg/c.py"}]
+    assert filtered["max_connections"] == view["max_connections"]
 
     read = client.get(BASE + "/source", params={"commit_sha": graph["first"], "path": "a.py"})
     assert read.status_code == 200 and read.headers["cache-control"] == "no-store"
@@ -71,7 +74,7 @@ def test_repository_graph_pins_default_revision_and_bounds_focus(graph, client):
     absent = client.get(BASE + "/source", params={"commit_sha": graph["second"], "path": "a.py"}).json()
     assert absent["items"] == [] and absent["source_state"] == "unavailable"
     future = client.get(BASE + "/view", params={"commit_sha": "f" * 40}).json()
-    assert future["status"] == "unavailable" and future["nodes"] == []
+    assert future["status"] == "unavailable" and future["nodes"] == [] and future["max_connections"] == 0
     with transaction() as db:
         config = db.get(CodeGraphRepository, 22)
         config.observed_sha = graph["second"]
@@ -148,6 +151,7 @@ def test_repository_graph_caps_and_searches_a_5000_file_snapshot(graph, client):
     assert response.status_code == 200, response.text
     overview = response.json()
     assert overview["mode"] == "folders" and overview["total_files"] == 5000
+    assert overview["max_connections"] == 4999
     assert len(overview["nodes"]) == 65 and len(overview["edges"]) == repository.MAX_LINKS and overview["truncated"]
     assert client.get(BASE + "/view").json() == overview
 

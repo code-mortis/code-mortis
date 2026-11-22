@@ -45,6 +45,7 @@ class RepositoryGraphView(StrictModel):
     truncated: bool
     total_files: int
     total_links: int
+    max_connections: int = Field(ge=0)
 
 
 class RepositoryGraphFiles(StrictModel):

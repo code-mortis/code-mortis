@@ -102,6 +102,7 @@ def focus_paths(path, eligible, pairs, direction, depth):
 def graph_view(files, pairs, filters: RepositoryGraphFilters, result: RepositoryGraphView) -> RepositoryGraphView:
     # Stored pairs are distinct and ordered by endpoints. All degree counts refer to the snapshot.
     incoming, outgoing = degree(pairs)
+    result.max_connections = max((incoming[path] + outgoing[path] for path in files), default=0)
     prefix = f"{filters.folder}/" if filters.folder else ""
     paths = [path for path, file in files.items()
              if path.startswith(prefix) and (not filters.language or file.language == filters.language)]
@@ -167,7 +168,7 @@ def view(repository_id, user_id, filters):
         result = RepositoryGraphView(status="unavailable" if enabled else "disabled", commit_sha=sha,
                                      observed_sha=config.observed_sha if enabled else None,
                                      snapshot_id=None, branch=branch, mode="files", nodes=[], edges=[], truncated=False,
-                                     total_files=0, total_links=0)
+                                     total_files=0, total_links=0, max_connections=0)
         if enabled and sha:
             request = retrieval.GraphQuery(repository_id=repo.id, commit_sha=sha, operation="status")
             row = retrieval.snapshot(db, request, actor.id)

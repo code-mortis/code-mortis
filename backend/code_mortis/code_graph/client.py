@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 import httpx
 
 from code_mortis.code_graph import errors
-from code_mortis.code_graph.syntax import LANGUAGES, import_target
+from code_mortis.code_graph.syntax import LANGUAGES, import_target, python_module_targets
 from code_mortis.schemas.code_graph import (
     EXTRACTION_SECONDS,
     MAX_REQUEST_BYTES,
@@ -89,8 +89,10 @@ def validate_result(request: CodeGraphRequest, result: CodeGraphResult) -> CodeG
         evidence = item.name if hasattr(item, "name") else item.specifier
         if evidence not in fragment:
             raise ValueError("Parser fact is absent from its source range")
+    python_modules = python_module_targets(manifest)
     for item in result.imports:
-        target = import_target(item.file_path, item.specifier, languages[item.file_path], available)
+        target = import_target(item.file_path, item.specifier, languages[item.file_path], available,
+                               python_modules=python_modules)
         if item.target_path != target:
             raise ValueError("Parser returned an unvalidated import target")
     return result

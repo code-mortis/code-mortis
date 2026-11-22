@@ -30,6 +30,42 @@ def descendants(node):
         pending.extend(reversed(current.named_children))
 
 
+def python_module_targets(paths):
+    """Index exact dotted modules from the repository root and regular package roots."""
+    paths = set(paths)
+    targets = {}
+    for name in paths:
+        path = PurePosixPath(name)
+        if path.suffix != ".py":
+            continue
+        suffix = () if path.stem == "__init__" else (path.stem,)
+        names = [path.parent.parts + suffix]
+        root = path.parent
+        while root.parts and str(root / "__init__.py") in paths:
+            root = root.parent
+        if root != path.parent:
+            names.append(path.parent.relative_to(root).parts + suffix)
+        for parts in names:
+            if parts and all(part.isidentifier() for part in parts):
+                module = ".".join(parts)
+                if targets.setdefault(module, name) != name:
+                    targets[module] = None
+    # A uniquely named leaf may still be inaccessible through a shadowed parent.
+    for module, target in targets.items():
+        if target is None:
+            continue
+        prefix = module.rpartition(".")[0]
+        while prefix:
+            if prefix in targets:
+                parent = targets[prefix]
+                if (parent is None or not parent.endswith("/__init__.py")
+                    or not target.startswith(parent.rsplit("/", 1)[0] + "/")):
+                    targets[module] = None
+                    break
+            prefix = prefix.rpartition(".")[0]
+    return targets
+
+
 def relative_target(path, specifier, available, python=False, level=0):
     """Resolve only unambiguous, in-corpus relative file dependencies."""
     if python:
@@ -61,10 +97,13 @@ def relative_target(path, specifier, available, python=False, level=0):
     return matches[0] if len(matches) == 1 else None
 
 
-def import_target(path, specifier, language, available):
+def import_target(path, specifier, language, available, *, python_modules=None):
     if language == "python":
         level = len(specifier) - len(specifier.lstrip("."))
-        return relative_target(PurePosixPath(path), specifier[level:], available, python=True, level=level)
+        if level:
+            return relative_target(PurePosixPath(path), specifier[level:], available, python=True, level=level)
+        target = python_modules.get(specifier) if python_modules is not None else None
+        return target if target in available else None
     if language in {"javascript", "typescript", "tsx"}:
         # Escaped literals and aliases need a language resolver, not filename guessing.
         if "\\" in specifier or not specifier.startswith(("./", "../")):

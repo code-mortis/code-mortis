@@ -265,7 +265,8 @@ class CodeGraphImport(Base):
         CheckConstraint("start_byte >= 0 AND end_byte > start_byte AND start_line >= 1 AND end_line >= start_line",
                         name="ck_code_graph_import_range"),
         CheckConstraint("(target_path IS NULL AND provenance = 'unresolved') OR "
-                        "(target_path IS NOT NULL AND provenance = 'relative_path')", name="ck_code_graph_import_resolution"),
+                        "(target_path IS NOT NULL AND provenance IN ('relative_path', 'absolute_path'))",
+                        name="ck_code_graph_import_resolution"),
         Index("ix_code_graph_imports_target", "snapshot_id", "target_path"),
     )
     snapshot_id: Mapped[str] = mapped_column(String(36), primary_key=True)

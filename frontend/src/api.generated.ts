@@ -4220,6 +4220,8 @@ export interface components {
             total_files: number;
             /** Total Links */
             total_links: number;
+            /** Max Connections */
+            max_connections: number;
         };
         /** RepositoryInput */
         RepositoryInput: {
