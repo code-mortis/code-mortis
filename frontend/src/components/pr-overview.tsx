@@ -1,11 +1,12 @@
-import { useId, useRef, type ReactNode, type Ref } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FileCode2 } from "lucide-react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api, type ApiError, type Schema } from "../api";
-import { useIsMobile } from "../hooks/use-mobile";
+import { layoutPullDiagram } from "../lib/pr-diagram-layout";
 import { cn } from "../lib/utils";
 import { ErrorNotice, Loading, Markdown } from "./common";
+import { clampGraphZoom, GraphZoomControls } from "./graph-zoom-controls";
 import { repositoryActivityLink } from "./repository-header";
 import { Button } from "./ui/button";
 
@@ -29,78 +30,94 @@ function OverviewSection({ title, children, defaultOpen = true, meta, detailsRef
   </section>;
 }
 
-function layoutDiagram(diagram: Diagram, compact: boolean) {
-  // Draw sources before targets. If the remaining graph cycles, start the next layer at its first node.
-  const pending = new Set(diagram.nodes.map((node) => node.id));
-  const layers: string[][] = [];
-  const limit = compact ? 2 : 4;
-  while (pending.size) {
-    const ids = [...pending];
-    const roots = ids.filter((id) => !diagram.edges.some(({ source, target }) => target === id && source !== id && pending.has(source)));
-    const layer = roots.length ? roots.slice(0, limit) : ids.slice(0, 1);
-    layers.push(layer);
-    layer.forEach((id) => pending.delete(id));
-  }
-  const nodeWidth = compact ? 140 : 188;
-  const nodeHeight = 44;
-  const stepX = nodeWidth + 24;
-  const stepY = nodeHeight + 34;
-  const widestLayer = Math.max(...layers.map((layer) => layer.length));
-  const width = (widestLayer - 1) * stepX + nodeWidth + 40;
-  const height = (layers.length - 1) * stepY + nodeHeight + 36;
-  const positions = new Map(layers.flatMap((layer, rank) => layer.map((id, index) => [
-    id, {
-      x: (width - (layer.length - 1) * stepX - nodeWidth) / 2 + index * stepX,
-      y: 18 + rank * stepY,
-    },
-  ] as const)));
-  const edges = diagram.edges.flatMap(({ source, target }) => {
-    const from = positions.get(source);
-    const to = positions.get(target);
-    if (!from || !to) return [];
-    if (source === target) {
-      const x = from.x + nodeWidth - 10;
-      const y = from.y + 10;
-      return [`M ${x} ${y} C ${x + 28} ${y - 32} ${x + 32} ${y + 30} ${x + 8} ${y + 22}`];
-    }
-    const forwards = to.y > from.y;
-    const start = from.y + (forwards ? nodeHeight : 0);
-    const end = to.y + (forwards ? 0 : nodeHeight);
-    const bend = (start + end) / 2;
-    const offset = nodeWidth / 2 + (forwards ? 0 : 10);
-    return [`M ${from.x + offset} ${start} C ${from.x + offset} ${bend} ${to.x + offset} ${bend} ${to.x + offset} ${end}`];
-  });
-  return { width, height, nodeWidth, nodeHeight, positions, edges };
-}
-
 function ChangeDiagram({ diagram, selected, onSelect, controls }: {
   diagram: Diagram; selected?: string; onSelect: (id: string) => void; controls: string;
 }) {
-  const compact = useIsMobile();
   const arrow = useId();
-  const { width, height, nodeWidth, nodeHeight, positions, edges } = layoutDiagram(diagram, compact);
+  const viewport = useRef<HTMLDivElement>(null);
+  const anchor = useRef<{ x: number; y: number } | null>(null);
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const query = useQuery({
+    queryKey: ["pr-diagram-layout", diagram],
+    queryFn: () => layoutPullDiagram(diagram),
+    networkMode: "always",
+    retry: false,
+    staleTime: Infinity,
+    gcTime: 0,
+  });
+  const layout = query.data;
   const labels = new Map(diagram.nodes.map((node) => [node.id, node.label]));
+  useLayoutEffect(() => {
+    const view = viewport.current, point = anchor.current;
+    if (!view || !point) return;
+    view.scrollTo(point.x * view.scrollWidth - view.clientWidth / 2, point.y * view.scrollHeight - view.clientHeight / 2);
+    anchor.current = null;
+  }, [zoom]);
+
+  function zoomBy(factor: number) {
+    const view = viewport.current;
+    const next = clampGraphZoom(zoom * factor);
+    if (!view || next === zoom) return;
+    anchor.current = {
+      x: (view.scrollLeft + view.clientWidth / 2) / view.scrollWidth,
+      y: (view.scrollTop + view.clientHeight / 2) / view.scrollHeight,
+    };
+    setZoom(next);
+  }
+
+  function fit() {
+    const view = viewport.current;
+    if (!view || !layout) return;
+    anchor.current = null;
+    setZoom(clampGraphZoom(Math.min(1, view.clientWidth / layout.width, view.clientHeight / layout.height)));
+    view.scrollTo(0, 0);
+  }
+
   return <OverviewSection title="Change diagram"
-    meta={<span className="hidden text-right group-open/overview:block">Select a node to see its files</span>}>
-    <div className="overflow-x-auto rounded-lg border bg-muted/30">
-      <div className="relative mx-auto" style={{ width, height }}>
-        <svg className="pointer-events-none absolute inset-0 size-full text-muted-foreground" aria-hidden="true" viewBox={`0 0 ${width} ${height}`}>
-          <defs><marker id={arrow} markerWidth={7} markerHeight={7} refX={6} refY={3.5} orient="auto">
-            <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="currentColor" />
-          </marker></defs>
-          {edges.map((path, index) => <path key={index} d={path} fill="none" stroke="currentColor" strokeWidth={1.25} vectorEffect="non-scaling-stroke" markerEnd={`url(#${arrow})`} />)}
-        </svg>
-        {diagram.nodes.map((node) => {
-          const point = positions.get(node.id)!;
-          return <Button key={node.id} type="button" variant="outline" size="sm" aria-controls={controls} aria-pressed={node.id === selected}
-            title={node.label} onClick={() => onSelect(node.id)}
-            className="absolute whitespace-normal bg-card px-2 aria-pressed:border-primary aria-pressed:bg-accent aria-pressed:text-accent-foreground dark:aria-pressed:border-primary dark:aria-pressed:bg-accent"
-            style={{ left: point.x, top: point.y, width: nodeWidth, height: nodeHeight }}>
-            <span className="line-clamp-2 break-words [overflow-wrap:anywhere]">{node.label}</span>
-          </Button>;
-        })}
+    meta={layout && <span className="hidden text-right group-open/overview:block">Select a node to see its files</span>}>
+    {query.isPending && <p role="status" className="text-sm text-muted-foreground">Arranging diagram…</p>}
+    {query.isError && <p role="status" className="text-sm text-muted-foreground">The diagram could not be displayed.</p>}
+    {layout && <div className="overflow-hidden rounded-lg border bg-muted/30">
+      <div className="flex justify-end border-b p-1.5 pointer-coarse:[&_button]:size-11">
+        <GraphZoomControls zoom={zoom} onOut={() => zoomBy(1 / 1.2)} onIn={() => zoomBy(1.2)} onFit={fit} />
       </div>
-    </div>
+      <div ref={viewport} role="region" aria-label="Diagram viewport" tabIndex={0}
+        className="cursor-grab select-none overflow-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring active:cursor-grabbing"
+        style={{ height: Math.min(layout.height, 480) }}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || event.pointerType === "touch" || (event.target instanceof Element && event.target.closest("button"))) return;
+          const view = event.currentTarget;
+          drag.current = { id: event.pointerId, x: event.clientX + view.scrollLeft, y: event.clientY + view.scrollTop };
+          view.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const start = drag.current;
+          if (start?.id !== event.pointerId) return;
+          event.currentTarget.scrollTo(start.x - event.clientX, start.y - event.clientY);
+        }}
+        onLostPointerCapture={() => { drag.current = null; }}>
+        <div className="relative mx-auto overflow-clip" style={{ width: layout.width * zoom, height: layout.height * zoom }}>
+          <div className="absolute top-0 left-0 origin-top-left" style={{ width: layout.width, height: layout.height, transform: `scale(${zoom})` }}>
+            <svg className="pointer-events-none absolute inset-0 size-full text-muted-foreground" aria-hidden="true" viewBox={layout.viewBox}>
+              <defs><marker id={arrow} markerWidth={7} markerHeight={7} refX={3.8} refY={3.5} orient="auto">
+                <path d="M 0 0 L 7 3.5 L 0 7 Z" fill="currentColor" />
+              </marker></defs>
+              {layout.edges.map((path, index) => <path key={index} d={path} fill="none" stroke="currentColor" strokeWidth={1.25} vectorEffect="non-scaling-stroke" markerEnd={`url(#${arrow})`} />)}
+            </svg>
+            {diagram.nodes.map((node) => {
+              const box = layout.positions.get(node.id)!;
+              return <Button key={node.id} type="button" variant="outline" size="sm" aria-controls={controls} aria-pressed={node.id === selected}
+                title={node.label} onClick={() => onSelect(node.id)}
+                className="absolute whitespace-normal bg-card px-2 aria-pressed:border-primary aria-pressed:bg-accent aria-pressed:text-accent-foreground dark:aria-pressed:border-primary dark:aria-pressed:bg-accent"
+                style={{ left: box.x, top: box.y, width: box.width, height: box.height }}>
+                <span className="min-w-0 leading-[17px] [overflow-wrap:anywhere]">{node.label}</span>
+              </Button>;
+            })}
+          </div>
+        </div>
+      </div>
+    </div>}
     {diagram.edges.length > 0 && <ul className="sr-only" aria-label="Diagram connections">
       {diagram.edges.map(({ source, target }, index) => <li key={index}>{labels.get(source)} leads to {labels.get(target)}</li>)}
     </ul>}

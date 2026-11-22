@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { Maximize, Minus, Plus } from "lucide-react";
 import type { Schema } from "../api";
 import type { LayoutFrame, Point } from "../lib/repository-graph-layout";
-import { Button } from "./ui/button";
+import { clampGraphZoom, GraphZoomControls } from "./graph-zoom-controls";
 
 export type GraphView = Schema["RepositoryGraphView"];
 export type GraphNode = GraphView["nodes"][number];
@@ -306,7 +305,7 @@ export function RepositoryGraphCanvas({
 
   function zoomBy(factor: number, origin?: Point) {
     const latest = cameras.current.get(viewKey) ?? camera;
-    const zoom = Math.min(8, Math.max(0.1, latest.zoom * factor));
+    const zoom = clampGraphZoom(latest.zoom * factor);
     if (zoom === latest.zoom) return;
     const dx = (origin?.x ?? size.width / 2) - size.width / 2;
     const dy = (origin?.y ?? size.height / 2) - size.height / 2;
@@ -414,13 +413,4 @@ export function RepositoryGraphCanvas({
     </div>}
     {controls && createPortal(<GraphZoomControls zoom={camera.zoom} disabled={!ready || !nodes.length} onOut={() => zoomBy(1 / 1.2)} onIn={() => zoomBy(1.2)} onFit={() => moveCamera(fit(nodes, size))} />, controls)}
   </>;
-}
-
-function GraphZoomControls({ zoom, disabled, onOut, onIn, onFit }: { zoom: number; disabled: boolean; onOut: () => void; onIn: () => void; onFit: () => void }) {
-  return <div className="flex items-center gap-1 rounded-md bg-muted px-1 text-xs tabular-nums text-muted-foreground">
-    <Button size="icon-sm" variant="ghost" aria-label="Zoom out" disabled={disabled || zoom <= 0.1} onClick={onOut}><Minus /></Button>
-    <output aria-label="Graph zoom" className="min-w-10 text-center">{Math.round(zoom * 100)}%</output>
-    <Button size="icon-sm" variant="ghost" aria-label="Zoom in" disabled={disabled || zoom >= 8} onClick={onIn}><Plus /></Button>
-    <Button size="icon-sm" variant="ghost" aria-label="Fit graph" disabled={disabled} onClick={onFit}><Maximize /></Button>
-  </div>;
 }
