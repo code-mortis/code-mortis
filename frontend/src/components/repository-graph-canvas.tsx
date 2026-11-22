@@ -13,16 +13,15 @@ type Camera = Point & { scale: number; zoom: number };
 
 const nameOf = (node: GraphNode) => node.path.split("/").at(-1) || node.path;
 
-function fit(nodes: PositionedNode[], size: Size, sourceOpen: boolean): Camera {
+function fit(nodes: PositionedNode[], size: Size): Camera {
   if (!nodes.length) return { x: 0, y: 0, scale: 1, zoom: 1 };
   const left = Math.min(...nodes.map((node) => node.x - node.radius));
   const right = Math.max(...nodes.map((node) => node.x + node.radius));
   const top = Math.min(...nodes.map((node) => node.y - node.radius));
   const bottom = Math.max(...nodes.map((node) => node.y + node.radius));
   const padding = 88;
-  const reserved = sourceOpen && size.width > 700 ? Math.min(400, size.width * 0.45) : 0;
-  const scale = Math.max(0.01, Math.min(2.2, (size.width - reserved - padding) / (right - left), (size.height - padding) / (bottom - top)));
-  return { x: (left + right) / 2 + reserved / 2 / scale, y: (top + bottom) / 2, scale, zoom: 1 };
+  const scale = Math.max(0.01, Math.min(2.2, (size.width - padding) / (right - left), (size.height - padding) / (bottom - top)));
+  return { x: (left + right) / 2, y: (top + bottom) / 2, scale, zoom: 1 };
 }
 
 function project(point: Point, camera: Camera, size: Size) {
@@ -31,12 +30,11 @@ function project(point: Point, camera: Camera, size: Size) {
 }
 
 export function RepositoryGraphCanvas({
-  graph, viewKey, focus, sourceOpen, controls, onSelect,
+  graph, viewKey, focus, controls, onSelect,
 }: {
   graph: GraphView;
   viewKey: string;
   focus: string | null;
-  sourceOpen: boolean;
   controls: HTMLDivElement | null;
   onSelect: (node: GraphNode) => void;
 }) {
@@ -88,11 +86,11 @@ export function RepositoryGraphCanvas({
   const ready = nodes.length === graph.nodes.length;
   const camera = useMemo(() => {
     const previous = cameras.current.get(viewKey);
-    const computed = previous ?? fit(nodes, size, !!focus && sourceOpen);
+    const computed = previous ?? fit(nodes, size);
     if (!previous && ready && nodes.length && size.width && size.height) cameras.current.set(viewKey, computed);
     return computed;
     // State changes caused by pan and zoom update the stored camera.
-  }, [cameraVersion, nodes, size, viewKey, focus, sourceOpen, ready]);
+  }, [cameraVersion, nodes, size, viewKey, ready]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
   useEffect(() => {
@@ -310,7 +308,7 @@ export function RepositoryGraphCanvas({
       <p className="wrap-anywhere font-medium">{nameOf(hoverNode)}</p>
       <p className="text-muted-foreground">{hoverNode.kind === "folder" ? `${hoverNode.file_count} files` : `${hoverNode.incoming} imported by · ${hoverNode.outgoing} imports`}</p>
     </div>}
-    {controls && createPortal(<GraphZoomControls zoom={camera.zoom} disabled={!ready || !nodes.length} onOut={() => zoomBy(1 / 1.2)} onIn={() => zoomBy(1.2)} onFit={() => moveCamera(fit(nodes, size, !!focus && sourceOpen))} />, controls)}
+    {controls && createPortal(<GraphZoomControls zoom={camera.zoom} disabled={!ready || !nodes.length} onOut={() => zoomBy(1 / 1.2)} onIn={() => zoomBy(1.2)} onFit={() => moveCamera(fit(nodes, size))} />, controls)}
   </>;
 }
 
