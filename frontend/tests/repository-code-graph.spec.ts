@@ -5,7 +5,10 @@ const commit = "a".repeat(40), base = "/repositories/22/code-graph";
 const service = "src/service.ts", lastFile = "modules/file-04999.ts";
 const file = (path: string, incoming = 0, outgoing = 0): Schema["RepositoryGraphNode"] =>
   ({ id: `file:${path}`, kind: "file", path, language: "typescript", incoming, outgoing, file_count: 1 });
-const files = [file(service, 1, 1), file("src/consumer.ts", 0, 1), file("src/dependency.ts", 1), file("src/unlinked.ts")];
+const files = [
+  file(service, 1, 1), file("src/consumer.ts", 0, 1), file("src/lib/dependency.ts", 1),
+  { ...file("tests/unlinked.py"), language: "python" },
+];
 const edges = [{ source: files[1].id, target: files[0].id }, { source: files[0].id, target: files[2].id }];
 const graph = (data: Partial<Schema["RepositoryGraphView"]> = {}): Schema["RepositoryGraphView"] => ({
   status: "ready", commit_sha: commit, observed_sha: commit, branch: "main", snapshot_id: "snapshot",
@@ -39,7 +42,8 @@ async function mockRepository(page: Page, options: { admin?: boolean; dense?: bo
         const incoming = url.searchParams.get("direction") === "incoming";
         body = graph({ nodes: files.slice(0, incoming ? 2 : 3), edges: incoming ? edges.slice(0, 1) : edges,
           total_files: incoming ? 2 : 3, total_links: incoming ? 1 : 2 });
-      } else if (url.searchParams.get("folder") || url.searchParams.get("hide_unlinked")) body = graph({ nodes: files.slice(0, 3), total_files: 3 });
+      } else if (url.searchParams.get("folder") === "src/lib") body = graph({ nodes: [files[2]], edges: [], total_files: 1, total_links: 0 });
+      else if (url.searchParams.get("folder") || url.searchParams.get("hide_unlinked")) body = graph({ nodes: files.slice(0, 3), total_files: 3 });
       else if (options.dense) body = graph({ nodes: denseFiles, edges: denseEdges, total_files: 5000, total_links: 20000, max_connections: 8 });
       else body = graph();
     } else if (path === `${base}/files`) body = { files: options.dense ? [file(lastFile)] : [files[0]], truncated: false };
@@ -115,6 +119,36 @@ test("the graph header holds Filters and settings and the toolbar holds the revi
   await expect(footer.getByTitle(commit)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Close file" })).toHaveCount(0);
   expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
+});
+
+test("graph filters offer indexed folders and languages even after filtering", async ({ page }) => {
+  const calls = await mockRepository(page);
+  await page.goto(base);
+  await page.getByRole("button", { name: "Filters" }).click();
+  const dialog = page.getByRole("dialog", { name: "Filters" });
+  const { x, width } = (await dialog.boundingBox())!;
+  expect(width).toBeGreaterThan(240);
+  expect(x + width).toBeLessThanOrEqual(page.viewportSize()!.width);
+
+  const language = dialog.getByRole("combobox", { name: "Language", exact: true });
+  const folder = dialog.getByRole("combobox", { name: "Folder" });
+  await expect(language.locator("option")).toHaveText(["All languages", "Python", "TypeScript"]);
+  await dialog.getByRole("button", { name: "Show options" }).click();
+  await expect(page.getByRole("option", { name: "src", exact: true })).toBeVisible();
+  await folder.fill("lib");
+  await page.getByRole("option", { name: "src/lib", exact: true }).click();
+  await expect(folder).toHaveValue("src/lib");
+  await language.selectOption("typescript");
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(page.getByText("1 files · 0 resolved imports")).toBeVisible();
+  expect(calls.some((url) => url.searchParams.get("folder") === "src/lib"
+    && url.searchParams.get("language") === "typescript" && url.searchParams.get("commit_sha") === commit)).toBe(true);
+  await expect(language.locator("option")).toHaveText(["All languages", "Python", "TypeScript"]);
+
+  await dialog.getByRole("button", { name: "Clear filters" }).click();
+  await expect(folder).toHaveValue("");
+  await expect(language).toHaveValue("");
+  await expect(page.getByText("4 files · 2 resolved imports")).toBeVisible();
 });
 
 test("selecting a search result focuses the file at the indexed revision without fetching source", async ({ page }, info) => {

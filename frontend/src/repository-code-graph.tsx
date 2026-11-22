@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, FileCode2, GitBranch, Search, SlidersHorizontal } from "lucide-react";
@@ -6,17 +6,19 @@ import { api, type ApiError, type Schema } from "./api";
 import { Empty, ErrorNotice, Loading } from "./components/common";
 import { RepositoryGraphCanvas, type GraphNode, type GraphView } from "./components/repository-graph-canvas";
 import { RepositorySettingsShortcut } from "./components/repository-header";
+import { SearchSelect } from "./components/search-select";
 import { Button } from "./components/ui/button";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "./components/ui/combobox";
-import { Input } from "./components/ui/input";
 import { InputGroupAddon } from "./components/ui/input-group";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { useSidebar } from "./components/ui/sidebar";
 
 type Direction = "both" | "incoming" | "outgoing";
 type Filters = { folder: string; language: string; direction: Direction; hideUnlinked: boolean };
+type FilterOption = { value: string; label: string };
+type FilterOptions = { folders: FilterOption[]; languages: FilterOption[] };
 const defaultFilters: Filters = { folder: "", language: "", direction: "both", hideUnlinked: false };
-const languages: Record<string, string> = {
+const languageLabels: Record<string, string> = {
   bash: "Bash", c: "C", cpp: "C++", c_sharp: "C#", go: "Go", java: "Java", javascript: "JavaScript",
   php: "PHP", python: "Python", ruby: "Ruby", rust: "Rust", tsx: "TSX", typescript: "TypeScript",
 };
@@ -88,6 +90,22 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh, settings }: {
     graph: snapshot, key: "folder:", focus: null,
   });
   const { open: sidebarOpen } = useSidebar();
+  const filterOptions = useMemo<FilterOptions>(() => {
+    const folders = new Set<string>();
+    const languages = new Set<string>();
+    for (const { path, kind, language } of snapshot.nodes) {
+      if (language) languages.add(language);
+      if (kind === "folder") folders.add(path);
+      for (let slash = path.indexOf("/"); slash !== -1; slash = path.indexOf("/", slash + 1)) {
+        folders.add(path.slice(0, slash));
+      }
+    }
+    return {
+      folders: [{ value: "", label: "All folders" }, ...Array.from(folders).sort().map((path) => ({ value: path, label: path }))],
+      languages: Array.from(languages, (value) => ({ value, label: languageLabels[value] ?? value }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    };
+  }, [snapshot.nodes]);
   useEffect(() => {
     const timeout = setTimeout(() => setQuery(search.trim()), 200);
     return () => clearTimeout(timeout);
@@ -145,7 +163,7 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh, settings }: {
   </>;
 
   return <>
-    <CodeGraphHeader actions={<><GraphFilters filters={filters} focused={!!focus} onChange={setFilters} />{settings}</>} />
+    <CodeGraphHeader actions={<><GraphFilters filters={filters} options={filterOptions} focused={!!focus} onChange={setFilters} />{settings}</>} />
     <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
         <Combobox items={found.map((node) => node.path)} value={null} inputValue={search} filter={null} autoHighlight
@@ -221,26 +239,34 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh, settings }: {
   </>;
 }
 
-function GraphFilters({ filters, focused, onChange }: { filters: Filters; focused: boolean; onChange: (filters: Filters) => void }) {
-  return <Popover>
+function GraphFilters({ filters, options, focused, onChange }: {
+  filters: Filters; options: FilterOptions; focused: boolean; onChange: (filters: Filters) => void;
+}) {
+  const folderId = useId();
+  const [folderDraft, setFolderDraft] = useState<string | null>(null);
+  return <Popover onOpenChange={() => setFolderDraft(null)}>
     <PopoverTrigger asChild><Button variant="outline" size="sm" className="h-11 sm:h-8 pointer-coarse:h-11"><SlidersHorizontal />Filters</Button></PopoverTrigger>
-    <PopoverContent align="end" className="grid w-60 gap-3">
+    <PopoverContent aria-label="Filters" align="end" collisionPadding={16} className="grid w-80 max-w-[calc(100vw-2rem)] gap-3">
       <h2 className="text-sm font-semibold">Filters</h2>
       <form key={JSON.stringify(filters)} className="grid gap-3 text-sm" onSubmit={(event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
         onChange({
-          folder: String(data.get("folder") ?? filters.folder).trim().replace(/\/+$/, ""),
+          folder: folderDraft ?? filters.folder,
           language: String(data.get("language") ?? filters.language),
           direction: (data.get("direction") as Direction | null) ?? filters.direction,
           hideUnlinked: data.get("hideUnlinked") === "on",
         });
+        setFolderDraft(null);
       }}>
-        <label className="grid gap-1">Folder<Input name="folder" defaultValue={filters.folder} placeholder="All folders" maxLength={2000} /></label>
+        <div className="grid gap-1">
+          <label htmlFor={folderId}>Folder</label>
+          <SearchSelect id={folderId} options={options.folders} value={folderDraft ?? filters.folder} onChange={setFolderDraft} placeholder="All folders" />
+        </div>
         <label className="grid gap-1">Language
           <select name="language" className="h-9 rounded-md border bg-card px-2.5" defaultValue={filters.language}>
             <option value="">All languages</option>
-            {Object.entries(languages).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            {options.languages.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
         <label className="grid gap-1">Import direction
@@ -250,7 +276,7 @@ function GraphFilters({ filters, focused, onChange }: { filters: Filters; focuse
         </label>
         <label className="flex items-center gap-2"><input name="hideUnlinked" type="checkbox" className="size-4 accent-primary" defaultChecked={filters.hideUnlinked} />Hide unlinked files</label>
         <div className="flex flex-wrap gap-2"><Button size="sm" type="submit">Apply</Button><Button size="sm" type="button" variant="ghost"
-          onClick={(event) => { event.currentTarget.closest("form")?.reset(); onChange(defaultFilters); }}>Clear filters</Button></div>
+          onClick={(event) => { event.currentTarget.closest("form")?.reset(); setFolderDraft(null); onChange(defaultFilters); }}>Clear filters</Button></div>
       </form>
     </PopoverContent>
   </Popover>;
