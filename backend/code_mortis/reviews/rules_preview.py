@@ -112,7 +112,8 @@ def preview(full_name, branch, token, path, options, credentials, *, prompt_toke
     reviewable = planning.allowed_path(path, options, legacy, check=check)
     safe = context.sanitize({"rule": instructions, "path": path}, credentials)
     for match in matches:
-        match["name"], match["glob"] = context.sanitize([match["name"], match["glob"]], credentials)
+        for key in match.keys() - {"source"}:
+            match[key] = context.sanitize(match[key], credentials)
     check()
     return {"branch": branch, "base_sha": base_sha, "reviewable": reviewable,
             "matches": matches, "instructions": safe["rule"],

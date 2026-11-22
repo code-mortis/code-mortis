@@ -9685,7 +9685,8 @@ test("repository custom rules use the workspace width and persist confirmed chan
   const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
   const keepRule = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
   const inactiveKeep = { ...keepRule, active: false };
-  const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "src/**/*.py", active: true };
+  const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "", active: true,
+    files: ["src/auth/session.py", "src/auth/token.py"], globs: ["src/**/*.py", "tests/auth/**/*.py"] };
   let saved: Schema["ReviewRule"][] = [oldRule, keepRule];
   let failToggle = false;
   let failDelete = false;
@@ -9783,8 +9784,18 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(name).toHaveValue("");
   await name.fill(newRule.name);
   await dialog.getByLabel("Instructions", { exact: true }).fill(newRule.instructions);
-  await dialog.getByLabel("Glob pattern (optional)", { exact: true }).fill(newRule.glob);
+  for (const file of newRule.files) {
+    await dialog.getByLabel("Files", { exact: true }).fill(file);
+    await dialog.getByRole("button", { name: "Add file", exact: true }).click();
+  }
+  for (const glob of newRule.globs) {
+    await dialog.getByLabel("Glob patterns", { exact: true }).fill(glob);
+    await dialog.getByRole("button", { name: "Add glob", exact: true }).click();
+  }
   await noOverflow(page);
+  await dialog.getByLabel("Files", { exact: true }).fill("not-added.py");
+  await dialog.getByLabel("Glob patterns", { exact: true }).fill("ignored/**/*.py");
+  await expect(dialog.getByText("Add the typed file or pattern before saving.")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Add rule", exact: true }).click();
   await expect(page.getByText("Rule added.", { exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(0);
@@ -9802,7 +9813,8 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await selectRuleAction("Ownership", "Edit");
   await expect(editDialog.getByLabel("Name", { exact: true })).toHaveValue(newRule.name);
   await expect(instructions).toHaveValue(newRule.instructions);
-  await expect(editDialog.getByLabel("Glob pattern (optional)", { exact: true })).toHaveValue(newRule.glob);
+  await expect(editDialog.getByRole("list", { name: "Selected files" })).toContainText(newRule.files[0]);
+  await expect(editDialog.getByRole("list", { name: "Selected globs" })).toContainText(newRule.globs[0]);
   await instructions.fill("Discard these edits.");
   await editDialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(ownershipActions).toBeFocused();
@@ -9844,6 +9856,63 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(add).toBeEnabled();
   await noOverflow(page);
   await panel.screenshot({ path: info.outputPath("custom-rules-empty.png") });
+});
+
+test("repository custom rules suggest indexed exact files and keep legacy globs distinct", async ({ page }, info) => {
+  await mock(page);
+  const legacy = { name: "Auth", instructions: "Review auth.", active: true, glob: "{src/auth/session.py,tests/**/*.py}" };
+  const writes: Schema["ReviewRulesUpdate"][] = [];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({
+    json: [{ ...repo, code_graph_enabled: true, review_rules: [legacy] }],
+  }));
+  await page.route("**/api/v1/repositories/22/review-rules/files?*", (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    return route.fulfill({ json: query === "" ? ["docs/README.md", "src/auth/session.py"]
+      : query === "session" ? ["src/auth/session.py"] : [] });
+  });
+  await page.route("**/api/v1/repositories/22/review-rules", (route) => {
+    const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
+    writes.push(body);
+    return route.fulfill({ json: body.rules });
+  });
+  await page.goto("/repositories/22/custom-rules");
+  await page.getByRole("button", { name: "Actions for Auth" }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit rule" });
+  await expect(dialog.getByRole("list", { name: "Selected globs" })).toContainText(legacy.glob);
+  const files = dialog.getByLabel("Files", { exact: true });
+  await expect(files).toHaveAttribute("aria-expanded", "false");
+  const modalHeight = await dialog.evaluate((element) => element.getBoundingClientRect().height);
+  await files.focus();
+  const initialSuggestion = page.getByRole("option", { name: "docs/README.md", exact: true });
+  await expect(initialSuggestion).toBeVisible();
+  expect(await dialog.evaluate((element) => element.getBoundingClientRect().height)).toBe(modalHeight);
+  await files.fill("session");
+  await expect(initialSuggestion).toHaveCount(0);
+  const suggestion = page.getByRole("option", { name: "src/auth/session.py", exact: true });
+  await expect(suggestion).toBeVisible();
+  expect(await dialog.evaluate((element) => element.getBoundingClientRect().height)).toBe(modalHeight);
+  await expect(files).toHaveAttribute("aria-expanded", "true");
+  await dialog.screenshot({ path: info.outputPath("custom-rule-targets.png") });
+  await files.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(files).toHaveValue("session");
+  await expect(files).toHaveAttribute("aria-expanded", "false");
+  await files.fill("sess");
+  await files.fill("session");
+  await suggestion.click();
+  await expect(files).toHaveAttribute("aria-expanded", "false");
+  await expect(dialog.getByRole("list", { name: "Selected files" })).toContainText("src/auth/session.py");
+  await dialog.getByLabel("Files", { exact: true }).fill("docs/auth.md");
+  await dialog.getByRole("button", { name: "Add file", exact: true }).click();
+  await dialog.getByRole("button", { name: "Remove file src/auth/session.py", exact: true }).click();
+  await dialog.getByLabel("Glob patterns", { exact: true }).fill("src/auth/**/*.py");
+  await dialog.getByRole("button", { name: "Add glob", exact: true }).click();
+  await expect(dialog.getByRole("list", { name: "Selected globs" })).toContainText("src/auth/**/*.py");
+  await dialog.getByRole("button", { name: `Remove glob ${legacy.glob}`, exact: true }).click();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toEqual([{ expected_rules: [legacy], rules: [{ ...legacy, glob: "", files: ["docs/auth.md"], globs: ["src/auth/**/*.py"] }] }]);
 });
 
 test("repository custom rules use shared filters and sort the display order", async ({ page }) => {

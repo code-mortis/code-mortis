@@ -294,6 +294,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/review-rules/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Review Rule Files */
+        get: operations["review_rule_files_api_v1_repositories__repository_id__review_rules_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/review-rules/preview": {
         parameters: {
             query?: never;
@@ -2411,6 +2428,10 @@ export interface components {
              * @default
              */
             glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
         };
         /** AssessmentProgress */
         AssessmentProgress: {
@@ -4197,6 +4218,10 @@ export interface components {
              * @default
              */
             glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
             /**
              * Active
              * @default true
@@ -5763,6 +5788,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewRule"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_rule_files_api_v1_repositories__repository_id__review_rules_files_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
                 };
             };
             /** @description Validation Error */

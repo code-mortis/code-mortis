@@ -4,12 +4,12 @@ from collections import deque
 from typing import Literal
 
 from pydantic import Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from code_mortis.code_graph import service, store
 from code_mortis.code_graph.syntax import LANGUAGES
 from code_mortis.core.db import transaction
-from code_mortis.models import CodeGraphFile, CodeGraphImport, CodeGraphSnapshot, CodeGraphSymbol
+from code_mortis.models import CodeGraphFile, CodeGraphImport, CodeGraphSnapshot, CodeGraphSymbol, Repository
 from code_mortis.schemas.code_graph import (
     EXTRACTOR_VERSION,
     CodeGraphLimits,
@@ -62,6 +62,34 @@ def visible_files(db, row):
     return {f.path: f for f in db.scalars(select(CodeGraphFile).where(
         CodeGraphFile.snapshot_id == row.id, CodeGraphFile.status.in_(["parsed", "partial", "unsupported"]),
     ).order_by(CodeGraphFile.path)) if not store.excluded(f.path, row.policy)}
+
+
+def default_file_paths(db, repository_id, actor_id, query):
+    # The caller authorized with GitHub before locking, so settings may have changed during that request.
+    current = db.scalar(select(Repository).where(Repository.id == repository_id)
+                        .with_for_update(read=True).execution_options(populate_existing=True))
+    if not current:
+        raise service.AccessLost("Graph repository access is no longer available.")
+    repo, _, config = service.local_access(db, repository_id, actor_id, enabled=False, initiator=False)
+    if not config or not config.enabled or not config.default_sha:
+        return []
+    rules = store.policy(repo)
+    row = db.scalar(select(CodeGraphSnapshot).where(
+        CodeGraphSnapshot.repository_id == repo.id,
+        CodeGraphSnapshot.commit_sha == config.default_sha,
+        CodeGraphSnapshot.extractor_version == EXTRACTOR_VERSION,
+        CodeGraphSnapshot.policy_digest == store.policy_digest(rules),
+        CodeGraphSnapshot.status.in_(service.USABLE),
+    ).with_for_update(read=True))
+    if not row or row.policy != rules:
+        return []
+    paths = select(CodeGraphFile.path).where(
+        CodeGraphFile.snapshot_id == row.id,
+        CodeGraphFile.status.in_(["parsed", "partial", "unsupported"]),
+    )
+    if query:
+        paths = paths.where(func.lower(CodeGraphFile.path).contains(query.lower(), autoescape=True))
+    return [path for path in db.scalars(paths.order_by(CodeGraphFile.path).limit(20)) if not store.excluded(path, rules)]
 
 
 def symbols(db, row, request, files, response):

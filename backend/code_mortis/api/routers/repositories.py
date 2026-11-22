@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
 from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
+from code_mortis.code_graph import retrieval, store
 from code_mortis.code_graph import service as graphs
-from code_mortis.code_graph import store
 from code_mortis.core.db import now
 from code_mortis.core.security import unseal
 from code_mortis.integrations import github
@@ -39,6 +39,7 @@ from code_mortis.schemas.analytics import (
     RepositoryActivityFilters,
     RepositoryResult,
 )
+from code_mortis.schemas.code_graph import RepositoryPath
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
     BackgroundCancelInput,
@@ -217,6 +218,18 @@ def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, use
         raise HTTPException(409, "Review rules changed while you were editing. Reload settings and try again.")
     repo.settings = {**repo.settings, "review_rules": [rule.model_dump() for rule in body.rules]}
     return body.rules
+
+
+@router.get("/repositories/{repository_id}/review-rules/files", response_model=list[RepositoryPath])
+def review_rule_files(repository_id: int, db: DB, user: SESSION_ADMIN,
+                      q: Annotated[str, Query(max_length=2000, pattern=r"^[^\x00-\x1f\x7f]*$")]):
+    repo, remote = repo_access(db, user, repository_id, write=True)
+    if type(remote.get("id")) is not int or remote["id"] != repo.id:
+        raise HTTPException(403, "GitHub repository identity changed.")
+    try:
+        return retrieval.default_file_paths(db, repo.id, user.id, q)
+    except graphs.AccessLost as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 @router.post("/repositories/{repository_id}/review-rules/preview", response_model=ReviewRulesPreview)

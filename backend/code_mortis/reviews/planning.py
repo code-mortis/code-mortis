@@ -83,6 +83,9 @@ def unit_byte_limit(prompt_token_ceiling):
             if prompt_token_ceiling is not None else DEFAULT_UNIT_BYTES)
 
 
+MAX_RULE_ALTERNATIVES = 256
+
+
 def _brace_patterns(pattern, *, check=None):
     """Expand bounded alternatives without evaluating shell syntax."""
     pending, result = [pattern], []
@@ -96,7 +99,7 @@ def _brace_patterns(pattern, *, check=None):
         else:
             pending.extend(value[:match.start()] + choice + value[match.end():]
                            for choice in match[1].split(","))
-        if len(pending) + len(result) > 256:
+        if len(pending) + len(result) > MAX_RULE_ALTERNATIVES:
             raise ValueError("Review rule glob has too many alternatives.")
     return result
 
@@ -257,10 +260,18 @@ def _legacy_match(path, rules, *, check):
     return None, None
 
 
+def _target_matches(path, rule, *, check):
+    files = rule.get("files", ())
+    globs = rule.get("globs", ())
+    legacy_glob = rule["glob"]
+    return (not (files or globs or legacy_glob) or path in files
+            or bool(legacy_glob and rule_matches(path, legacy_glob, check=check))
+            or any(rule_matches(path, glob, check=check) for glob in globs))
+
+
 def resolve_rules(path, legacy, review_rules=(), *, check=None):
     origin, old = _legacy_match(path, legacy, check=check)
-    active = [rule for rule in review_rules if rule["active"]
-              and (not rule["glob"] or rule_matches(path, rule["glob"], check=check))]
+    active = [rule for rule in review_rules if rule["active"] and _target_matches(path, rule, check=check)]
     instructions, matches = [], []
     if active or old is None or old["merge_system_rule"]:
         instructions.append(system_rule(path))
@@ -270,7 +281,8 @@ def resolve_rules(path, legacy, review_rules=(), *, check=None):
         matches.append({"name": "Legacy review rule", "source": origin, "glob": old["path"]})
     for rule in active:
         instructions.append(rule["instructions"])
-        matches.append({"name": rule["name"], "source": "repository", "glob": rule["glob"]})
+        matches.append({"name": rule["name"], "source": "repository", "glob": rule["glob"],
+                        **{key: rule[key] for key in ("files", "globs") if rule.get(key)}})
     return "\n\n".join(filter(None, instructions)), matches
 
 
@@ -388,6 +400,7 @@ def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
         raise ValueError("PR planning cannot substitute a different merge base.")
     rules = load_rules(repo, env, base_sha, options, stopped)
     review_rules = options.get("review_rules", [])
+    literal_targets = {path for rule in review_rules if rule["active"] for path in rule.get("files", ())}
     rules_digest = fingerprint({"legacy": rules["digest"], "review_rules": review_rules}) if review_rules else rules["digest"]
     plan = ReviewPlan(base_sha, head_sha, merge_base, fingerprint({"file_policy": file_policy.policy(options), "rules": rules_digest}),
                       rules_digest, rules, [], [])
@@ -420,7 +433,7 @@ def plan_review(repo, env, base_sha, head_sha, merge_base, options, stopped, *,
                 raise ValueError("Required source exceeds the PR source admission limit; splitting cannot bypass it.")
             if used + entry["size"] > max_source_bytes:
                 raise ValueError("Required source exceeds the aggregate PR source admission limit.")
-            text = source.read_source(repo, env, head_sha, selected.path, stopped)
+            text = source.read_source(repo, env, head_sha, selected.path, stopped, literal=selected.path in literal_targets)
             patch = source.git(repo, env, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--find-renames",
                                "--unified=3", merge_base, head_sha, "--", *dict.fromkeys(filter(None, (selected.old_path, selected.path))), stopped=stopped)
             size = len((text + patch).encode())

@@ -8,13 +8,24 @@ from test_pr_planning import commit, git, plan, write
 from test_pr_planning import repository as repository  # pytest fixture
 from test_review_flow import new_run, remote
 
+from code_mortis.code_graph import store
 from code_mortis.core.db import transaction
 from code_mortis.core.process import child_environment
 from code_mortis.core.security import seal
 from code_mortis.integrations import github
-from code_mortis.models import Connection, Job, Repository, ReviewRun, WebhookDelivery
+from code_mortis.models import (
+    CodeGraphFile,
+    CodeGraphRepository,
+    CodeGraphSnapshot,
+    Connection,
+    Job,
+    Repository,
+    ReviewRun,
+    WebhookDelivery,
+)
 from code_mortis.reviews import checks, engine, planning
-from code_mortis.schemas.common import RepoSettings
+from code_mortis.schemas.code_graph import EXTRACTOR_VERSION
+from code_mortis.schemas.common import RepoSettings, ReviewRule
 
 RULES = "/api/v1/repositories/22/review-rules"
 
@@ -121,6 +132,44 @@ def test_review_rules_preserve_legacy_only_semantics(repository):
     assert [match["source"] for match in matches] == ["mortis", "legacy_settings", "repository"]
 
 
+def test_multiple_files_and_globs_are_alternatives_without_duplicate_instructions(repository):
+    repo, base = repository
+    legacy = planning.load_rules(repo, child_environment(), base, {}, lambda: False)
+    mixed = {**rule("Authentication", "Check expired tokens."),
+             "files": ["src/auth/session.py", "src/auth/token.py", "test[1].py"],
+             "globs": ["tests/auth/**/*.py", "src/auth/{session,refresh}.py"]}
+    stored = ReviewRule.model_validate(mixed).model_dump()
+    assert stored == mixed
+    for file in ("src/auth/session.py", "src/auth/token.py", "test[1].py", "tests/auth/nested/test_token.py", "src/auth/refresh.py"):
+        instructions, matches = planning.resolve_rules(file, legacy, [stored])
+        assert instructions.count("Check expired tokens.") == 1
+        assert matches[-1]["files"] == mixed["files"] and matches[-1]["globs"] == mixed["globs"]
+    for nonmatching in ("src/auth/Token.py", "src/auth/other.py", "test1.py"):
+        assert planning.rule_for(nonmatching, legacy, [stored]) == planning.system_rule(nonmatching)
+    old = rule("Legacy", "Preserve old matching.", "{src/auth/session.py,tests/auth/**/*.py}")
+    assert RepoSettings.for_execution({"review_rules": [old]})["review_rules"] == [old]
+    assert "Preserve old matching." in planning.rule_for("SRC/AUTH/SESSION.PY", legacy, [old])
+
+
+def test_exact_file_target_survives_git_pathspec_syntax(repository):
+    repo, _ = repository
+    target = ":(literal)guide.md"
+    write(repo, target, "Original guide\n")
+    base = commit(repo)
+    write(repo, target, "Changed guide\n")
+    configured = {**rule("Literal", "Review the marked guide."), "files": [target]}
+    selected = plan((repo, base), review_rules=[configured])
+    assert selected.selected[0].path == target and not selected.selected[0].error
+    assert "Review the marked guide." in selected.units[0].rule
+
+
+def test_review_rule_bounds_glob_alternatives_across_patterns():
+    alternatives = "{a,b}" * 8
+    ReviewRule.model_validate(rule("Legacy", "Review rules.", alternatives))
+    with pytest.raises(ValueError, match="too many alternatives"):
+        ReviewRule.model_validate({**rule("Mixed", "Review rules.", alternatives), "globs": ["src/**"]})
+
+
 def test_legacy_reference_is_a_literal_repository_path(repository):
     repo, _ = repository
     reference = ":(literal)review-guide.md"
@@ -190,11 +239,55 @@ def test_review_rules_require_editor_permission(seed, client, github_stub, monke
     monkeypatch.setattr(github, "repository_read_token", lambda *a, **k: pytest.fail("Unauthorized read"))
     assert client.put(RULES, json={"rules": [], "expected_rules": []}).status_code == 403
     assert client.post(f"{RULES}/preview", json={"path": "main.py", "rules": []}).status_code == 403
+    assert client.get(f"{RULES}/files", params={"q": "main"}).status_code == 403
+
+
+def test_file_suggestions_read_only_current_policy_for_last_indexed_default(seed, client, github_stub, monkeypatch):
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        policy = store.policy(repo)
+        old, current = "a" * 40, "b" * 40
+        db.add(CodeGraphRepository(repository_id=22, enabled=True, default_sha=old, observed_sha=current))
+        snapshot = CodeGraphSnapshot(repository_id=22, id="default", commit_sha=old, extractor_version=EXTRACTOR_VERSION,
+                                     policy_digest=store.policy_digest(policy), policy=policy, status="ready")
+        other = CodeGraphSnapshot(repository_id=22, id="other", commit_sha=current, extractor_version=EXTRACTOR_VERSION,
+                                  policy_digest=store.policy_digest(policy), policy=policy, status="ready")
+        db.add_all([snapshot, other])
+        db.flush()
+        for base, path, status in [
+            ("default", "src/auth_session.py", "unsupported"), ("default", "src/authZsession.py", "unsupported"),
+            ("default", "src/auth_skip.py", "excluded"), ("default", "src/.env.auth_token", "unsupported"),
+            ("other", "src/auth_newer.py", "unsupported"),
+        ]:
+            db.add(CodeGraphFile(snapshot_id=base, path=path, blob_sha="c" * 40, size_bytes=1, status=status))
+        db.add_all(CodeGraphFile(snapshot_id="default", path=f"test{i:02}.py", blob_sha="c" * 40, size_bytes=1,
+                                 status="unsupported") for i in range(25))
+    result = client.get(f"{RULES}/files", params={"q": "AUTH_"})
+    assert result.status_code == 200, result.text
+    assert result.json() == ["src/auth_session.py"]
+    initial = client.get(f"{RULES}/files", params={"q": ""})
+    assert initial.status_code == 200, initial.text
+    assert 0 < len(initial.json()) <= 20
+    assert {"src/auth_session.py", "src/authZsession.py"} <= set(initial.json())
+    assert not {"src/auth_skip.py", "src/.env.auth_token", "src/auth_newer.py"} & set(initial.json())
+    assert len(client.get(f"{RULES}/files", params={"q": "test"}).json()) == 20
+    assert client.get(f"{RULES}/files", params={"q": "\0auth"}).status_code == 422
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(Job)) == 0
+
+    def authorize_with_concurrent_exclusion(db, user, full_name, write):
+        with transaction() as other:
+            repo = other.get(Repository, 22)
+            repo.settings = {**repo.settings, "exclusions": "src/**"}
+        return {"id": 22}
+
+    monkeypatch.setattr(github, "authorize_repo", authorize_with_concurrent_exclusion)
+    assert client.get(f"{RULES}/files", params={"q": "auth"}).json() == []
 
 
 def test_retries_use_original_rules_and_new_review_reads_current_rules(seed, client, github_stub, monkeypatch):
     old = [rule("Old", "Original instructions.")]
-    new = [rule("New", "Updated instructions.")]
+    new = [{**rule("New", "Updated instructions."), "files": ["src/token.py"], "globs": ["tests/**/*.py"]}]
     legacy = {"rules": [{"path": "**", "rule": "Original legacy instructions."}]}
     updated_legacy = {"rules": [{"path": "**", "rule": "Updated legacy instructions."}]}
     assert client.put(RULES, json={"rules": old, "expected_rules": []}).status_code == 200

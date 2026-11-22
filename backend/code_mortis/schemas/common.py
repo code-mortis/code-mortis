@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from operator import not_
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -18,7 +19,7 @@ from pydantic import (
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
-from code_mortis.schemas.code_graph import CodeGraphLimits
+from code_mortis.schemas.code_graph import CodeGraphLimits, RepositoryPath
 
 NATIVE_REVIEW_INSTRUCTIONS = (
     "Review the assigned code for actionable defects using the supplied review rules. "
@@ -164,15 +165,25 @@ class ReviewRule(StrictModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
     instructions: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
     glob: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+    files: list[RepositoryPath] = Field(default_factory=list, max_length=20, exclude_if=not_)
+    globs: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20, exclude_if=not_,
+    )
     active: bool = Field(default=True, strict=True)
 
-    @field_validator("glob")
-    @classmethod
-    def bounded_glob(cls, value):
-        from code_mortis.reviews.planning import rule_matches
+    @model_validator(mode="after")
+    def bounded_globs(self):
+        from code_mortis.reviews.planning import MAX_RULE_ALTERNATIVES, _brace_patterns
 
-        rule_matches("validation", value)
-        return value
+        patterns = [self.glob, *self.globs] if self.glob else self.globs
+        if len(patterns) > 20:
+            raise ValueError("A review rule can have at most 20 glob patterns.")
+        alternatives = 0
+        for pattern in patterns:
+            alternatives += len(_brace_patterns(pattern))
+            if alternatives > MAX_RULE_ALTERNATIVES:
+                raise ValueError("Review rule glob patterns have too many alternatives.")
+        return self
 
 
 ReviewRules = Annotated[list[ReviewRule], Field(max_length=50)]
@@ -193,6 +204,8 @@ class AppliedReviewRule(StrictModel):
     name: str
     source: Literal["mortis", "repository", "legacy_settings", "trusted_base"]
     glob: str = ""
+    files: list[str] = Field(default_factory=list, exclude_if=not_)
+    globs: list[str] = Field(default_factory=list, exclude_if=not_)
 
 
 class ReviewRulesPreview(StrictModel):
