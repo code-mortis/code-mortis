@@ -27,7 +27,7 @@ function normalizeRules(rules: Schema["StoredReviewRule"][] = []): Rule[] {
   return rules.map(({ glob = "", active = true, ...rule }) => ({ ...rule, glob, active }));
 }
 
-function editableRule({ created_at: _created, updated_at: _updated, ...rule }: Rule): RuleDraft {
+function editableRule({ rule_id: _ruleId, created_at: _created, updated_at: _updated, ...rule }: Rule): RuleDraft {
   return rule;
 }
 

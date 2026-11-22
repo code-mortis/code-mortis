@@ -12,7 +12,7 @@ from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import retrieval, store
 from code_mortis.code_graph import service as graphs
-from code_mortis.core.db import now
+from code_mortis.core.db import now, uid
 from code_mortis.core.security import unseal
 from code_mortis.integrations import github
 from code_mortis.mcp import provenance as mcp
@@ -224,7 +224,7 @@ def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, use
         if len(rules) >= REVIEW_RULE_LIMIT:
             raise HTTPException(422, f"A repository can have at most {REVIEW_RULE_LIMIT} custom rules.")
         timestamp = now()
-        rules.append(StoredReviewRule(**change.rule.model_dump(), created_at=timestamp, updated_at=timestamp))
+        rules.append(StoredReviewRule(**change.rule.model_dump(), rule_id=uid(), created_at=timestamp, updated_at=timestamp))
     elif change.index >= len(rules):
         raise HTTPException(422, "Review rule index is out of range.")
     elif change.operation == "delete":
@@ -234,7 +234,8 @@ def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, use
         updated = change.rule.model_dump()
         if updated == current.for_execution():
             return rules
-        rules[change.index] = StoredReviewRule(**updated, created_at=current.created_at, updated_at=now())
+        rules[change.index] = StoredReviewRule(**updated, rule_id=current.rule_id or uid(),
+                                             created_at=current.created_at, updated_at=now())
     repo.settings = {**repo.settings, "review_rules": review_rules_adapter.dump_python(rules, mode="json")}
     return rules
 

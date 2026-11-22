@@ -9683,16 +9683,17 @@ function applyRuleChange(rules: Schema["StoredReviewRule"][], change: Schema["Re
   if (change.operation === "add") return [...rules, { ...change.rule, created_at: time, updated_at: time }];
   if (change.operation === "delete") return rules.filter((_, index) => index !== change.index);
   return rules.map((rule, index) => index === change.index
-    ? { ...change.rule, ...(rule.created_at ? { created_at: rule.created_at } : {}), updated_at: time } : rule);
+    ? { ...change.rule, rule_id: rule.rule_id, created_at: rule.created_at, updated_at: time } : rule);
 }
 
 test("repository custom rules use the workspace width and persist confirmed changes", async ({ page }, info) => {
   const requests = await mock(page);
   const legacy = { rules: [{ path: "**/*.py", rule: "Keep old checks" }] };
   const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
-  const keepRule = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
-  const inactiveKeep = { ...keepRule, active: false };
-  const savedKeep = { ...inactiveKeep, updated_at: at };
+  const keepDraft = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
+  const keepRule = { ...keepDraft, rule_id: "329ce63c-65b7-462f-b566-abffc75107c0" };
+  const inactiveKeep = { ...keepDraft, active: false };
+  const savedKeep = { ...keepRule, active: false, updated_at: at };
   const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "", active: true,
     files: ["src/auth/session.py", "src/auth/token.py"], globs: ["src/**/*.py", "tests/auth/**/*.py"] };
   const addedRule = { ...newRule, created_at: at, updated_at: at };

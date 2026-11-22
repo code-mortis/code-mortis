@@ -188,11 +188,12 @@ class ReviewRule(StrictModel):
 
 
 class StoredReviewRule(ReviewRule):
+    rule_id: UUID4 | None = Field(default=None, exclude_if=lambda value: value is None)
     created_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
     updated_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
 
     def for_execution(self):
-        return self.model_dump(exclude={"created_at", "updated_at"})
+        return self.model_dump(exclude={"rule_id", "created_at", "updated_at"})
 
 
 REVIEW_RULE_LIMIT = 50

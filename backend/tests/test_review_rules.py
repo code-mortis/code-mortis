@@ -1,6 +1,7 @@
 import base64
 import json
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from sqlalchemy import func, select
@@ -217,7 +218,9 @@ def test_saving_only_rules_checks_concurrency_and_keeps_existing_settings(seed, 
     saved = update_rules(client, [], "add", rule=draft)
     assert saved.status_code == 200, saved.text
     records = saved.json()
-    assert records == [{**draft, "created_at": records[0]["created_at"], "updated_at": records[0]["created_at"]}]
+    assert UUID(records[0]["rule_id"]).version == 4
+    assert records == [{**draft, "rule_id": records[0]["rule_id"],
+                        "created_at": records[0]["created_at"], "updated_at": records[0]["created_at"]}]
     assert update_rules(client, [], "delete", index=0).status_code == 409
     with transaction() as db:
         repo = db.get(Repository, 22)
@@ -250,9 +253,12 @@ def test_rule_timestamps_change_only_when_targeted_rule_changes(seed, client, gi
 
     assert update_rules(client, [old], "add", rule={**old, "created_at": "2020-01-01T00:00:00Z"}).status_code == 422
     added = update_rules(client, [old], "add", rule=old)
+    assert added.status_code == 200, added.text
     first = "2026-01-01T00:00:00Z"
-    dated = {**old, "created_at": first, "updated_at": first}
-    assert added.status_code == 200 and added.json() == [old, dated], added.text
+    identity = added.json()[1]["rule_id"]
+    assert UUID(identity).version == 4
+    dated = {**old, "rule_id": identity, "created_at": first, "updated_at": first}
+    assert added.json() == [old, dated]
     unchanged = update_rules(client, [old, dated], "edit", index=0, rule=old)
     assert unchanged.status_code == 200 and unchanged.json() == [old, dated], unchanged.text
     inactive = update_rules(client, [old, dated], "edit", index=1, rule={**old, "active": False})
@@ -266,7 +272,8 @@ def test_rule_timestamps_change_only_when_targeted_rule_changes(seed, client, gi
     update = {**old, "instructions": "Check admin permissions."}
     edited = update_rules(client, active.json(), "edit", index=0, rule=update)
     assert edited.status_code == 200, edited.text
-    updated_old = {**update, "updated_at": "2026-01-04T00:00:00Z"}
+    updated_old = {**update, "rule_id": edited.json()[0]["rule_id"], "updated_at": "2026-01-04T00:00:00Z"}
+    assert updated_old["rule_id"] != identity
     assert edited.json() == [updated_old, active.json()[1]]
     deleted = update_rules(client, edited.json(), "delete", index=1)
     assert deleted.status_code == 200 and deleted.json() == [updated_old], deleted.text
@@ -360,6 +367,8 @@ def test_retries_use_original_rules_and_new_review_reads_current_rules(seed, cli
         run = db.get(ReviewRun, run_id)
         assert run.config["settings"]["review_rules"] == old
         assert run.config["settings"]["rules"] == legacy
+        original_tracking = run.rule_tracking
+        assert original_tracking[0]["id"] == added.json()[0]["rule_id"]
         run.status = "failed"
         db.add(WebhookDelivery(id="rerun-rules", event="check_run"))
     with transaction() as db:
@@ -367,7 +376,12 @@ def test_retries_use_original_rules_and_new_review_reads_current_rules(seed, cli
         rerun = db.scalar(select(ReviewRun).where(ReviewRun.id != run_id))
         assert rerun.config["settings"]["review_rules"] == old
         assert rerun.config["settings"]["rules"] == legacy
+        assert rerun.rule_tracking == original_tracking
     fresh = client.post("/api/v1/pulls/pr/runs")
     assert fresh.status_code == 202, fresh.text
     assert fresh.json()["config"]["settings"]["review_rules"] == new
     assert fresh.json()["config"]["settings"]["rules"] == updated_legacy
+    with transaction() as db:
+        tracked = db.get(ReviewRun, fresh.json()["id"]).rule_tracking[0]
+        assert tracked["id"] == original_tracking[0]["id"]
+        assert tracked["version"] != original_tracking[0]["version"]

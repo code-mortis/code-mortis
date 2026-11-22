@@ -295,6 +295,7 @@ class ReviewRun(Base):
     base_sha: Mapped[str] = mapped_column(String(40))
     head_sha: Mapped[str] = mapped_column(String(40))
     config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    rule_tracking: Mapped[list[dict[str, str] | None] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     publication: Mapped[str] = mapped_column(String(30), default="pending")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -329,6 +330,17 @@ class ReviewRun(Base):
     check_error: Mapped[str | None] = mapped_column(Text)
     check_payload_hash: Mapped[str | None] = mapped_column(String(64))
     check_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewRuleUse(Base):
+    __tablename__ = "review_rule_uses"
+    __table_args__ = (Index("ix_review_rule_uses_rule_date", "rule_id", "used_at"),)
+    run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id", ondelete="CASCADE"), primary_key=True)
+    rule_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    path_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    path: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Finding(Base):

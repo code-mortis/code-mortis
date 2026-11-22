@@ -41,7 +41,15 @@ from code_mortis.models import (
     User,
     WebhookDelivery,
 )
-from code_mortis.reviews import assessment, graph_context, mortis, pipeline, planning, verification
+from code_mortis.reviews import (
+    assessment,
+    graph_context,
+    mortis,
+    pipeline,
+    planning,
+    rule_usage,
+    verification,
+)
 from code_mortis.reviews import summary as pr_summary
 from code_mortis.schemas.common import RepoSettings
 
@@ -124,7 +132,7 @@ def create_run(
     *,
     ignore_file_limit: bool = False,
     request_key: str | None = None,
-    original_rule_settings: dict | None = None,
+    original_rules_from: ReviewRun | None = None,
 ) -> ReviewRun:
     # Serialize run creation per PR; automatic delivery and button retries can race.
     db.scalar(select(PullRequest).where(PullRequest.id == pr.id).with_for_update()
@@ -146,7 +154,8 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.for_execution(repo.settings)
-    if original_rule_settings is not None:
+    if original_rules_from is not None:
+        original_rule_settings = original_rules_from.config["settings"]
         options["rules"] = original_rule_settings.get("rules")
         options.pop("review_rules", None)
         if rules := original_rule_settings.get("review_rules"):
@@ -202,6 +211,8 @@ def create_run(
         base_sha=pr.base_sha,
         head_sha=pr.head_sha,
         config=config,
+        rule_tracking=(original_rules_from.rule_tracking if original_rules_from is not None else
+                       rule_usage.snapshot(repo.settings.get("review_rules") or (), options.get("review_rules", ()))),
         connection_id=connection.id,
         owner_id=connection.owner_id,
         engine=config["analysis_engine"] if connection.kind == "api" else connection.kind,
@@ -653,6 +664,7 @@ def save_analysis(run_id, claim, status, report, comments):
         if run.progress.get("execution") != claim or run.cancel_requested or run.progress.get("analysis_saved"):
             return
         run.report = report
+        rule_usage.record_completed(db, run, status, report)
         run.progress = {**run.progress, "analysis_saved": True, "analysis_status": status}
         if status in {"failed", "skipped"}:
             run.publication = "not_applicable"

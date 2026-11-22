@@ -269,9 +269,14 @@ def _target_matches(path, rule, *, check):
             or any(rule_matches(path, glob, check=check) for glob in globs))
 
 
+def matching_custom_rules(path, review_rules, *, check=None):
+    return ((index, rule) for index, rule in enumerate(review_rules)
+            if rule["active"] and _target_matches(path, rule, check=check))
+
+
 def resolve_rules(path, legacy, review_rules=(), *, check=None):
     origin, old = _legacy_match(path, legacy, check=check)
-    active = [rule for rule in review_rules if rule["active"] and _target_matches(path, rule, check=check)]
+    active = [rule for _, rule in matching_custom_rules(path, review_rules, check=check)]
     instructions, matches = [], []
     if active or old is None or old["merge_system_rule"]:
         instructions.append(system_rule(path))

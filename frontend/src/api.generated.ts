@@ -5159,6 +5159,8 @@ export interface components {
              * @default true
              */
             active: boolean;
+            /** Rule Id */
+            rule_id?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Updated At */
