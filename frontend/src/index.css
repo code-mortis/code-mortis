@@ -304,6 +304,7 @@
 .settings-member-actions { grid-column: 2; grid-row: 1 / 3; }
 @container settings (min-width: 20rem) {
   .settings-record { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .settings-rule-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @container settings (min-width: 25rem) {
   .settings-member-row { grid-template-columns: minmax(0, 1fr) minmax(0, 7rem) minmax(0, 2rem); gap: 12px; }
@@ -328,7 +329,7 @@
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) 11rem;
   }
   .settings-rule-row {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) 7rem 2rem;
+    grid-template-columns: minmax(0, 1fr) repeat(4, clamp(4rem, 10%, 7rem)) 2rem;
   }
   .settings-identity, .settings-actions { grid-column: auto; }
   .settings-list-heading { display: grid; }

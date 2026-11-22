@@ -1,5 +1,6 @@
 import base64
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -8,6 +9,7 @@ from test_pr_planning import commit, git, plan, write
 from test_pr_planning import repository as repository  # pytest fixture
 from test_review_flow import new_run, remote
 
+from code_mortis.api.routers import repositories
 from code_mortis.code_graph import store
 from code_mortis.core.db import transaction
 from code_mortis.core.process import child_environment
@@ -32,6 +34,10 @@ RULES = "/api/v1/repositories/22/review-rules"
 
 def rule(name, instructions, glob="", active=True):
     return {"name": name, "instructions": instructions, "glob": glob, "active": active}
+
+
+def update_rules(client, expected_rules, operation, **fields):
+    return client.put(RULES, json={"expected_rules": expected_rules, "change": {"operation": operation, **fields}})
 
 
 def test_preview_matches_engine_assignment_at_default_branch(seed, client, monkeypatch, repository):
@@ -85,7 +91,8 @@ def test_preview_matches_engine_assignment_at_default_branch(seed, client, monke
              rule("Disabled", "Ignored instruction", "**/*.py", False),
              rule("Python", "review-guide.md", "**/*.py"),
              rule("Only JS", "Ignored JS instruction", "**/*.js")]
-    response = client.post(f"{RULES}/preview", json={"path": "main.py", "rules": draft})
+    dated = [{**item, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"} for item in draft]
+    response = client.post(f"{RULES}/preview", json={"path": "main.py", "rules": dated})
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["branch"] == "release/stable" and result["base_sha"] == base and result["reviewable"]
@@ -104,8 +111,14 @@ def test_preview_matches_engine_assignment_at_default_branch(seed, client, monke
         assert "review_rules" not in db.get(Repository, 22).settings
     write(repo, planning.TRUSTED_RULE_PATH, '{"rules":[{"path":"**","rule":"Proposed head rules"}]}')
     write(repo, "main.py", "value = 2\n")
-    options = RepoSettings.for_execution({"review_rules": draft})
-    selected = plan((repo, base), **options)
+    head = commit(repo)
+    env = child_environment()
+    options = RepoSettings.for_execution({"review_rules": dated})
+    assert options["review_rules"] == draft
+    selected = planning.plan_review(repo, env, base, head, base, options, lambda: False)
+    undated_options = RepoSettings.for_execution({"review_rules": draft})
+    undated = planning.plan_review(repo, env, base, head, base, undated_options, lambda: False)
+    assert selected.rules_digest == undated.rules_digest
     batches = engine.prepare_batches(selected, {"kind": "api", "model": "fixture", "protocol": "openai"},
                                     options, credentials)
     assigned = [unit["rules"] for batch in batches for unit in json.loads(batch.request.messages[0].content)["assigned_units"]]
@@ -200,10 +213,12 @@ def test_saving_only_rules_checks_concurrency_and_keeps_existing_settings(seed, 
     with transaction() as db:
         repo = db.get(Repository, 22)
         repo.settings = {**repo.settings, "rules": legacy, "background": "Keep context"}
-    draft = [rule("Auth", "Preserve permission checks.")]
-    saved = client.put(RULES, json={"rules": draft, "expected_rules": []})
-    assert saved.status_code == 200 and saved.json() == draft
-    assert client.put(RULES, json={"rules": [], "expected_rules": []}).status_code == 409
+    draft = rule("Auth", "Preserve permission checks.")
+    saved = update_rules(client, [], "add", rule=draft)
+    assert saved.status_code == 200, saved.text
+    records = saved.json()
+    assert records == [{**draft, "created_at": records[0]["created_at"], "updated_at": records[0]["created_at"]}]
+    assert update_rules(client, [], "delete", index=0).status_code == 409
     with transaction() as db:
         repo = db.get(Repository, 22)
         assert repo.enabled and repo.settings["background"] == "Keep context"
@@ -216,11 +231,46 @@ def test_saving_only_rules_checks_concurrency_and_keeps_existing_settings(seed, 
     changed = client.put("/api/v1/repositories/22", json={"enabled": False, "settings": {**settings, "language": "Spanish"}})
     assert changed.status_code == 200, changed.text
     assert changed.json()["settings"]["rules"] == legacy
-    assert changed.json()["review_rules"] == draft
+    assert changed.json()["review_rules"] == records
     omitted = client.put("/api/v1/repositories/22", json={"enabled": False, "settings": {"language": "English"}})
     assert omitted.status_code == 200, omitted.text
     assert omitted.json()["settings"]["rules"] == legacy
-    assert omitted.json()["review_rules"] == draft
+    assert omitted.json()["review_rules"] == records
+
+
+def test_rule_timestamps_change_only_when_targeted_rule_changes(seed, client, github_stub, monkeypatch):
+    old = rule("Auth", "Check permissions.")
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        repo.settings = {**repo.settings, "review_rules": [{"name": old["name"], "instructions": old["instructions"]}]}
+    timestamps = iter(datetime(2026, 1, day, tzinfo=UTC) for day in range(1, 5))
+    monkeypatch.setattr(repositories, "now", lambda: next(timestamps))
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: [db.get(Repository, 22)])
+    assert client.get("/api/v1/repositories").json()[0]["review_rules"] == [old]
+
+    assert update_rules(client, [old], "add", rule={**old, "created_at": "2020-01-01T00:00:00Z"}).status_code == 422
+    added = update_rules(client, [old], "add", rule=old)
+    first = "2026-01-01T00:00:00Z"
+    dated = {**old, "created_at": first, "updated_at": first}
+    assert added.status_code == 200 and added.json() == [old, dated], added.text
+    unchanged = update_rules(client, [old, dated], "edit", index=0, rule=old)
+    assert unchanged.status_code == 200 and unchanged.json() == [old, dated], unchanged.text
+    inactive = update_rules(client, [old, dated], "edit", index=1, rule={**old, "active": False})
+    assert inactive.status_code == 200, inactive.text
+    assert inactive.json() == [old, {**dated, "active": False, "updated_at": "2026-01-02T00:00:00Z"}]
+    active = update_rules(client, inactive.json(), "edit", index=1, rule=old)
+    assert active.status_code == 200, active.text
+    assert active.json() == [old, {**dated, "updated_at": "2026-01-03T00:00:00Z"}]
+    # The contents match again, but the dates still fence a stale positional write.
+    assert update_rules(client, [old, dated], "delete", index=0).status_code == 409
+    update = {**old, "instructions": "Check admin permissions."}
+    edited = update_rules(client, active.json(), "edit", index=0, rule=update)
+    assert edited.status_code == 200, edited.text
+    updated_old = {**update, "updated_at": "2026-01-04T00:00:00Z"}
+    assert edited.json() == [updated_old, active.json()[1]]
+    deleted = update_rules(client, edited.json(), "delete", index=1)
+    assert deleted.status_code == 200 and deleted.json() == [updated_old], deleted.text
+    assert client.get("/api/v1/repositories").json()[0]["review_rules"] == [updated_old]
 
 
 @pytest.mark.parametrize("case", ["member", "no_write", "wrong_repo"])
@@ -237,7 +287,7 @@ def test_review_rules_require_editor_permission(seed, client, github_stub, monke
     else:
         monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: {"id": 23})
     monkeypatch.setattr(github, "repository_read_token", lambda *a, **k: pytest.fail("Unauthorized read"))
-    assert client.put(RULES, json={"rules": [], "expected_rules": []}).status_code == 403
+    assert update_rules(client, [], "add", rule=rule("Denied", "Review permissions.")).status_code == 403
     assert client.post(f"{RULES}/preview", json={"path": "main.py", "rules": []}).status_code == 403
     assert client.get(f"{RULES}/files", params={"q": "main"}).status_code == 403
 
@@ -290,12 +340,14 @@ def test_retries_use_original_rules_and_new_review_reads_current_rules(seed, cli
     new = [{**rule("New", "Updated instructions."), "files": ["src/token.py"], "globs": ["tests/**/*.py"]}]
     legacy = {"rules": [{"path": "**", "rule": "Original legacy instructions."}]}
     updated_legacy = {"rules": [{"path": "**", "rule": "Updated legacy instructions."}]}
-    assert client.put(RULES, json={"rules": old, "expected_rules": []}).status_code == 200
+    added = update_rules(client, [], "add", rule=old[0])
+    assert added.status_code == 200, added.text
     with transaction() as db:
         repo = db.get(Repository, 22)
         repo.settings = {**repo.settings, "rules": legacy}
     run_id = new_run(parallel=True)
-    assert client.put(RULES, json={"rules": new, "expected_rules": old}).status_code == 200
+    edited = update_rules(client, added.json(), "edit", index=0, rule=new[0])
+    assert edited.status_code == 200, edited.text
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())
     with transaction() as db:
         repo = db.get(Repository, 22)

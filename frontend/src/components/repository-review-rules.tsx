@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Plus, X } from "lucide-react";
+import { ListChecks, MoreHorizontal, Plus, X } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api, type Repository, type Schema } from "../api";
 import { INBOX_QUERY_MAX_LENGTH, INBOX_SEARCH_DEBOUNCE_MS } from "../lib/inbox-filters";
 import { normalizeOrdering } from "../lib/ordering";
-import { Empty, ErrorNotice, Field, PageTitle } from "./common";
+import { Empty, ErrorNotice, Field, ListDate, PageTitle } from "./common";
 import { FilterBar } from "./filter-bar";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -18,15 +18,20 @@ import { Popover, PopoverAnchor, PopoverContent } from "./ui/popover";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 
-type Rule = Schema["ReviewRule"] & { glob: string; active: boolean };
-const ruleOrderings = { created_at: "Created", name: "Name" };
+type RuleDraft = Schema["ReviewRule"] & { glob: string; active: boolean };
+type Rule = Schema["StoredReviewRule"] & RuleDraft;
+const ruleOrderings = { created_at: "Created", updated_at: "Updated", name: "Name" };
 const targetLimit = 20;
 
-function normalizeRules(rules: Schema["ReviewRule"][] = []): Rule[] {
+function normalizeRules(rules: Schema["StoredReviewRule"][] = []): Rule[] {
   return rules.map(({ glob = "", active = true, ...rule }) => ({ ...rule, glob, active }));
 }
 
-function ruleGlobs(rule: Rule) {
+function editableRule({ created_at: _created, updated_at: _updated, ...rule }: Rule): RuleDraft {
+  return rule;
+}
+
+function ruleGlobs(rule: RuleDraft) {
   return rule.glob ? [rule.glob, ...(rule.globs ?? [])] : rule.globs ?? [];
 }
 
@@ -120,7 +125,7 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
   const [searchResetKey, setSearchResetKey] = useState(0);
   const cache = useQueryClient();
   const save = useMutation({
-    mutationFn: async (body: Schema["ReviewRulesUpdate"]) => normalizeRules(await api<Schema["ReviewRule"][]>(endpoint, "PUT", body)),
+    mutationFn: async (body: Schema["ReviewRulesUpdate"]) => normalizeRules(await api<Schema["StoredReviewRule"][]>(endpoint, "PUT", body)),
     onSuccess: async (next) => {
       await cache.cancelQueries({ queryKey: ["/repositories"], exact: true });
       cache.setQueryData<Repository[]>(["/repositories"], (repositories) => repositories?.map((row) =>
@@ -128,7 +133,7 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     },
   });
   const [rules, setRules] = useState(() => normalizeRules(repository.review_rules));
-  const [editor, setEditor] = useState<{ index: number | null; draft: Rule } | null>(null);
+  const [editor, setEditor] = useState<{ index: number | null; draft: RuleDraft } | null>(null);
   const [fileInput, setFileInput] = useState("");
   const [globInput, setGlobInput] = useState("");
   const [deleting, setDeleting] = useState<number | null>(null);
@@ -148,10 +153,18 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     [rule.name, rule.instructions, ...(rule.files ?? []), ...ruleGlobs(rule)].some((value) => value.toLowerCase().includes(needle)));
   const activeCount = matches.filter(({ rule }) => rule.active).length;
   const rows = matches.filter(({ rule }) => !statuses.length || statuses.includes(rule.active ? "active" : "inactive"));
-  // New rules are appended, so list position gives creation order without timestamps.
   if (ordering === "name" || ordering === "-name") {
     const direction = ordering === "name" ? 1 : -1;
     rows.sort((a, b) => direction * a.rule.name.localeCompare(b.rule.name, undefined, { sensitivity: "base" }));
+  } else if (ordering === "updated_at" || ordering === "-updated_at") {
+    const direction = ordering === "updated_at" ? 1 : -1;
+    rows.sort((a, b) => {
+      // Server dates use UTC. Compare full precision, including updates within one millisecond.
+      const left = a.rule.updated_at?.replace(/Z$/, "");
+      const right = b.rule.updated_at?.replace(/Z$/, "");
+      if (!left || !right) return Number(!left) - Number(!right);
+      return left === right ? 0 : direction * (left < right ? -1 : 1);
+    });
   } else if (ordering === "-created_at") rows.reverse();
 
   useEffect(() => {
@@ -174,10 +187,10 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     searchInput.current?.focus();
   }
 
-  async function persistRules(next: Rule[], message: string, onSaved?: () => void) {
+  async function persistRules(change: Schema["ReviewRulesUpdate"]["change"], message: string, onSaved?: () => void) {
     setSaveError(undefined);
     try {
-      setRules(await save.mutateAsync({ rules: next, expected_rules: rules }));
+      setRules(await save.mutateAsync({ change, expected_rules: rules }));
       onSaved?.();
       toast.success(message);
     } catch (error) {
@@ -189,10 +202,10 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     setSaveError(undefined);
     setFileInput("");
     setGlobInput("");
-    setEditor({ index, draft: index === null ? { name: "", instructions: "", glob: "", active: true } : rules[index] });
+    setEditor({ index, draft: index === null ? { name: "", instructions: "", glob: "", active: true } : editableRule(rules[index]) });
   }
 
-  function changeDraft(changes: Partial<Rule>) {
+  function changeDraft(changes: Partial<RuleDraft>) {
     setEditor((current) => current && { ...current, draft: { ...current.draft, ...changes } });
     setSaveError(undefined);
   }
@@ -213,12 +226,12 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
   function saveRule() {
     if (!editor || !canSubmit || save.isPending) return;
     const { index, draft } = editor;
-    const next = index === null ? [...rules, draft] : rules.map((rule, i) => i === index ? draft : rule);
-    void persistRules(next, index === null ? "Rule added." : "Rule saved.", () => setEditor(null));
+    const change = index === null ? { operation: "add", rule: draft } as const : { operation: "edit", index, rule: draft } as const;
+    void persistRules(change, index === null ? "Rule added." : "Rule saved.", () => setEditor(null));
   }
 
   function deleteRule(index: number) {
-    void persistRules(rules.filter((_, i) => i !== index), "Rule deleted.", () => {
+    void persistRules({ operation: "delete", index }, "Rule deleted.", () => {
       returnFocus.current = null;
       setDeleting(null);
     });
@@ -326,30 +339,41 @@ export function RepositoryReviewRules({ repository }: { repository: Repository }
     </div>
     {!!saveError && !editor && deleting === null && <div className="mb-4"><ErrorNotice error={saveError} /></div>}
     {rows.length > 0 ? <div className="settings-container overflow-hidden rounded-lg border bg-card">
-      <div aria-hidden="true" className="settings-record settings-rule-row settings-list-heading border-b bg-muted/30 px-5 py-3 text-xs font-medium text-muted-foreground">
-        <span>Rule</span><span>Targets</span><span>Status</span><span />
+      <div aria-hidden="true" className="settings-record settings-rule-row settings-list-heading border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground md:px-5">
+        <span>Rule</span><span>Targets</span><span>Created</span><span>Updated</span><span>Status</span><span />
       </div>
       <ul aria-label="Repository review rules" className="divide-y">
         {rows.map(({ rule, index }) => {
           const name = rule.name.trim() || "Untitled rule";
           const files = rule.files ?? [];
           const globs = ruleGlobs(rule);
-          return <li key={index} className="settings-record settings-rule-row px-4 py-4 text-sm sm:px-5">
-            <div className="settings-identity min-w-0">
-              <h2 className="break-words font-medium [overflow-wrap:anywhere]">{name}</h2>
-              <p className="mt-1 truncate leading-relaxed text-muted-foreground">{rule.instructions}</p>
+          return <li key={index} className="settings-record settings-rule-row px-4 py-4 text-sm md:px-5 md:py-3">
+            <div className="settings-identity flex min-w-0 items-center gap-3">
+              <ListChecks aria-hidden="true" className="size-4 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate font-medium" title={name}>{name}</h2>
+                <p className="mt-2 truncate text-xs text-muted-foreground">{rule.instructions}</p>
+              </div>
             </div>
-            <div className="text-xs leading-relaxed">
+            <div className="text-xs">
               <span className="settings-cell-label mb-1 text-muted-foreground">Targets</span>
               {files.length + globs.length === 0 ? <span className="text-muted-foreground">All files</span> :
                 files.length + globs.length === 1 ? <><span className="text-muted-foreground">{files.length ? "File" : "Glob"}</span> <code className="break-all">{files[0] ?? globs[0]}</code></> :
                   [files.length && `${files.length} ${files.length === 1 ? "file" : "files"}`, globs.length && `${globs.length} ${globs.length === 1 ? "glob" : "globs"}`].filter(Boolean).join(" · ")}
             </div>
+            {([["Created", rule.created_at], ["Updated", rule.updated_at]] as const).map(([label, timestamp]) => (
+              <div key={label} className="text-xs text-muted-foreground">
+                <span className="settings-cell-label mb-1">{label}</span>
+                {timestamp ? <ListDate value={timestamp} /> : <>
+                  <span aria-hidden="true">—</span><span className="sr-only">No date recorded</span>
+                </>}
+              </div>
+            ))}
             <div className="text-xs text-muted-foreground">
               <span className="settings-cell-label mb-1">Status</span>
               <Switch aria-label={`Active rule ${name}`} checked={rule.active} disabled={save.isPending}
                 onCheckedChange={(active) => void persistRules(
-                  rules.map((item, i) => i === index ? { ...item, active } : item),
+                  { operation: "edit", index, rule: { ...editableRule(rule), active } },
                   active ? "Rule activated." : "Rule deactivated.",
                 )} />
             </div>

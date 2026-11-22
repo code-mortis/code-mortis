@@ -42,6 +42,7 @@ from code_mortis.schemas.analytics import (
 from code_mortis.schemas.code_graph import RepositoryPath
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
+    REVIEW_RULE_LIMIT,
     BackgroundCancelInput,
     BackgroundInput,
     BackgroundJobOut,
@@ -49,11 +50,12 @@ from code_mortis.schemas.common import (
     RepositoryInput,
     RepositoryOut,
     RepositoryPullFilters,
-    ReviewRule,
     ReviewRulesPreview,
     ReviewRulesPreviewInput,
     ReviewRulesUpdate,
     RunOut,
+    StoredReviewRule,
+    review_rules_adapter,
 )
 
 router = APIRouter()
@@ -207,17 +209,34 @@ def update_repository(repository_id: int, body: RepositoryInput, db: DB, user: A
     return repo_out(db, repo)
 
 
-@router.put("/repositories/{repository_id}/review-rules", response_model=list[ReviewRule])
+@router.put("/repositories/{repository_id}/review-rules", response_model=list[StoredReviewRule])
 def update_review_rules(repository_id: int, body: ReviewRulesUpdate, db: DB, user: SESSION_ADMIN):
     db.scalar(select(Repository).where(Repository.id == repository_id).with_for_update()
               .execution_options(populate_existing=True))
     repo, remote = repo_access(db, user, repository_id, write=True)
     if type(remote.get("id")) is not int or remote["id"] != repo.id:
         raise HTTPException(403, "GitHub repository identity changed.")
-    if repo.settings.get("review_rules", []) != [rule.model_dump() for rule in body.expected_rules]:
+    rules = review_rules_adapter.validate_python(repo.settings.get("review_rules", []))
+    if rules != body.expected_rules:
         raise HTTPException(409, "Review rules changed while you were editing. Reload settings and try again.")
-    repo.settings = {**repo.settings, "review_rules": [rule.model_dump() for rule in body.rules]}
-    return body.rules
+    change = body.change
+    if change.operation == "add":
+        if len(rules) >= REVIEW_RULE_LIMIT:
+            raise HTTPException(422, f"A repository can have at most {REVIEW_RULE_LIMIT} custom rules.")
+        timestamp = now()
+        rules.append(StoredReviewRule(**change.rule.model_dump(), created_at=timestamp, updated_at=timestamp))
+    elif change.index >= len(rules):
+        raise HTTPException(422, "Review rule index is out of range.")
+    elif change.operation == "delete":
+        del rules[change.index]
+    else:
+        current = rules[change.index]
+        updated = change.rule.model_dump()
+        if updated == current.for_execution():
+            return rules
+        rules[change.index] = StoredReviewRule(**updated, created_at=current.created_at, updated_at=now())
+    repo.settings = {**repo.settings, "review_rules": review_rules_adapter.dump_python(rules, mode="json")}
+    return rules
 
 
 @router.get("/repositories/{repository_id}/review-rules/files", response_model=list[RepositoryPath])
@@ -242,7 +261,7 @@ def preview_review_rules(repository_id: int, body: ReviewRulesPreviewInput, db: 
     shared = connection if connection and connection.kind == "api" else None
     secret = json.loads(unseal(shared.secret)) if shared else {}
     credentials = execution_credentials(db, repo.id, secret, token)
-    options = {**repo.settings, "review_rules": [rule.model_dump() for rule in body.rules]}
+    options = {**repo.settings, "review_rules": [rule.for_execution() for rule in body.rules]}
     ceiling = shared.options.get("prompt_token_ceiling") if shared else None
     try:
         return rules_preview.preview(repo.full_name, remote.get("default_branch"), token, body.path, options, credentials,

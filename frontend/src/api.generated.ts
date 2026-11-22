@@ -2095,6 +2095,15 @@ export interface components {
             /** Finished At */
             finished_at?: string | null;
         };
+        /** AddReviewRule */
+        AddReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "add";
+            rule: components["schemas"]["ReviewRule"];
+        };
         /** AnalyticsCount */
         AnalyticsCount: {
             /** Key */
@@ -3132,6 +3141,16 @@ export interface components {
             /** Auth Message */
             auth_message: string | null;
         };
+        /** DeleteReviewRule */
+        DeleteReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "delete";
+            /** Index */
+            index: number;
+        };
         /** DiagramEdge */
         DiagramEdge: {
             /** Source */
@@ -3147,6 +3166,17 @@ export interface components {
             label: string;
             /** Paths */
             paths: string[];
+        };
+        /** EditReviewRule */
+        EditReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "edit";
+            /** Index */
+            index: number;
+            rule: components["schemas"]["ReviewRule"];
         };
         /** ExplorerQuery */
         ExplorerQuery: {
@@ -4120,7 +4150,7 @@ export interface components {
             connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettingsWithSummary"];
             /** Review Rules */
-            review_rules?: components["schemas"]["ReviewRule"][];
+            review_rules?: components["schemas"]["StoredReviewRule"][];
             scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs
@@ -4251,14 +4281,14 @@ export interface components {
             /** Path */
             path: string;
             /** Rules */
-            rules: components["schemas"]["ReviewRule"][];
+            rules: components["schemas"]["StoredReviewRule"][];
         };
         /** ReviewRulesUpdate */
         ReviewRulesUpdate: {
-            /** Rules */
-            rules: components["schemas"]["ReviewRule"][];
+            /** Change */
+            change: components["schemas"]["AddReviewRule"] | components["schemas"]["EditReviewRule"] | components["schemas"]["DeleteReviewRule"];
             /** Expected Rules */
-            expected_rules: components["schemas"]["ReviewRule"][];
+            expected_rules: components["schemas"]["StoredReviewRule"][];
         };
         /** RunDetail */
         RunDetail: {
@@ -5109,6 +5139,31 @@ export interface components {
             /** Connection Id */
             connection_id?: string | null;
         };
+        /** StoredReviewRule */
+        StoredReviewRule: {
+            /** Name */
+            name: string;
+            /** Instructions */
+            instructions: string;
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
         /** SummaryAttemptOut */
         SummaryAttemptOut: {
             /** Id */
@@ -5787,7 +5842,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReviewRule"][];
+                    "application/json": components["schemas"]["StoredReviewRule"][];
                 };
             };
             /** @description Validation Error */

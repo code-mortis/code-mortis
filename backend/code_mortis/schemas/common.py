@@ -8,6 +8,7 @@ from pydantic import (
     UUID4,
     AliasChoices,
     AliasPath,
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -186,12 +187,37 @@ class ReviewRule(StrictModel):
         return self
 
 
-ReviewRules = Annotated[list[ReviewRule], Field(max_length=50)]
-_review_rules = TypeAdapter(ReviewRules)
+class StoredReviewRule(ReviewRule):
+    created_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
+    updated_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def for_execution(self):
+        return self.model_dump(exclude={"created_at", "updated_at"})
+
+
+REVIEW_RULE_LIMIT = 50
+ReviewRules = Annotated[list[StoredReviewRule], Field(max_length=REVIEW_RULE_LIMIT)]
+review_rules_adapter = TypeAdapter(ReviewRules)
+
+
+class AddReviewRule(StrictModel):
+    operation: Literal["add"]
+    rule: ReviewRule
+
+
+class EditReviewRule(StrictModel):
+    operation: Literal["edit"]
+    index: int = Field(ge=0, strict=True)
+    rule: ReviewRule
+
+
+class DeleteReviewRule(StrictModel):
+    operation: Literal["delete"]
+    index: int = Field(ge=0, strict=True)
 
 
 class ReviewRulesUpdate(StrictModel):
-    rules: ReviewRules
+    change: Annotated[AddReviewRule | EditReviewRule | DeleteReviewRule, Field(discriminator="operation")]
     expected_rules: ReviewRules
 
 
@@ -261,7 +287,7 @@ class RepoSettings(RunLimits):
         options = cls.model_validate({key: value for key, value in settings.items()
                                       if key not in {"project_summary", "review_rules"}}).model_dump()
         if rules := settings.get("review_rules"):
-            options["review_rules"] = _review_rules.dump_python(_review_rules.validate_python(rules))
+            options["review_rules"] = [rule.for_execution() for rule in review_rules_adapter.validate_python(rules)]
         return options
 
 

@@ -9679,15 +9679,24 @@ test("Mortis is saved without an engine selector", async ({ page }, info) => {
   });
 });
 
+function applyRuleChange(rules: Schema["StoredReviewRule"][], change: Schema["ReviewRulesUpdate"]["change"], time = at) {
+  if (change.operation === "add") return [...rules, { ...change.rule, created_at: time, updated_at: time }];
+  if (change.operation === "delete") return rules.filter((_, index) => index !== change.index);
+  return rules.map((rule, index) => index === change.index
+    ? { ...change.rule, ...(rule.created_at ? { created_at: rule.created_at } : {}), updated_at: time } : rule);
+}
+
 test("repository custom rules use the workspace width and persist confirmed changes", async ({ page }, info) => {
   const requests = await mock(page);
   const legacy = { rules: [{ path: "**/*.py", rule: "Keep old checks" }] };
   const oldRule = { name: "Old", instructions: "Old rule", glob: "", active: true };
   const keepRule = { name: "Keep", instructions: "Keep this rule", glob: "", active: true };
   const inactiveKeep = { ...keepRule, active: false };
+  const savedKeep = { ...inactiveKeep, updated_at: at };
   const newRule = { name: "Ownership", instructions: "Follow ownership checks.", glob: "", active: true,
     files: ["src/auth/session.py", "src/auth/token.py"], globs: ["src/**/*.py", "tests/auth/**/*.py"] };
-  let saved: Schema["ReviewRule"][] = [oldRule, keepRule];
+  const addedRule = { ...newRule, created_at: at, updated_at: at };
+  let saved: Schema["StoredReviewRule"][] = [oldRule, keepRule];
   let failToggle = false;
   let failDelete = false;
   let failEdit = false;
@@ -9710,7 +9719,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
       return route.fulfill({ status: 503, json: { detail: "The rule could not be saved. Try again." } });
     }
     saves.push(request);
-    saved = request.rules;
+    saved = applyRuleChange(saved, request.change);
     return route.fulfill({ json: saved });
   });
   await page.goto("/repositories/22/settings");
@@ -9728,7 +9737,16 @@ test("repository custom rules use the workspace width and persist confirmed chan
   const panel = page.getByRole("region", { name: "Custom rules", exact: true });
   await expect(panel.getByText("Legacy repository rules still apply.", { exact: false })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Test a path" })).toHaveCount(0);
-  await expect(panel.getByRole("list", { name: "Repository review rules" }).getByRole("listitem")).toHaveCount(2);
+  const list = panel.getByRole("list", { name: "Repository review rules" });
+  await expect(list.getByRole("listitem")).toHaveCount(2);
+  const icons = list.locator('svg.lucide-list-checks[aria-hidden="true"]');
+  await expect(icons).toHaveCount(2);
+  const iconOffsets = await icons.evaluateAll((elements) => elements.map((icon) => {
+    const bounds = icon.getBoundingClientRect();
+    const text = icon.nextElementSibling!.getBoundingClientRect();
+    return Math.abs(bounds.top + bounds.height / 2 - (text.top + text.height / 2));
+  }));
+  expect(iconOffsets.every((offset) => offset < 1)).toBe(true);
   expect(await panel.evaluate((element) => element.clientWidth === element.parentElement?.clientWidth)).toBe(true);
   await noOverflow(page);
   await panel.screenshot({ path: info.outputPath("custom-rules-list.png") });
@@ -9751,7 +9769,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page.locator('[data-sonner-toaster][data-y-position="bottom"][data-x-position="right"]')
     .getByText("Rule deactivated.", { exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
-  expect(saves).toEqual([{ expected_rules: [oldRule, keepRule], rules: [oldRule, inactiveKeep] }]);
+  expect(saves).toEqual([{ expected_rules: [oldRule, keepRule], change: { operation: "edit", index: 1, rule: inactiveKeep } }]);
   await selectRuleAction("Old", "Delete");
   await expect(confirm).toContainText("Delete Old from this repository?");
   await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
@@ -9769,7 +9787,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page.getByText("Rule deleted.", { exact: true })).toBeVisible();
   await expect(oldActions).toHaveCount(0);
   await expect(keepActive).not.toBeChecked();
-  expect(saves.at(-1)).toEqual({ expected_rules: [oldRule, inactiveKeep], rules: [inactiveKeep] });
+  expect(saves.at(-1)).toEqual({ expected_rules: [oldRule, savedKeep], change: { operation: "delete", index: 0 } });
 
   const add = panel.getByRole("button", { name: "Add rule", exact: true });
   const dialog = page.getByRole("dialog", { name: "Add rule", exact: true });
@@ -9800,7 +9818,7 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(page.getByText("Rule added.", { exact: true })).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await expect(keepActive).not.toBeChecked();
-  expect(saves.at(-1)).toEqual({ expected_rules: [inactiveKeep], rules: [inactiveKeep, newRule] });
+  expect(saves.at(-1)).toEqual({ expected_rules: [savedKeep], change: { operation: "add", rule: newRule } });
 
   await page.clock.install();
   await page.goto("/repositories/22/settings?tab=review-rules");
@@ -9833,8 +9851,8 @@ test("repository custom rules use the workspace width and persist confirmed chan
   await expect(editDialog).toHaveCount(0);
   await expect(ownershipActions).toBeFocused();
   await expect(keepActive).not.toBeChecked();
-  expect(saves.at(-1)).toEqual({ expected_rules: [inactiveKeep, newRule],
-    rules: [inactiveKeep, { ...newRule, instructions: "Check ownership on every call." }] });
+  expect(saves.at(-1)).toEqual({ expected_rules: [savedKeep, addedRule],
+    change: { operation: "edit", index: 1, rule: { ...newRule, instructions: "Check ownership on every call." } } });
   expect(requests).toEqual([]);
   await page.reload();
   await expect(panel.getByText("Check ownership on every call.", { exact: true })).toBeVisible();
@@ -9873,7 +9891,7 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
   await page.route("**/api/v1/repositories/22/review-rules", (route) => {
     const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
     writes.push(body);
-    return route.fulfill({ json: body.rules });
+    return route.fulfill({ json: applyRuleChange([legacy], body.change) });
   });
   await page.goto("/repositories/22/custom-rules");
   await page.getByRole("button", { name: "Actions for Auth" }).click();
@@ -9882,16 +9900,16 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
   await expect(dialog.getByRole("list", { name: "Selected globs" })).toContainText(legacy.glob);
   const files = dialog.getByLabel("Files", { exact: true });
   await expect(files).toHaveAttribute("aria-expanded", "false");
-  const modalHeight = await dialog.evaluate((element) => element.getBoundingClientRect().height);
+  const modalHeight = await dialog.evaluate((element) => element.clientHeight);
   await files.focus();
   const initialSuggestion = page.getByRole("option", { name: "docs/README.md", exact: true });
   await expect(initialSuggestion).toBeVisible();
-  expect(await dialog.evaluate((element) => element.getBoundingClientRect().height)).toBe(modalHeight);
+  expect(await dialog.evaluate((element) => element.clientHeight)).toBe(modalHeight);
   await files.fill("session");
   await expect(initialSuggestion).toHaveCount(0);
   const suggestion = page.getByRole("option", { name: "src/auth/session.py", exact: true });
   await expect(suggestion).toBeVisible();
-  expect(await dialog.evaluate((element) => element.getBoundingClientRect().height)).toBe(modalHeight);
+  expect(await dialog.evaluate((element) => element.clientHeight)).toBe(modalHeight);
   await expect(files).toHaveAttribute("aria-expanded", "true");
   await dialog.screenshot({ path: info.outputPath("custom-rule-targets.png") });
   await files.press("Escape");
@@ -9912,7 +9930,8 @@ test("repository custom rules suggest indexed exact files and keep legacy globs 
   await dialog.getByRole("button", { name: `Remove glob ${legacy.glob}`, exact: true }).click();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();
-  expect(writes).toEqual([{ expected_rules: [legacy], rules: [{ ...legacy, glob: "", files: ["docs/auth.md"], globs: ["src/auth/**/*.py"] }] }]);
+  expect(writes).toEqual([{ expected_rules: [legacy], change: { operation: "edit", index: 0,
+    rule: { ...legacy, glob: "", files: ["docs/auth.md"], globs: ["src/auth/**/*.py"] } } }]);
 });
 
 test("repository custom rules use shared filters and sort the display order", async ({ page }) => {
@@ -9922,13 +9941,13 @@ test("repository custom rules use shared filters and sort the display order", as
     { name: "Alpha", instructions: "Review build configuration", glob: "src/workflows/**", active: true },
     { name: "Beta", instructions: "Review API changes", glob: "", active: false },
   ];
-  let saved: Schema["ReviewRule"][] = original;
+  let saved: Schema["StoredReviewRule"][] = original;
   const writes: Schema["ReviewRulesUpdate"][] = [];
   await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, review_rules: saved }] }));
   await page.route("**/api/v1/repositories/22/review-rules", (route) => {
     const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
     writes.push(body);
-    saved = body.rules;
+    saved = applyRuleChange(saved, body.change);
     return route.fulfill({ json: saved });
   });
   await page.goto("/repositories/22/custom-rules");
@@ -9951,7 +9970,7 @@ test("repository custom rules use shared filters and sort the display order", as
   const alpha = panel.getByRole("switch", { name: "Active rule Alpha" });
   await alpha.click();
   await expect(alpha).not.toBeChecked();
-  expect(writes).toEqual([{ expected_rules: original, rules: [original[0], { ...original[1], active: false }, original[2]] }]);
+  expect(writes).toEqual([{ expected_rules: original, change: { operation: "edit", index: 1, rule: { ...original[1], active: false } } }]);
 
   await panel.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("menuitem", { name: "Status", exact: true }).click();
@@ -9973,6 +9992,75 @@ test("repository custom rules use shared filters and sort the display order", as
   await openNavigation(page);
   await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Pull requests", exact: true }))
     .toHaveAttribute("href", "/repositories/22");
+});
+
+test("repository custom rules sort by Updated and act on the saved row order", async ({ page }) => {
+  await mock(page);
+  const rule = (name: string) => ({ name, instructions: `Review ${name}.`, glob: "", active: true });
+  const old = rule("Undated first");
+  const created = "2026-10-04T00:00:00Z";
+  const newest = "2026-10-05T00:00:00.000002Z";
+  const longName = "Check repository permissions and verify the behavior for all routes that accept authentication tokens and API connection credentials";
+  const original = [
+    old,
+    { ...rule("Newest first"), created_at: created, updated_at: newest },
+    { ...rule(longName), updated_at: newest },
+    { ...rule("Oldest"), updated_at: "2026-10-05T00:00:00.000001Z" },
+    rule("Undated second"),
+  ];
+  let saved: Schema["StoredReviewRule"][] = original;
+  const writes: Schema["ReviewRulesUpdate"][] = [];
+  await page.route("**/api/v1/repositories", (route) => route.fulfill({ json: [{ ...repo, review_rules: saved }] }));
+  await page.route("**/api/v1/repositories/22/review-rules", (route) => {
+    const body: Schema["ReviewRulesUpdate"] = route.request().postDataJSON();
+    writes.push(body);
+    saved = applyRuleChange(saved, body.change);
+    return route.fulfill({ json: saved });
+  });
+  await page.goto("/repositories/22/custom-rules");
+  const panel = page.getByRole("region", { name: "Custom rules", exact: true });
+  const names = panel.getByRole("list", { name: "Repository review rules" }).getByRole("heading");
+  await expect(names).toHaveText(original.map(({ name }) => name));
+  const row = (name: string) => panel.getByRole("list", { name: "Repository review rules" }).getByRole("listitem")
+    .filter({ has: page.getByRole("heading", { name, exact: true }) });
+  const timestamps = row("Newest first").locator("time");
+  await expect(timestamps.nth(0)).toHaveAttribute("datetime", created);
+  await expect(timestamps.nth(1)).toHaveAttribute("datetime", newest);
+  await expect(row("Undated first").getByText("No date recorded", { exact: true })).toHaveCount(2);
+  const longHeading = names.filter({ hasText: longName });
+  await expect(longHeading).toHaveAttribute("title", longName);
+  expect(await longHeading.evaluate((heading) => {
+    const style = getComputedStyle(heading);
+    return heading.scrollWidth > heading.clientWidth && style.whiteSpace === "nowrap" && style.textOverflow === "ellipsis";
+  })).toBe(true);
+  await panel.getByRole("button", { name: "Sort by Created" }).click();
+  await page.getByRole("menuitemradio", { name: "Updated", exact: true }).click();
+  await expect(names).toHaveText(["Newest first", longName, "Oldest", "Undated first", "Undated second"]);
+  const sortAscending = panel.getByRole("button", { name: "Sort ascending" });
+  await expect(sortAscending).toHaveAttribute("title", "Newest first");
+  await sortAscending.click();
+  const sortDescending = panel.getByRole("button", { name: "Sort descending" });
+  await expect(sortDescending).toHaveAttribute("title", "Oldest first");
+  await expect(names).toHaveText(["Oldest", "Newest first", longName, "Undated first", "Undated second"]);
+
+  await panel.getByRole("button", { name: "Actions for Undated first", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Edit rule", exact: true });
+  await editor.getByLabel("Name", { exact: true }).fill("Just updated");
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(names).toHaveText(["Oldest", "Newest first", longName, "Just updated", "Undated second"]);
+  expect(writes).toEqual([{ expected_rules: original, change: { operation: "edit", index: 0, rule: { ...old, name: "Just updated" } } }]);
+  await sortDescending.click();
+  await expect(names).toHaveText(["Just updated", "Newest first", longName, "Oldest", "Undated second"]);
+  await page.reload();
+  await expect(panel.getByRole("button", { name: "Sort by Updated" })).toBeVisible();
+  await expect(names).toHaveText(["Just updated", "Newest first", longName, "Oldest", "Undated second"]);
+  await expect(row("Just updated").locator("time")).toHaveAttribute("datetime", at);
+  await panel.getByRole("button", { name: "Actions for Oldest", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("dialog", { name: "Delete rule?", exact: true }).getByRole("button", { name: "Delete rule", exact: true }).click();
+  await expect(names).toHaveText(["Just updated", "Newest first", longName, "Undated second"]);
+  expect(writes.at(-1)?.change).toEqual({ operation: "delete", index: 3 });
 });
 
 test("historical OCR reviews preserve origin and publication recovery without resuming inference", async ({ page }) => {
