@@ -111,7 +111,7 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
     focus: focus?.path ?? null, sourceOpen: !!selected,
   };
 
-  function selectNode(node: GraphNode) {
+  function selectNode(node: GraphNode, openSource = false) {
     if (node.kind === "folder") {
       setFilters((previous) => ({ ...previous, folder: node.path }));
       setFocus(null);
@@ -119,7 +119,7 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
     } else {
       setFocus(node);
       setDepth(1);
-      setSelected({ node, start: 0, previous: [] });
+      setSelected(openSource ? { node, start: 0, previous: [] } : null);
     }
     setSearch("");
     setQuery("");
@@ -160,7 +160,7 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
       <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
         <Combobox items={found.map((node) => node.path)} value={null} inputValue={search} filter={null} autoHighlight
           onInputValueChange={(value, event) => { if (event.reason === "input-change") setSearch(value); }}
-          onValueChange={(path) => { const node = path ? filesByPath.get(path) : undefined; if (node) selectNode(node); }}>
+          onValueChange={(path) => { const node = path ? filesByPath.get(path) : undefined; if (node) selectNode(node, true); }}>
           <ComboboxInput ref={searchInput} aria-label="Find a file" placeholder="Find a file…" maxLength={512}
             className="h-9 w-52 bg-card sm:w-60" showTrigger={false}>
             <InputGroupAddon align="inline-start"><Search aria-hidden="true" /></InputGroupAddon>
@@ -187,14 +187,7 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
           {([1, 2] as const).map((value) => <Button key={value} size="xs" variant={depth === value ? "outline" : "ghost"}
             aria-pressed={depth === value} onClick={() => setDepth(value)}>{value} {value === 1 ? "hop" : "hops"}</Button>)}
         </div>}
-        <div className="flex items-center gap-2">
-          <span className="inline-flex h-9 items-center gap-2 rounded-md border bg-card px-2.5 text-sm" title={commit}>
-            <GitBranch className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            {snapshot.branch && <span className="max-w-20 truncate font-medium sm:max-w-40">{snapshot.branch}</span>}
-            <code className="border-l pl-2 text-xs text-muted-foreground">{commit.slice(0, 7)}</code>
-          </span>
-          <GraphFilters filters={filters} focused={!!focus} onChange={setFilters} />
-        </div>
+        <GraphFilters filters={filters} focused={!!focus} onChange={setFilters} />
       </div>
     </div>
     {(snapshot.status === "partial" || (snapshot.observed_sha && snapshot.observed_sha !== commit) || graph?.mode === "folders" || graph?.truncated) && (
@@ -243,16 +236,23 @@ function GraphWorkspace({ base, scope, snapshot, commit, refresh }: { base: stri
         </div>
       </aside>}
     </div>
-    <div className={`fixed inset-x-0 bottom-0 z-10 bg-background px-5 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-8 ${sidebarOpen ? "lg:left-(--sidebar-width)" : ""}`}>
+    <footer className={`fixed inset-x-0 bottom-0 z-10 bg-background px-5 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-8 ${sidebarOpen ? "lg:left-(--sidebar-width)" : ""}`}>
       <div className="mx-auto flex min-h-9 max-w-6xl flex-wrap items-center justify-between gap-2">
-        {focus ? <div className="flex min-w-0 items-start gap-2">
-          <FileCode2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-primary" />
-          <div className="min-w-0"><p className="wrap-anywhere text-sm font-semibold">{filename(focus.path)}</p>
-            <p className="text-xs text-muted-foreground">{focus.outgoing} imports · {focus.incoming} imported by</p></div>
-        </div> : <span />}
+        <div className="flex min-w-0 items-center gap-3">
+          {focus && <div className="flex min-w-0 items-start gap-2">
+            <FileCode2 aria-hidden="true" className="mt-1 size-4 shrink-0 text-primary" />
+            <div className="min-w-0"><p className="wrap-anywhere text-sm font-semibold">{filename(focus.path)}</p>
+              <p className="text-xs text-muted-foreground">{focus.outgoing} imports · {focus.incoming} imported by</p></div>
+          </div>}
+          <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border bg-card px-2.5 text-sm" title={commit}>
+            <GitBranch className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            {snapshot.branch && <span className="max-w-20 truncate font-medium sm:max-w-40">{snapshot.branch}</span>}
+            <code className="border-l pl-2 text-xs text-muted-foreground">{commit.slice(0, 7)}</code>
+          </span>
+        </div>
         <div ref={setZoomControls} className="ml-auto" />
       </div>
-    </div>
+    </footer>
   </div>;
 }
 

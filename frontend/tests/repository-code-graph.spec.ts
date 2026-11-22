@@ -92,6 +92,29 @@ test("node colors use the three connection bands even in a small repository", as
   })).toBe(true);
 });
 
+test("clicking a node focuses its connections without opening source and keeps the revision beside the file", async ({ page }) => {
+  const calls = await mockRepository(page);
+  await page.route(`**/api/v1${base}/view`, (route) => route.fulfill({
+    json: graph({ nodes: [files[0]], edges: [], total_files: 1, total_links: 0 }),
+  }));
+  await page.goto(base);
+  const revision = page.getByText(commit.slice(0, 7), { exact: true });
+  const footer = page.locator("footer").filter({ has: revision });
+  await expect(footer.getByText("main", { exact: true })).toBeVisible();
+  const footerBox = (await footer.boundingBox())!;
+  expect(footerBox.y + footerBox.height).toBeCloseTo(page.viewportSize()!.height, 0);
+
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  await canvas(page).click();
+  await expect(page.getByText("3 files · 2 resolved imports")).toBeVisible();
+  await expect(footer.getByText("service.ts", { exact: true })).toBeVisible();
+  const imports = footer.getByText("1 imports · 1 imported by", { exact: true });
+  await expect(imports).toBeVisible();
+  expect((await revision.boundingBox())!.x).toBeGreaterThan((await imports.boundingBox())!.x);
+  await expect(page.getByRole("button", { name: "Close file" })).toHaveCount(0);
+  expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
+});
+
 test("file focus and source share an exact revision and the repository camera is restored", async ({ page }, info) => {
   const calls = await mockRepository(page);
   await page.goto(base);
@@ -102,7 +125,8 @@ test("file focus and source share an exact revision and the repository camera is
   await page.getByRole("button", { name: "Zoom out" }).click();
   const previousZoom = await zoom(page).innerText();
   const width = (await canvas(page).boundingBox())!.width;
-  await openFirstNode(page);
+  await page.getByRole("combobox", { name: "Find a file" }).fill("service.ts");
+  await page.getByRole("option", { name: /service.ts/ }).click();
   const panel = page.getByRole("complementary", { name: "service.ts" });
   await expect(panel.getByText("export const indexed = true;")).toBeVisible();
   await expect(page.getByRole("button", { name: "1 hop" })).toHaveAttribute("aria-pressed", "true");
@@ -169,7 +193,8 @@ test("bounded 5,000-file graph stays searchable beyond displayed folders", async
 test("access loss withholds the current graph and source", async ({ page }) => {
   await mockRepository(page, { denied: true });
   await page.goto(base);
-  await openFirstNode(page);
+  await page.getByRole("combobox", { name: "Find a file" }).fill("service.ts");
+  await page.getByRole("option", { name: /service.ts/ }).click();
   await expect(page.getByRole("alert")).toContainText("Graph access was revoked");
   await expect(canvas(page)).toHaveCount(0);
   await expect(page.getByLabel("Indexed source")).toHaveCount(0);

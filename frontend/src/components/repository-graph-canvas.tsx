@@ -255,7 +255,7 @@ export function RepositoryGraphCanvas({
   const activeNode = keyboard ? byId.get(keyboard) : undefined;
   return <>
     <canvas ref={canvas} data-testid="repository-code-graph-canvas" data-ready={ready && !layoutError} tabIndex={0}
-      aria-label="File dependency graph. Use arrow keys to select a node and Enter to open it."
+      aria-label="File dependency graph. Use arrow keys to select a node and Enter to focus its connections."
       className="absolute inset-0 size-full cursor-grab touch-none focus-visible:outline-2 focus-visible:outline-ring active:cursor-grabbing"
       onPointerDown={(event) => {
         if (event.button !== 0) return;
