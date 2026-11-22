@@ -3,6 +3,7 @@ import type { Schema } from "../src/api";
 
 const commit = "a".repeat(40), base = "/repositories/22/code-graph";
 const service = "src/service.ts", lastFile = "modules/file-04999.ts";
+const fileUrl = "/repositories/22/code/file?" + new URLSearchParams({ path: service, commit_sha: commit });
 const file = (path: string, incoming = 0, outgoing = 0): Schema["RepositoryGraphNode"] =>
   ({ id: `file:${path}`, kind: "file", path, language: "typescript", incoming, outgoing, file_count: 1 });
 const files = [
@@ -13,6 +14,13 @@ const edges = [{ source: files[1].id, target: files[0].id }, { source: files[0].
 const graph = (data: Partial<Schema["RepositoryGraphView"]> = {}): Schema["RepositoryGraphView"] => ({
   status: "ready", commit_sha: commit, observed_sha: commit, branch: "main", snapshot_id: "snapshot",
   mode: "files", nodes: files, edges, total_files: 4, total_links: 2, max_connections: 2, truncated: false, ...data,
+});
+const sourcePage = (start: number, path = service): Schema["GraphRead"] => ({
+  repository_id: 22, commit_sha: commit, snapshot_id: "snapshot", status: "ready", source_state: "available",
+  policy_digest: null, extractor_version: "test", capabilities: {}, definition_languages: [], gaps: [],
+  truncated: !start, next_cursor: start ? null : { offset: 0, start_byte: 18 },
+  items: [{ kind: "source", path, start_byte: start, end_byte: start + 18, start_line: start ? 2 : 1,
+    end_line: start ? 2 : 1, blob_sha: commit, text: start ? "// continued line\n" : "export const x=1;\n" }],
 });
 
 async function mockRepository(page: Page, options: { admin?: boolean; dense?: boolean; denied?: boolean; disabled?: boolean } = {}) {
@@ -47,6 +55,7 @@ async function mockRepository(page: Page, options: { admin?: boolean; dense?: bo
       else if (options.dense) body = graph({ nodes: denseFiles, edges: denseEdges, total_files: 5000, total_links: 20000, max_connections: 8 });
       else body = graph();
     } else if (path === `${base}/files`) body = { files: options.dense ? [file(lastFile)] : [files[0]], truncated: false };
+    else if (path === base + "/source") body = sourcePage(Number(url.searchParams.get("start_byte")));
     await route.fulfill({ json: body });
   });
   return calls;
@@ -60,8 +69,23 @@ async function openFirstNode(page: Page) {
   await canvas(page).press("Enter");
 }
 
-test("node colors use the three connection bands even in a small repository", async ({ page }) => {
+test("node colors and sizes share the three connection bands", async ({ page }) => {
   await mockRepository(page);
+  await page.route("**/api/v1" + base + "/view", (route) => route.fulfill({
+    json: graph({ nodes: [file(service, 3, 1), files[1], file(files[2].path, 2), files[3]], max_connections: 4 }),
+  }));
+  await page.addInitScript(() => {
+    const context = CanvasRenderingContext2D.prototype;
+    const { clearRect, arc } = context;
+    context.clearRect = function (...args) {
+      if (this.canvas.dataset.testid === "repository-code-graph-canvas") this.canvas.dataset.radii = "";
+      clearRect.apply(this, args);
+    };
+    context.arc = function (...args) {
+      if (this.canvas.dataset.radii !== undefined) this.canvas.dataset.radii += args[2] + " ";
+      arc.apply(this, args);
+    };
+  });
   await page.goto(base);
   await expect(canvas(page)).toHaveAttribute("data-ready", "true");
   await expect.poll(() => canvas(page).evaluate((element: HTMLCanvasElement) => {
@@ -85,10 +109,15 @@ test("node colors use the three connection bands even in a small repository", as
       return false;
     });
   })).toBe(true);
+  const radii = (await canvas(page).getAttribute("data-radii"))!.trim().split(" ").map(Number);
+  expect(radii).toHaveLength(4);
+  expect(radii[1]).toBe(radii[3]);
+  expect(radii[2] / radii[1]).toBeCloseTo(7.5 / 4.5);
+  expect(radii[0] / radii[1]).toBeCloseTo(11 / 4.5);
 });
 
-test("only the hovered connections are painted above the dots", async ({ page }) => {
-  await mockRepository(page);
+test("the overview raises hovered connections in the selected direction", async ({ page }) => {
+  const calls = await mockRepository(page);
   await page.route("**/api/v1" + base + "/view", (route) => route.fulfill({
     json: graph({ edges: [...edges, { source: files[1].id, target: files[2].id }], total_links: 3 }),
   }));
@@ -124,24 +153,42 @@ test("only the hovered connections are painted above the dots", async ({ page })
     return {
       back: drawn.slice(0, Math.max(0, drawn.indexOf("dot"))),
       front: drawn.slice(drawn.lastIndexOf("dot") + 1),
+      border: stroke("--border"),
       muted: stroke("--muted-foreground"),
       incoming: stroke("--muted-foreground", "dashed"),
       outgoing: stroke("--primary"),
     };
   });
   await expect(canvas(page)).toHaveAttribute("data-ready", "true");
-  await expect.poll(async () => (await paint()).back.length).toBe(3);
+  await expect.poll(async () => {
+    const { back, border } = await paint();
+    return back.length === 3 && back.every((stroke) => stroke === border);
+  }).toBe(true);
   expect((await paint()).front).toEqual([]);
   await canvas(page).hover();
   await expect(page.getByRole("tooltip")).toContainText("service.ts");
   await expect.poll(async () => {
-    const { back, front, muted, incoming, outgoing } = await paint();
-    return back.length === 1 && back[0] === muted
+    const { back, front, border, muted, incoming, outgoing } = await paint();
+    return back.length === 1 && back[0] === border
       && front.join("\n") === [incoming, muted, outgoing, outgoing].join("\n");
   }).toBe(true);
+  for (const direction of ["incoming", "outgoing"]) {
+    await page.getByRole("button", { name: "Filters" }).click();
+    await page.getByLabel("Import direction", { exact: true }).selectOption(direction);
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await canvas(page).hover();
+    await expect.poll(async () => {
+      const { back, front, border, muted, incoming, outgoing } = await paint();
+      const expected = direction === "incoming" ? [incoming, muted] : [outgoing, outgoing];
+      return back.length === 2 && back.every((stroke) => stroke === border)
+        && front.join("\n") === expected.join("\n");
+    }).toBe(true);
+  }
+  expect(calls.some((url) => url.pathname.endsWith(base + "/view") && url.search)).toBe(false);
 });
 
-test("the graph header holds Filters and settings and the toolbar holds the revision", async ({ page }) => {
+test("the graph toolbar places the revision before search and the counts at the right edge", async ({ page }) => {
   const calls = await mockRepository(page, { admin: true });
   await page.route(`**/api/v1${base}/view`, (route) => route.fulfill({
     json: graph({ nodes: [files[0]], edges: [], total_files: 1, total_links: 0 }),
@@ -159,8 +206,10 @@ test("the graph header holds Filters and settings and the toolbar holds the revi
   const badge = page.getByTitle(commit);
   await expect(badge.getByText(commit.slice(0, 7), { exact: true })).toBeVisible();
   const badgeBox = (await badge.boundingBox())!;
+  const searchBox = (await page.getByRole("combobox", { name: "Find a file" }).boundingBox())!;
   expect(badgeBox.y).toBeGreaterThan(settingsBox.y + settingsBox.height);
-  expect(badgeBox.x + badgeBox.width).toBeCloseTo(settingsBox.x + settingsBox.width, 0);
+  expect(badgeBox.x + badgeBox.width).toBeLessThan(searchBox.x);
+  expect(Math.abs(badgeBox.y - searchBox.y)).toBeLessThan(4);
 
   const footer = page.locator("footer");
   const footerBox = (await footer.boundingBox())!;
@@ -168,13 +217,92 @@ test("the graph header holds Filters and settings and the toolbar holds the revi
 
   await expect(canvas(page)).toHaveAttribute("data-ready", "true");
   await canvas(page).click();
-  await expect(page.getByText("3 files · 2 resolved imports")).toBeVisible();
+  const counts = page.getByText("3 files · 2 resolved imports", { exact: true });
+  await expect(counts).toBeVisible();
+  const countsBox = (await counts.boundingBox())!;
+  expect(countsBox.x + countsBox.width).toBeCloseTo(settingsBox.x + settingsBox.width, 0);
   await expect(footer.getByText("service.ts", { exact: true })).toBeVisible();
   const imports = footer.getByText("1 imports · 1 imported by", { exact: true });
   await expect(imports).toBeVisible();
   await expect(footer.getByTitle(commit)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Close file" })).toHaveCount(0);
   expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
+});
+
+test("the focused file link opens and pages through its exact indexed source", async ({ page }, info) => {
+  const calls = await mockRepository(page);
+  await page.route((url) => url.pathname.endsWith(base + "/source") && url.searchParams.get("start_byte") === "18",
+    (route) => route.fulfill({ status: 503, json: { detail: "Source is temporarily unavailable." } }), { times: 1 });
+  await page.goto(base);
+  await openFirstNode(page);
+  const footer = page.locator("footer");
+  const link = footer.getByRole("link", { name: "Open " + service });
+  await expect(link).toHaveAttribute("href", fileUrl);
+  const icon = (await link.locator("svg").boundingBox())!;
+  const imports = (await link.getByText("1 imports · 1 imported by", { exact: true }).boundingBox())!;
+  expect(imports.x).toBeCloseTo(icon.x, 0);
+  expect(imports.y).toBeGreaterThan(icon.y + icon.height);
+  expect(calls.some((url) => url.pathname.endsWith(base + "/source"))).toBe(false);
+  await link.hover();
+  await expect(link.getByText("service.ts", { exact: true })).toHaveCSS("text-decoration-line", "none");
+
+  await link.press("Enter");
+  await expect(page).toHaveURL((url) => url.pathname + url.search === fileUrl);
+  await expect(page.getByRole("heading", { name: "service.ts", exact: true })).toBeVisible();
+  const code = page.getByRole("region", { name: "Indexed source" });
+  await expect(code.getByText("export const x=1;")).toBeVisible();
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Open navigation" }).click();
+  await expect(page.getByRole("navigation", { name: "Repository sections" }).getByRole("link", { name: "Code graph", exact: true })).toHaveAttribute("aria-current", "page");
+  if (info.project.name === "mobile") await page.getByRole("button", { name: "Close navigation" }).click();
+
+  const next = page.getByRole("button", { name: "Next page" });
+  const previous = page.getByRole("button", { name: "Previous page" });
+  await next.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("Source is temporarily unavailable.");
+  await expect(code).toHaveCount(0);
+  await expect(next).toBeFocused();
+  await expect(next).toBeDisabled();
+  await expect(previous).toBeEnabled();
+  await page.getByRole("button", { name: "Retry source" }).click();
+  await expect(code.getByText("// continued line")).toBeVisible();
+  await expect(next).toBeDisabled();
+  await previous.press("Enter");
+  await expect(code.getByText("export const x=1;")).toBeVisible();
+  await expect(previous).toBeFocused();
+  const reads = calls.filter((url) => url.pathname.endsWith(base + "/source"));
+  expect(reads.map((url) => [url.searchParams.get("path"), url.searchParams.get("commit_sha"), url.searchParams.get("start_byte")]))
+    .toEqual([[service, commit, "0"], [service, commit, "18"], [service, commit, "0"]]);
+  await page.getByRole("link", { name: "Repository graph", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.pathname === base && !url.search);
+});
+
+test("the source viewer rejects a mismatched revision and handles denied access", async ({ page }) => {
+  await mockRepository(page);
+  let denied = false;
+  await page.route("**/api/v1" + base + "/source?*", (route) => denied
+    ? route.fulfill({ status: 403, json: { detail: "Graph access was revoked." } })
+    : route.fulfill({ json: { ...sourcePage(0), commit_sha: "b".repeat(40) } }));
+  await page.goto(fileUrl);
+  await expect(page.getByRole("heading", { name: "Source unavailable" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Indexed source" })).toHaveCount(0);
+  denied = true;
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText("Graph access was revoked.");
+  await expect(page.getByRole("region", { name: "Indexed source" })).toHaveCount(0);
+});
+
+test("the file viewer keeps repository IDs within the route and renders unknown extensions", async ({ page }) => {
+  const calls = await mockRepository(page);
+  await page.goto(fileUrl.replace("/22/", "/22%2F..%2F22/"));
+  await expect(page.getByRole("heading", { name: "File link is incomplete" })).toBeVisible();
+  await expect(page.locator('[data-slot="page-title"]').getByRole("link", { name: "Repositories", exact: true })).toHaveAttribute("href", "/repositories");
+  expect(calls.some((url) => url.pathname.endsWith("/source"))).toBe(false);
+
+  const path = "src/notes.__proto__";
+  await page.route("**/api/v1" + base + "/source?*", (route) => route.fulfill({ json: sourcePage(0, path) }));
+  await page.goto("/repositories/22/code/file?" + new URLSearchParams({ path, commit_sha: commit }));
+  await expect(page.getByRole("region", { name: "Indexed source" })).toContainText("export const x=1;");
+  await expect(page.locator("code.hljs")).toHaveCount(0);
 });
 
 test("graph filters offer indexed folders and languages even after filtering", async ({ page }) => {

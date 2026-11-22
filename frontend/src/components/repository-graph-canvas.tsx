@@ -2,16 +2,19 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { createPortal } from "react-dom";
 import { Maximize, Minus, Plus } from "lucide-react";
 import type { Schema } from "../api";
-import { nodeRadius, type LayoutFrame, type Point } from "../lib/repository-graph-layout";
+import type { LayoutFrame, Point } from "../lib/repository-graph-layout";
 import { Button } from "./ui/button";
 
 export type GraphView = Schema["RepositoryGraphView"];
 export type GraphNode = GraphView["nodes"][number];
-type PositionedNode = GraphNode & Point & { radius: number };
+export type GraphDirection = "both" | "incoming" | "outgoing";
+type GraphEdge = GraphView["edges"][number];
+type PositionedNode = GraphNode & Point & { band: 0 | 1 | 2; radius: number };
 type Size = { width: number; height: number };
 type Camera = Point & { scale: number; zoom: number };
 
 const nameOf = (node: GraphNode) => node.path.split("/").at(-1) || node.path;
+const bandRadii = [4.5, 7.5, 11];
 
 function fit(nodes: PositionedNode[], size: Size): Camera {
   if (!nodes.length) return { x: 0, y: 0, scale: 1, zoom: 1 };
@@ -30,11 +33,12 @@ function project(point: Point, camera: Camera, size: Size) {
 }
 
 export function RepositoryGraphCanvas({
-  graph, viewKey, focus, controls, onSelect,
+  graph, viewKey, focus, direction, controls, onSelect,
 }: {
   graph: GraphView;
   viewKey: string;
   focus: string | null;
+  direction: GraphDirection;
   controls: HTMLDivElement | null;
   onSelect: (node: GraphNode) => void;
 }) {
@@ -47,6 +51,12 @@ export function RepositoryGraphCanvas({
   const [hover, setHover] = useState<string | null>(null);
   const [keyboard, setKeyboard] = useState<string | null>(null);
   const [cameraVersion, setCameraVersion] = useState(0);
+  const sizedNodes = useMemo(() => graph.nodes.map((node) => {
+    const share = node.kind === "file" && graph.max_connections > 0
+      ? (node.incoming + node.outgoing) / graph.max_connections : 0;
+    const band: PositionedNode["band"] = share <= 1 / 3 ? 0 : share <= 2 / 3 ? 1 : 2;
+    return { ...node, band, radius: bandRadii[band] };
+  }), [graph.nodes, graph.max_connections]);
 
   useEffect(() => {
     const element = canvas.current;
@@ -60,9 +70,7 @@ export function RepositoryGraphCanvas({
 
   useEffect(() => {
     setHover(null);
-    const nodes = graph.nodes.map((node) => ({
-      id: node.id, incoming: node.incoming, outgoing: node.outgoing, position: cache.current.get(node.id),
-    }));
+    const nodes = sizedNodes.map(({ id, radius }) => ({ id, radius, position: cache.current.get(id) }));
     if (nodes.every((node) => node.position)) {
       setLayout({ graph, positions: Object.fromEntries(nodes.map((node) => [node.id, node.position!])), settled: true });
       return;
@@ -88,13 +96,13 @@ export function RepositoryGraphCanvas({
       worker.onerror = null;
       worker.terminate();
     };
-  }, [graph]);
+  }, [graph, sizedNodes]);
 
   const currentLayout = layout?.graph === graph ? layout : null;
-  const nodes = useMemo(() => graph.nodes.flatMap((node) => {
+  const nodes = useMemo(() => sizedNodes.flatMap((node) => {
     const point = currentLayout?.positions[node.id];
-    return point ? [{ ...node, ...point, radius: nodeRadius(node) }] : [];
-  }), [graph.nodes, currentLayout]);
+    return point ? [{ ...node, ...point }] : [];
+  }), [sizedNodes, currentLayout]);
   const ready = nodes.length === graph.nodes.length;
   const settled = ready && !!currentLayout?.settled;
   const camera = useMemo(() => {
@@ -124,22 +132,22 @@ export function RepositoryGraphCanvas({
       const foreground = style.getPropertyValue("--foreground").trim();
       const background = style.getPropertyValue("--background").trim();
       const muted = style.getPropertyValue("--muted-foreground").trim();
+      const border = style.getPropertyValue("--border").trim();
       const caution = style.getPropertyValue("--code-number").trim() || "#946020";
       const success = style.getPropertyValue("--code-added").trim() || "#58703b";
+      const bandColors = [muted, caution, success];
       const highlighted = hover ?? keyboard;
       const focused = nodes.find((node) => node.path === focus)?.id;
       const emphasis = highlighted ?? focused;
       const neighbors = new Set<string>();
       const scale = camera.scale * camera.zoom;
       const points = new Map(nodes.map((node) => [node.id, project(node, camera, size)]));
-      const raisedEdges: GraphView["edges"] = [];
-      const drawEdge = (edge: GraphView["edges"][number], raised = false) => {
+      const raisedEdges: { edge: GraphEdge; outgoing: boolean; incoming: boolean }[] = [];
+      const drawEdge = (edge: GraphEdge, outgoing: boolean, incoming: boolean, raised = false) => {
         const from = points.get(edge.source);
         const to = points.get(edge.target);
         const target = byId.get(edge.target);
         if (!from || !to || !target) return;
-        const outgoing = edge.source === emphasis;
-        const incoming = edge.target === emphasis;
         const angle = Math.atan2(to.y - from.y, to.x - from.x);
         const tangentX = Math.cos(angle);
         const tangentY = Math.sin(angle);
@@ -149,8 +157,8 @@ export function RepositoryGraphCanvas({
         const endX = to.x - tangentX * endOffset;
         const endY = to.y - tangentY * endOffset;
         ctx.lineWidth = 1;
-        ctx.globalAlpha = outgoing || incoming ? 0.9 : highlighted ? 0.1 : 0.32;
-        ctx.strokeStyle = outgoing ? primary : muted;
+        ctx.globalAlpha = raised ? 0.9 : highlighted ? 0.24 : 0.72;
+        ctx.strokeStyle = raised ? (outgoing ? primary : muted) : border;
         ctx.setLineDash(incoming ? [4, 4] : []);
         ctx.beginPath();
         ctx.moveTo(from.x + tangentX * startOffset, from.y + tangentY * startOffset);
@@ -166,17 +174,15 @@ export function RepositoryGraphCanvas({
         }
       };
       for (const edge of graph.edges) {
-        const outgoing = edge.source === emphasis;
-        const incoming = edge.target === emphasis;
+        const outgoing = direction !== "incoming" && edge.source === emphasis;
+        const incoming = direction !== "outgoing" && edge.target === emphasis;
         if (outgoing) neighbors.add(edge.target);
         if (incoming) neighbors.add(edge.source);
-        if (highlighted && (outgoing || incoming)) raisedEdges.push(edge);
-        else drawEdge(edge);
+        if (highlighted && (outgoing || incoming)) raisedEdges.push({ edge, outgoing, incoming });
+        else drawEdge(edge, outgoing, incoming);
       }
       for (const node of nodes) {
         const point = points.get(node.id)!;
-        const count = node.incoming + node.outgoing;
-        const share = node.kind === "file" && graph.max_connections > 0 ? count / graph.max_connections : 0;
         const emphasized = node.id === emphasis;
         ctx.beginPath();
         ctx.arc(point.x, point.y, node.radius * scale, 0, Math.PI * 2);
@@ -184,7 +190,7 @@ export function RepositoryGraphCanvas({
         ctx.fillStyle = background;
         ctx.fill();
         ctx.globalAlpha = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
-        ctx.fillStyle = share <= 1 / 3 ? muted : share <= 2 / 3 ? caution : success;
+        ctx.fillStyle = bandColors[node.band];
         ctx.fill();
         if (node.id === keyboard) {
           ctx.strokeStyle = primary;
@@ -192,7 +198,7 @@ export function RepositoryGraphCanvas({
           ctx.stroke();
         }
       }
-      for (const edge of raisedEdges) drawEdge(edge, true);
+      for (const { edge, outgoing, incoming } of raisedEdges) drawEdge(edge, outgoing, incoming, true);
       if (camera.zoom > 0.55) {
         const boxes: { x: number; y: number; width: number; height: number }[] = [];
         const order = (node: PositionedNode) => node.id === emphasis ? 0 : node.id === focused ? 1 : neighbors.has(node.id) ? 2 : 3;
@@ -235,7 +241,7 @@ export function RepositoryGraphCanvas({
     const observer = new MutationObserver(draw);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [byId, camera, focus, graph.edges, graph.max_connections, hover, keyboard, nodes, size]);
+  }, [byId, camera, direction, focus, graph.edges, hover, keyboard, nodes, size]);
 
   function moveCamera(next: Camera) {
     cameras.current.set(viewKey, next);

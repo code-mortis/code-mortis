@@ -1,18 +1,14 @@
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 
 export type Point = { x: number; y: number };
-export type LayoutNode = { id: string; incoming: number; outgoing: number; position?: Point };
+export type LayoutNode = { id: string; radius: number; position?: Point };
 export type LayoutEdge = { source: string; target: string };
 export type LayoutFrame = { positions: Record<string, Point>; settled: boolean };
-
-export function nodeRadius(node: Pick<LayoutNode, "incoming" | "outgoing">): number {
-  return Math.min(11, 4.5 + (node.incoming + node.outgoing) * 0.65);
-}
 
 export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[], publish: (frame: LayoutFrame) => void) {
   const particles = nodes.map((node) => ({
     id: node.id,
-    radius: nodeRadius(node),
+    radius: node.radius,
     fx: node.position?.x,
     fy: node.position?.y,
     x: node.position?.x ?? NaN,

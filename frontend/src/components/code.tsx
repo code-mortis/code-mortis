@@ -32,7 +32,9 @@ const extensions: Record<string, string> = {
 
 function fileLanguage(path = "") {
   const name = path.split("/").pop()!.toLowerCase();
-  return name === "dockerfile" ? "dockerfile" : extensions[name.split(".").pop()!] ?? "text";
+  const extension = name.split(".").pop()!;
+  if (name === "dockerfile") return "dockerfile";
+  return Object.hasOwn(extensions, extension) ? extensions[extension] : "text";
 }
 
 export function Code({ children, path, language, label = "Code snippet", startLine, lineNumbers, className }: {
