@@ -135,6 +135,28 @@ def test_repository_graph_checks_sensitive_metadata_and_the_entire_source(graph,
     assert "github-user-token" not in response.text
 
 
+def test_repository_graph_bounds_default_and_filtered_overviews(graph, client, monkeypatch):
+    monkeypatch.setattr(repository, "MAX_INDEXED_FILES", 3)
+    monkeypatch.setattr(repository, "MAX_OVERVIEW_LINKS", 1)
+    row, _ = run(service.enqueue_snapshot(22))
+    b, c, d = "pkg/b.py", "pkg/c.py", "pkg/d.py"
+    with transaction() as db:
+        db.execute(insert(CodeGraphFile), [indexed_file(row.id, path) for path in (b, c, d)])
+        db.execute(insert(CodeGraphImport), [stored_import(row.id, source, target) for source, target in
+                                           (("a.py", d), (b, c), (c, b), (d, c))])
+
+    for params, paths, total in [({}, ["a.py", b, c], 4), ({"folder": "pkg"}, [b, c, d], 3)]:
+        response = client.get(BASE + "/view", params=params)
+        assert response.status_code == 200, response.text
+        view = response.json()
+        assert view["truncated"] and view["mode"] == "files"
+        assert (view["total_files"], view["total_links"], view["max_connections"]) == (total, total, 3)
+        assert [node["path"] for node in view["nodes"]] == paths
+        assert view["edges"] == [{"source": f"file:{b}", "target": f"file:{c}"}]
+        node = next(node for node in view["nodes"] if node["path"] == c)
+        assert (node["incoming"], node["outgoing"]) == (2, 1)
+
+
 def test_repository_graph_shows_all_files_and_imports_in_a_5000_file_snapshot(graph, client):
     row, _ = run(service.enqueue_snapshot(22))
     paths = [f"pkg{i % 64:02}/sub/{i:04}.py" for i in range(4999)]

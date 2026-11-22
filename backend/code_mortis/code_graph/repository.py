@@ -9,6 +9,7 @@ from code_mortis.code_graph import retrieval, service, store
 from code_mortis.code_graph.explorer import source_checker
 from code_mortis.core.db import transaction
 from code_mortis.models import CodeGraphImport
+from code_mortis.schemas.code_graph import MAX_INDEXED_FILES
 from code_mortis.schemas.code_graph_explorer import GraphRead
 from code_mortis.schemas.repository_graph import (
     RepositoryGraphEdge,
@@ -20,6 +21,7 @@ from code_mortis.schemas.repository_graph import (
 
 MAX_NODES = 300
 MAX_LINKS = 1_000
+MAX_OVERVIEW_LINKS = 20_000
 MAX_SEARCH = 50
 
 
@@ -118,13 +120,16 @@ def graph_view(files, pairs, filters: RepositoryGraphFilters, result: Repository
         paths = [path for path in paths if path in linked or path == filters.focus]
 
     result.total_files, result.total_links = len(paths), len(links)
-    if filters.focus:
-        result.truncated = len(paths) > MAX_NODES
-        paths = paths[:MAX_NODES]
+    max_nodes = MAX_NODES if filters.focus else MAX_INDEXED_FILES
+    max_links = MAX_LINKS if filters.focus else MAX_OVERVIEW_LINKS
+    result.truncated = len(paths) > max_nodes
+    if result.truncated:
+        paths = paths[:max_nodes]
         shown = set(paths)
         links = [(a, b) for a, b in links if a in shown and b in shown]
-        result.truncated |= len(links) > MAX_LINKS
-        links = links[:MAX_LINKS]
+    if len(links) > max_links:
+        result.truncated = True
+        links = links[:max_links]
     result.nodes = [file_node(path, files[path].language, incoming, outgoing) for path in paths]
     result.edges = [RepositoryGraphEdge(source=f"file:{a}", target=f"file:{b}") for a, b in links]
     return result
