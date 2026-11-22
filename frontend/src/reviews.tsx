@@ -97,6 +97,7 @@ import { candidateOutcomes, findingSeverities, runFindingOutcomes } from "./lib/
 import { runDuration } from "./lib/run-duration";
 import { ExecutionDuration } from "./components/execution-duration";
 import { PRCode } from "./components/pr-code";
+import { PROverview } from "./components/pr-overview";
 
 function RunFeedback({ run, repositoryId, admin }: {
   run: Run; repositoryId: number; admin: boolean;
@@ -287,18 +288,23 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [restoring, setRestoring] = useState(false);
   const restoreTrigger = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const [urlTab, setTab] = useUrlTab("tab", ["findings", "resolved", "dismissed", "history", "code", "impact"], "findings");
+  const [params, setParams] = useSearchParams();
+  const findingLink = params.get("status") === "dismissed"
+    || ["finding", "q", "severity", "category", "ordering", "open_page"].some((key) => params.has(key));
+  const [urlTab, setTab] = useUrlTab("tab", ["overview", "findings", "resolved", "dismissed", "history", "code", "impact"], findingLink ? "findings" : "overview");
   const tab = urlTab === "impact" ? "code" : urlTab;
   const resolved = tab === "resolved";
   const dismissed = tab === "dismissed";
-  const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull");
+  const filters = useReviewFilters(resolved ? "resolved" : dismissed ? "dismissed" : "pull", {
+    enabled: tab !== "overview",
+    legacyTab: tab === "findings" && findingLink ? "findings" : undefined,
+  });
   const status = resolved ? "resolved" : dismissed ? "dismissed" : "open";
   const severities = filters.params.getAll("severity");
   const categories = filters.params.getAll("category");
   const search = filters.params.get("q") ?? "";
   const searchInput = useRef<HTMLInputElement>(null);
   const findingTrigger = useRef<HTMLButtonElement>(null);
-  const [params, setParams] = useSearchParams();
   const finding = params.get("finding");
   function setFinding(value: string | null) {
     const next = new URLSearchParams(params);
@@ -329,7 +335,7 @@ export function PullDetail({ admin }: { admin: boolean }) {
   });
   const savedCounts = useRef<{ id: typeof id; counts: Record<string, number> } | null>(null);
   if (findingsQuery.data) savedCounts.current = { id, counts: findingsQuery.data.status_counts };
-  const counts = ["code", "history"].includes(tab) ? query.data?.finding_counts : savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
+  const counts = ["overview", "code", "history"].includes(tab) ? query.data?.finding_counts : savedCounts.current?.id === id ? savedCounts.current?.counts : undefined;
   useEffect(() => {
     if (!["findings", "resolved", "dismissed"].includes(tab) || !findingsQuery.data || findingsQuery.isPlaceholderData) return;
     const next = new URLSearchParams(params);
@@ -435,12 +441,14 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList variant="page" aria-label="Pull request views" className="mb-4">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
         <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
         <TabsTrigger value="code">Code</TabsTrigger>
       </TabsList>
+      <TabsContent value="overview" className="min-w-0">{tab === "overview" && <PROverview key={`${pr.id}:${pr.base_sha}:${pr.head_sha}`} pr={pr} />}</TabsContent>
       <TabsContent value="code" className="min-w-0">{tab === "code" && <PRCode key={`${pr.id}:${pr.base_sha}:${pr.head_sha}`} prId={pr.id} repositoryId={repository.id} admin={admin} canWrite={can_write} renderFinding={(item) => <FindingPanel key={item.occurrence_id} id={item.finding_id} canWrite={can_write} snapshot={item.snapshot} headSha={item.source_sha ?? undefined} />} />}</TabsContent>
       {["findings", "resolved", "dismissed"].map((value) => <TabsContent key={value} value={value} className="min-w-0">
         <div className="mb-4">

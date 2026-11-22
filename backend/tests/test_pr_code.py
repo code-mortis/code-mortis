@@ -101,6 +101,103 @@ def test_graph_independent_diff_summary_and_immutable_findings(comparison, clien
         assert db.scalar(select(func.count()).select_from(Job)) == jobs
 
 
+def test_pull_overview_uses_completed_current_summary_before_analysis(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(PullRequest, "pr").description = "Author's **description**"
+        run = db.get(ReviewRun, "run")
+        run.report = None
+        run.status = "running"
+        run.config = {**run.config, "pipeline_version": 2}
+        run.stages = {"summary": {"status": "completed"}, "analysis": {"status": "pending"}}
+        diagram = {"nodes": [{"id": "notes", "label": "Notes", "paths": ["notes.md"]},
+                             {"id": "guide", "label": "Guide", "paths": ["guide.txt"]}],
+                   "edges": [{"source": "notes", "target": "guide"}]}
+        run.summary = {**run.summary, "result": {**run.summary["result"], "diagram": diagram}}
+        db.add(ReviewRun(id="newer", pr_id="pr", trigger="manual", dedup_key="newer", status="queued",
+                         base_sha=BASE, head_sha=HEAD, config=run.config, summary={"status": "pending"},
+                         created_at=now() + timedelta(minutes=1)))
+    response = client.get("/api/v1/pulls/pr/overview")
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    data = response.json()
+    assert data["description"] == "Author's **description**"
+    assert data["summary"]["run_id"] == "run"
+    assert data["summary"]["groups"][0]["id"] == "run:0"
+    assert data["summary"]["diagram"] == diagram
+    assert len(comparison[1]) == 1 and "/compare/" in comparison[1][0][0]
+    with transaction() as db:
+        db.get(ReviewRun, "run").report = {"manifest": {"coverage": {"selected": []}}}
+    assert client.get("/api/v1/pulls/pr/overview").json()["summary"]["run_id"] == "run"
+    assert client.get(URL + "?group=run:0").json()["group"] == "run:0"
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_pull_overview_checks_retry_policy_instead_of_original_analysis_coverage(comparison, client, ignored):
+    seed_summary_and_findings()
+    with transaction() as db:
+        run = db.get(ReviewRun, "run")
+        run.report = {"manifest": {"coverage": {"selected": [{"path": "obsolete.py"}]}}}
+        run.progress = {"summary_attempts": ["retry"], **({} if ignored else {"summary_retry": "retry"})}
+        db.get(PullRequest, "pr").ignored = ignored
+        db.get(Repository, 22).settings = {"exclusions": "obsolete.py"}
+        db.add(Job(id="retry", kind="generate_summary", status="done", payload={
+            "run_id": "run", "config": {"settings": {"exclusions": "obsolete.py"}},
+            "summary_attempt_result": run.summary,
+        }))
+    assert client.get("/api/v1/pulls/pr/overview").json()["summary"]["run_id"] == "run"
+    assert client.get(URL + "?group=run:0").json()["group"] == "run:0"
+
+
+def test_pull_overview_keeps_rename_paths_and_code_reuses_the_current_diff_row(comparison, client):
+    seed_summary_and_findings()
+    with transaction() as db:
+        run = db.get(ReviewRun, "run")
+        group = {"title": "Rename", "description": "Moves the file", "paths": ["old.py", "next.py"]}
+        diagram = {"nodes": [{"id": "rename", "label": "Rename", "paths": ["old.py"]}], "edges": []}
+        run.summary = {**run.summary, "result": {**run.summary["result"], "groups": [group], "diagram": diagram}}
+    summary = client.get("/api/v1/pulls/pr/overview").json()["summary"]
+    assert summary["groups"][0]["paths"] == ["old.py", "next.py"]
+    assert summary["diagram"] == diagram
+    code_group = client.get(URL + "?group=run:0").json()
+    assert code_group["group"] == "run:0" and [file["path"] for file in code_group["files"]] == ["next.py"]
+
+
+def test_pull_overview_masks_credentials_in_author_markdown_without_changing_storage(comparison, client):
+    description = "**Uses Bearer authentication**\n\nProvider example: provider-secret"
+    with transaction() as db:
+        db.get(PullRequest, "pr").description = description
+    response = client.get("/api/v1/pulls/pr/overview")
+    assert response.status_code == 200, response.text
+    assert response.json()["description"] == "**Uses Bearer [redacted]**\n\nProvider example: [redacted]"
+    with transaction() as db:
+        assert db.get(PullRequest, "pr").description == description
+
+
+@pytest.mark.parametrize("cause", ["stale_revision", "exclusions", "credential", "diagram_path"])
+def test_pull_overview_withholds_ineligible_summaries(comparison, client, cause):
+    seed_summary_and_findings()
+    with transaction() as db:
+        db.get(PullRequest, "pr").description = "Author text is separate"
+        run = db.get(ReviewRun, "run")
+        if cause == "stale_revision":
+            run.base_sha = "d" * 40
+        elif cause == "exclusions":
+            db.get(Repository, 22).settings = {"exclusions": "notes.md"}
+        elif cause == "credential":
+            run.summary = {**run.summary, "result": {**run.summary["result"], "narrative": "provider-secret"}}
+        else:
+            run.summary = {**run.summary, "result": {**run.summary["result"], "diagram": {
+                "nodes": [{"id": "hidden", "label": "Hidden", "paths": ["image.png"]}], "edges": [],
+            }}}
+    response = client.get("/api/v1/pulls/pr/overview")
+    assert response.status_code == 200, response.text
+    assert response.json()["description"] == "Author text is separate"
+    assert response.json()["summary"] is None
+    if cause == "diagram_path":
+        assert client.get(URL + "?group=run:0").json()["group"] == "run:0"
+
+
 def seed_current_verification(verdict="still_present"):
     seed_summary_and_findings()
     with transaction() as db:

@@ -47,13 +47,23 @@ def check_source(db, user, repo, text):
 
 
 def source_checker(db, user, repo):
+    redact = source_redactor(db, user, repo)
+    def check(text):
+        if redact(text) != text.replace("\r\n", "\n"):
+            raise HTTPException(422, "This content contains credential material and was withheld.")
+    return check
+
+
+def source_redactor(db, user, repo):
     # Load credentials once for a bounded batch, never retain them between requests.
     redact = saved_credential_redactor(db, [repo.id])
     tokens = [unseal(value) for value in (user.access_token, user.refresh_token) if value]
-    def check(text):
-        if redact(text) != text.replace("\r\n", "\n") or any(token in text for token in tokens):
-            raise HTTPException(422, "This content contains credential material and was withheld.")
-    return check
+    def mask(text):
+        for token in tokens:
+            if token:
+                text = text.replace(token, "[redacted]")
+        return redact(text)
+    return mask
 
 
 def finish(pr, repo, user, result, *, enabled=True):

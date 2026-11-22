@@ -600,6 +600,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pulls/{pr_id}/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pull Overview */
+        get: operations["pull_overview_api_v1_pulls__pr_id__overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pulls/{pr_id}/code": {
         parameters: {
             query?: never;
@@ -3990,6 +4007,26 @@ export interface components {
             /** Missing Token */
             missing_token?: string | null;
         };
+        /** PullOverview */
+        PullOverview: {
+            /** Base Sha */
+            base_sha: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Description */
+            description?: string | null;
+            summary?: components["schemas"]["PullOverviewSummary"] | null;
+        };
+        /** PullOverviewSummary */
+        PullOverviewSummary: {
+            /** Run Id */
+            run_id: string;
+            /** Narrative */
+            narrative: string;
+            /** Groups */
+            groups: components["schemas"]["CodeGroup"][];
+            diagram?: components["schemas"]["SummaryDiagram"] | null;
+        };
         /** PullRequestOut */
         PullRequestOut: {
             /** Id */
@@ -6593,6 +6630,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalyticsSecurity"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pull_overview_api_v1_pulls__pr_id__overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pr_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullOverview"];
                 };
             };
             /** @description Validation Error */

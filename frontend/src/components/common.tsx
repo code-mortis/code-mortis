@@ -1,5 +1,6 @@
 import { isValidElement, useId, useState, type ComponentProps, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { AlertCircle, ArrowUpRight, ChevronDown, Copy, LoaderCircle, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Badge, badgeRadius } from "./ui/badge";
@@ -185,22 +186,24 @@ export function Field({
     </div>
   );
 }
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, gfm = false }: { children: string; gfm?: boolean }) {
   return (
     <div className="markdown text-sm">
       <ReactMarkdown
         skipHtml
+        remarkPlugins={gfm ? [remarkGfm] : []}
         components={{
           img: () => null,
+          table: ({ children }) => <div className="my-3 overflow-x-auto"><table className="w-max max-w-full [&_td]:border [&_td]:px-3 [&_td]:py-1 [&_th]:border [&_th]:bg-muted [&_th]:px-3 [&_th]:py-1">{children}</table></div>,
           pre: ({ children }) => {
             if (!isValidElement<{ children?: ReactNode; className?: string }>(children)) return <pre>{children}</pre>;
             const language = children.props.className?.match(/\blanguage-([\w+-]+)/)?.[1];
             return <Code language={language}>{String(children.props.children ?? "")}</Code>;
           },
           a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer">
+            href ? <a href={href} target="_blank" rel="noreferrer">
               {children}
-            </a>
+            </a> : <>{children}</>
           ),
         }}
       >

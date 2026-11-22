@@ -327,6 +327,9 @@ def target_matches(run, head_sha, base_sha, state):
 
 
 def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
+    description = data.get("body")
+    if description is not None and (not isinstance(description, str) or "\x00" in description):
+        raise ValueError("Invalid GitHub pull request description.")
     created_at = data.get("created_at")
     if created_at is not None:
         created_at = datetime.fromisoformat(created_at)
@@ -348,6 +351,8 @@ def upsert_pr(db: Session, repo: Repository, data: dict) -> PullRequest:
     # Unchanged syncs must not reshuffle lists ordered by updated_at.
     if db.is_modified(pr, include_collections=False):
         pr.updated_at = now()
+    if "body" in data:
+        pr.description = description if description and description.strip() else None
     if created_at is not None:
         pr.created_at = created_at
     db.flush()

@@ -28,9 +28,22 @@ from code_mortis.schemas.common import (
     RunPage,
     StartRunInput,
 )
-from code_mortis.schemas.pr_code import CodeFile, CodeFileRequest, CodeNavigation, CodeOverview, CodeWorkspace
+from code_mortis.schemas.pr_code import (
+    CodeFile,
+    CodeFileRequest,
+    CodeNavigation,
+    CodeOverview,
+    CodeWorkspace,
+    PullOverview,
+)
 
 router = APIRouter()
+
+
+@router.get("/pulls/{pr_id}/overview", response_model=PullOverview)
+def pull_overview(pr_id: str, db: DB, user: SESSION_USER, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return explorer.respond(lambda: pr_code.pull_overview(db, user, pr_id))
 
 
 @router.get("/pulls/{pr_id}/code", response_model=CodeOverview)
