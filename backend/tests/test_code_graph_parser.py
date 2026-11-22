@@ -51,6 +51,67 @@ def test_phase0_fixtures():
     assert not Path("/tmp/CODE_GRAPH_REPO_EXECUTED").exists()
 
 
+@pytest.mark.parametrize("root", ["", "backend/", "packages/tool/src/"])
+def test_python_absolute_imports_resolve_exact_local_modules(root):
+    package = f"{root}code_mortis"
+    payload = request({
+        f"{package}/__init__.py": "",
+        f"{package}/schemas/__init__.py": "",
+        f"{package}/schemas/code_graph.py": "EXTRACTOR_VERSION = 'fixture'\n",
+        f"{package}/worker.py": "from code_mortis.schemas.code_graph import EXTRACTOR_VERSION\n"
+                                "from .schemas.code_graph import EXTRACTOR_VERSION\n"
+                                "from unavailable_package.schema import Example\n",
+    })
+    result = client.validate_result(payload, extract(payload))
+    assert [(item.specifier, item.target_path, item.provenance) for item in result.imports] == [
+        ("code_mortis.schemas.code_graph", f"{package}/schemas/code_graph.py", "absolute_path"),
+        (".schemas.code_graph", f"{package}/schemas/code_graph.py", "relative_path"),
+        ("unavailable_package.schema", None, "unresolved"),
+    ]
+    tampered = result.model_dump()
+    tampered["imports"][0]["target_path"] = f"{package}/__init__.py"
+    with pytest.raises(ValueError, match="unvalidated import target"):
+        client.validate_result(payload, CodeGraphResult.model_validate(tampered))
+
+
+def test_python_absolute_imports_skip_ambiguous_and_unavailable_modules():
+    payload = request({
+        "backend/code_mortis/__init__.py": "",
+        "backend/code_mortis/feature.py": "",
+        "other/code_mortis/__init__.py": "",
+        "other/code_mortis/feature.py": b"\xff",
+        "backend/code_mortis/only_here.py": "",
+        "backend/code_mortis/credential_settings.py": "",
+        "backend/code_mortis/worker.py": "import code_mortis.feature, code_mortis.only_here\n"
+                                         "import backend.code_mortis.only_here, backend.code_mortis.credential_settings\n",
+    })
+    result = client.validate_result(payload, extract(payload))
+    assert [(item.specifier, item.target_path) for item in result.imports] == [
+        ("code_mortis.feature", None),
+        ("code_mortis.only_here", None),
+        ("backend.code_mortis.only_here", "backend/code_mortis/only_here.py"),
+        ("backend.code_mortis.credential_settings", None),
+    ]
+
+
+def test_python_absolute_imports_skip_shadowed_nested_modules():
+    payload = request({
+        "module.py": "",
+        "module/nested.py": "",
+        "src/shadowed/__init__.py": "",
+        "shadowed/nested.py": "",
+        "unshadowed/nested.py": "",
+        "main.py": "import module, module.nested, shadowed.nested, unshadowed.nested\n",
+    })
+    result = client.validate_result(payload, extract(payload))
+    assert [(item.specifier, item.target_path) for item in result.imports] == [
+        ("module", "module.py"),
+        ("module.nested", None),
+        ("shadowed.nested", None),
+        ("unshadowed.nested", "unshadowed/nested.py"),
+    ]
+
+
 @pytest.mark.parametrize("text", ["def café():\n    pass", "\ufeffdef café():\r\n    pass\r\n", "\n\ndef café():\n    pass\n"])
 def test_exact_utf8_and_line_ranges(text):
     payload = request({"main.py": text})

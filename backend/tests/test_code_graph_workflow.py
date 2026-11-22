@@ -18,6 +18,7 @@ from code_mortis.core.db import engine, now, transaction
 from code_mortis.integrations import github
 from code_mortis.models import (
     CodeGraphFile,
+    CodeGraphImport,
     CodeGraphRepository,
     CodeGraphSnapshot,
     CodeGraphSymbol,
@@ -100,6 +101,27 @@ def claim(snapshot_id):
         job.status, job.lease_until = "running", now() + timedelta(seconds=600)
         job.attempts += 1
         return job.id, job.attempts
+
+
+def test_index_publishes_python_absolute_imports(graph):
+    root = graph["source"]
+    package = root / "backend/code_mortis"
+    (package / "schemas").mkdir(parents=True)
+    for name in ("__init__.py", "schemas/__init__.py", "schemas/code_graph.py"):
+        (package / name).touch()
+    (package / "worker.py").write_text("from code_mortis.schemas.code_graph import EXTRACTOR_VERSION\n")
+    fixture_git(root, "add", ".")
+    fixture_git(root, "commit", "-qm", "repository-local Python module")
+    graph["head"] = fixture_git(root, "rev-parse", "HEAD")
+
+    row, job = run(service.enqueue_snapshot(22))
+
+    assert (row.status, job.status) == ("ready", "done")
+    with transaction() as db:
+        edge = db.scalar(select(CodeGraphImport).where(CodeGraphImport.snapshot_id == row.id))
+        assert (edge.file_path, edge.target_path, edge.provenance) == (
+            "backend/code_mortis/worker.py", "backend/code_mortis/schemas/code_graph.py", "absolute_path",
+        )
 
 
 def test_default_off_and_existing_grants_do_not_enable_code(seed, monkeypatch):

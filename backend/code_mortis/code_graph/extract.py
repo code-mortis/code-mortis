@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 
 from tree_sitter import Language, Parser
 
-from code_mortis.code_graph.syntax import LANGUAGES, descendants, import_target
+from code_mortis.code_graph.syntax import LANGUAGES, descendants, import_target, python_module_targets
 from code_mortis.schemas.code_graph import (
     MAX_FACTS,
     MAX_REQUEST_BYTES,
@@ -217,11 +217,13 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
                                    diagnostic=diagnostic,
                                    line_count=source_lines(source), unresolved_calls=count))
     available = {item.path for item in files if item.status not in {"excluded", "failed"}}
+    python_modules = python_module_targets(item.path for item in files)
     for item in imports:
         language = LANGUAGES[PurePosixPath(item.file_path).suffix][0]
-        target = import_target(item.file_path, item.specifier, language, available)
+        target = import_target(item.file_path, item.specifier, language, available, python_modules=python_modules)
         if target is not None:
-            item.target_path, item.provenance = target, "relative_path"
+            item.target_path = target
+            item.provenance = "relative_path" if item.specifier.startswith(".") else "absolute_path"
     return CodeGraphResult(**request.model_dump(exclude={"files"}), files=files, symbols=symbols, imports=imports)
 
 

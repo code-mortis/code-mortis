@@ -6,12 +6,13 @@ import { Button } from "./ui/button";
 
 export const repositoryHeaderLink = "inline-flex min-h-11 items-center gap-1 rounded-sm no-underline outline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:min-h-6";
 export const repositoryActivityLink = `${repositoryHeaderLink} w-fit text-xs font-semibold text-primary`;
+const settingsLabels = { reviews: "Review settings", "scan-limits": "Scan settings", "code-graph": "Code graph settings" };
 
 export function RepositorySettingsShortcut({ repositoryId, section }: {
-  repositoryId: number;
-  section: "reviews" | "scan-limits";
+  repositoryId: number | string;
+  section: keyof typeof settingsLabels;
 }) {
-  const label = section === "reviews" ? "Review settings" : "Scan settings";
+  const label = settingsLabels[section];
   return <Button asChild variant="outline" size="icon-sm" className="size-11 sm:size-8 pointer-coarse:size-11">
     <Link to={`/repositories/${repositoryId}/settings?tab=${section}`} aria-label={label} title={label}>
       <Settings2 aria-hidden="true" />

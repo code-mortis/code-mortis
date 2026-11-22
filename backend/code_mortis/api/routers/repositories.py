@@ -3,13 +3,14 @@ from datetime import datetime, time, timedelta
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import Date, cast, func, select
 from sqlalchemy.orm import Session
 
 from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
 from code_mortis.api.presenters import latest_repository_reviews, repo_out
 from code_mortis.api_tokens import provenance as pat
+from code_mortis.code_graph import repository as repository_graph
 from code_mortis.code_graph import retrieval, store
 from code_mortis.code_graph import service as graphs
 from code_mortis.core.db import now, uid
@@ -40,7 +41,8 @@ from code_mortis.schemas.analytics import (
     RepositoryActivityFilters,
     RepositoryResult,
 )
-from code_mortis.schemas.code_graph import RepositoryPath
+from code_mortis.schemas.code_graph import MAX_INDEXED_FILE_BYTES, GitSha, RepositoryPath
+from code_mortis.schemas.code_graph_explorer import GraphRead
 from code_mortis.schemas.code_graph_status import CodeGraphStatus
 from code_mortis.schemas.common import (
     REVIEW_RULE_LIMIT,
@@ -56,6 +58,11 @@ from code_mortis.schemas.common import (
     ReviewRulesUpdate,
     RunOut,
     StoredReviewRule,
+)
+from code_mortis.schemas.repository_graph import (
+    RepositoryGraphFiles,
+    RepositoryGraphFilters,
+    RepositoryGraphView,
 )
 
 router = APIRouter()
@@ -282,6 +289,30 @@ def code_graph_status(repository_id: int, db: DB, user: SESSION_ADMIN):
     if type(remote.get("id")) is not int or remote["id"] != repo.id:
         raise HTTPException(403, "GitHub repository identity changed.")
     return graphs.status(db, repo)
+
+
+@router.get("/repositories/{repository_id}/code-graph/view", response_model=RepositoryGraphView)
+def repository_code_graph(repository_id: int, user: SESSION_USER, response: Response,
+                          filters: Annotated[RepositoryGraphFilters, Query()]):
+    response.headers["Cache-Control"] = "no-store"
+    return repository_graph.respond(lambda: repository_graph.view(repository_id, user.id, filters))
+
+
+@router.get("/repositories/{repository_id}/code-graph/files", response_model=RepositoryGraphFiles)
+def repository_code_graph_files(repository_id: int, user: SESSION_USER, response: Response,
+                                commit_sha: GitSha, query: Annotated[str, Query(min_length=1, max_length=512)]):
+    response.headers["Cache-Control"] = "no-store"
+    return repository_graph.respond(lambda: repository_graph.files(repository_id, user.id, commit_sha, query))
+
+
+@router.get("/repositories/{repository_id}/code-graph/source", response_model=GraphRead)
+def repository_code_graph_source(repository_id: int, user: SESSION_USER, response: Response,
+                                 commit_sha: GitSha, path: RepositoryPath,
+                                 start_byte: Annotated[int, Query(ge=0, le=MAX_INDEXED_FILE_BYTES)] = 0):
+    response.headers["Cache-Control"] = "no-store"
+    return repository_graph.respond(
+        lambda: repository_graph.source(repository_id, user.id, commit_sha, path, start_byte)
+    )
 
 
 @router.post("/repositories/{repository_id}/code-graph/retry", response_model=CodeGraphStatus, status_code=202)

@@ -26,7 +26,8 @@ MAX_VISITED = 500
 MAX_SOURCE_FILES = 10
 MAX_SOURCE_BYTES = 64 * 1024
 CAPABILITIES = {"defines": "supported", "imports_file": "partial", "callers": "unsupported", "references": "unsupported"}
-GAPS = ["Import resolution covers conservative Python and JavaScript/TypeScript relative paths.",
+GAPS = ["Import resolution covers Python relative imports and unambiguous repository-local absolute modules, "
+        "plus JavaScript/TypeScript relative paths. Other languages can have indexed files and definitions without resolved imports.",
         "File dependencies identify impact candidates, not resolved callers or confirmed defects."]
 
 

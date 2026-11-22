@@ -345,6 +345,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/code-graph/view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repository Code Graph */
+        get: operations["repository_code_graph_api_v1_repositories__repository_id__code_graph_view_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/code-graph/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repository Code Graph Files */
+        get: operations["repository_code_graph_files_api_v1_repositories__repository_id__code_graph_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/code-graph/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Repository Code Graph Source */
+        get: operations["repository_code_graph_source_api_v1_repositories__repository_id__code_graph_source_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/code-graph/retry": {
         parameters: {
             query?: never;
@@ -4105,6 +4156,73 @@ export interface components {
             /** Scans */
             scans: number;
         };
+        /** RepositoryGraphEdge */
+        RepositoryGraphEdge: {
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+        };
+        /** RepositoryGraphFiles */
+        RepositoryGraphFiles: {
+            /** Files */
+            files: components["schemas"]["RepositoryGraphNode"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** RepositoryGraphNode */
+        RepositoryGraphNode: {
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "file" | "folder";
+            /** Path */
+            path: string;
+            /** Language */
+            language: string | null;
+            /** Incoming */
+            incoming: number;
+            /** Outgoing */
+            outgoing: number;
+            /** File Count */
+            file_count: number;
+        };
+        /** RepositoryGraphView */
+        RepositoryGraphView: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "disabled" | "unavailable" | "ready" | "partial";
+            /** Commit Sha */
+            commit_sha: string | null;
+            /** Observed Sha */
+            observed_sha: string | null;
+            /** Snapshot Id */
+            snapshot_id: string | null;
+            /** Branch */
+            branch: string | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "files" | "folders";
+            /** Nodes */
+            nodes: components["schemas"]["RepositoryGraphNode"][];
+            /** Edges */
+            edges: components["schemas"]["RepositoryGraphEdge"][];
+            /** Truncated */
+            truncated: boolean;
+            /** Total Files */
+            total_files: number;
+            /** Total Links */
+            total_links: number;
+            /** Max Connections */
+            max_connections: number;
+        };
         /** RepositoryInput */
         RepositoryInput: {
             /** Enabled */
@@ -5944,6 +6062,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CodeGraphStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repository_code_graph_api_v1_repositories__repository_id__code_graph_view_get: {
+        parameters: {
+            query?: {
+                commit_sha?: string | null;
+                folder?: string | null;
+                language?: string | null;
+                focus?: string | null;
+                direction?: "both" | "incoming" | "outgoing";
+                depth?: number;
+                hide_unlinked?: boolean;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryGraphView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repository_code_graph_files_api_v1_repositories__repository_id__code_graph_files_get: {
+        parameters: {
+            query: {
+                commit_sha: string;
+                query: string;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryGraphFiles"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repository_code_graph_source_api_v1_repositories__repository_id__code_graph_source_get: {
+        parameters: {
+            query: {
+                commit_sha: string;
+                path: string;
+                start_byte?: number;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphRead"];
                 };
             };
             /** @description Validation Error */
