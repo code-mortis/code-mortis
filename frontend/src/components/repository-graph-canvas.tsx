@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Maximize, Minus, Plus } from "lucide-react";
 import type { Schema } from "../api";
@@ -15,6 +15,8 @@ type Camera = Point & { scale: number; zoom: number };
 
 const nameOf = (node: GraphNode) => node.path.split("/").at(-1) || node.path;
 const bandRadii = [4.5, 7.5, 11];
+const bandDelay = 160;
+const bandFadeDuration = 180;
 
 function fit(nodes: PositionedNode[], size: Size): Camera {
   if (!nodes.length) return { x: 0, y: 0, scale: 1, zoom: 1 };
@@ -44,10 +46,11 @@ export function RepositoryGraphCanvas({
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new Map<string, Point>());
+  const presentedFocus = useRef<string | null | undefined>(undefined);
   const cameras = useRef(new Map<string, Camera>());
   const drag = useRef<{ id: number; point: Point; moved: boolean; nodeId?: string } | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [layout, setLayout] = useState<(LayoutFrame & { graph: GraphView; failed?: boolean }) | null>(null);
+  const [layout, setLayout] = useState<(LayoutFrame & { graph: GraphView; failed?: boolean; revealTime?: number }) | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [keyboard, setKeyboard] = useState<string | null>(null);
   const [cameraVersion, setCameraVersion] = useState(0);
@@ -57,6 +60,16 @@ export function RepositoryGraphCanvas({
     const band: PositionedNode["band"] = share <= 1 / 3 ? 0 : share <= 2 / 3 ? 1 : 2;
     return { ...node, band, radius: bandRadii[band] };
   }), [graph.nodes, graph.max_connections]);
+  const { bandStarts, dotRevealDuration } = useMemo(() => {
+    const present = new Set<number>(sizedNodes.map((node) => node.band));
+    let offset = 0;
+    const bandStarts = [0, 1, 2].map((band) => {
+      const start = offset;
+      if (present.has(band)) offset += bandDelay;
+      return start;
+    });
+    return { bandStarts, dotRevealDuration: Math.max(0, present.size - 1) * bandDelay + bandFadeDuration };
+  }, [sizedNodes]);
 
   useEffect(() => {
     const element = canvas.current;
@@ -71,38 +84,73 @@ export function RepositoryGraphCanvas({
   useEffect(() => {
     setHover(null);
     const nodes = sizedNodes.map(({ id, radius }) => ({ id, radius, position: cache.current.get(id) }));
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const frameInterval = nodes.length > 1000 || graph.edges.length > 4000 ? 32 : 0;
+    let animation = 0;
+    const showLayout = (data: LayoutFrame) => {
+      const previousFocus = presentedFocus.current;
+      presentedFocus.current = focus;
+      const shouldReveal = previousFocus === undefined || (focus !== null && previousFocus !== focus);
+      if (reducedMotion.matches || !shouldReveal) {
+        setLayout({ graph, ...data });
+        return;
+      }
+      const start = performance.now();
+      let lastFrame = -Infinity;
+      const paintFrame = (time: number) => {
+        const revealTime = reducedMotion.matches ? dotRevealDuration : Math.max(0, Math.min(dotRevealDuration, time - start));
+        const finished = revealTime === dotRevealDuration;
+        if (finished || time - lastFrame >= frameInterval) {
+          lastFrame = time;
+          setLayout({ graph, ...data, revealTime });
+        }
+        animation = finished ? 0 : requestAnimationFrame(paintFrame);
+      };
+      paintFrame(start);
+    };
     if (nodes.every((node) => node.position)) {
-      setLayout({ graph, positions: Object.fromEntries(nodes.map((node) => [node.id, node.position!])), settled: true });
-      return;
+      showLayout({ positions: Object.fromEntries(nodes.map((node) => [node.id, node.position!])), settled: true });
+      return () => cancelAnimationFrame(animation);
     }
     const worker = new Worker(new URL("../lib/repository-graph-layout.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = ({ data }: MessageEvent<LayoutFrame>) => {
-      if (data.settled) {
-        for (const [id, position] of Object.entries(data.positions)) cache.current.set(id, position);
-        worker.terminate();
-      }
-      setHover(null);
-      setLayout({ graph, ...data });
+      if (!data.settled || nodes.some(({ id }) => !data.positions[id])) return;
+      for (const [id, position] of Object.entries(data.positions)) cache.current.set(id, position);
+      worker.terminate();
+      showLayout(data);
     };
     worker.onerror = () => {
+      cancelAnimationFrame(animation);
       setLayout((previous) => previous?.graph === graph
-        ? { ...previous, failed: true } : { graph, positions: {}, settled: false, failed: true });
+        ? { ...previous, revealTime: dotRevealDuration, failed: true } : { graph, positions: {}, settled: false, failed: true });
       worker.terminate();
     };
     const ids = new Set(nodes.map((node) => node.id));
     worker.postMessage({ nodes, edges: graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)) });
     return () => {
+      cancelAnimationFrame(animation);
       worker.onmessage = null;
       worker.onerror = null;
       worker.terminate();
     };
-  }, [graph, sizedNodes]);
+  }, [graph, sizedNodes, dotRevealDuration, focus]);
 
   const currentLayout = layout?.graph === graph ? layout : null;
+  const positions = currentLayout?.positions;
+  const revealTime = currentLayout?.revealTime ?? dotRevealDuration;
+  const bandMotion = useMemo(() => bandStarts.map((start) => {
+    const progress = Math.max(0, Math.min(1, (revealTime - start) / bandFadeDuration));
+    const remaining = progress - 1;
+    const overshoot = 2.3;
+    return {
+      opacity: progress * (2 - progress),
+      radiusScale: 1 + 0.28 * remaining ** 2 * ((overshoot + 1) * remaining + overshoot),
+    };
+  }), [bandStarts, revealTime]);
   const nodes = useMemo(() => sizedNodes.flatMap((node) => {
-    const point = currentLayout?.positions[node.id];
+    const point = positions?.[node.id];
     return point ? [{ ...node, ...point }] : [];
-  }), [sizedNodes, currentLayout]);
+  }), [sizedNodes, positions]);
   const ready = nodes.length === graph.nodes.length;
   const settled = ready && !!currentLayout?.settled;
   const camera = useMemo(() => {
@@ -114,7 +162,7 @@ export function RepositoryGraphCanvas({
   }, [cameraVersion, nodes, size, viewKey, settled]);
   const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = canvas.current;
     if (!element || !size.width || !size.height) return;
     const ctx = element.getContext("2d");
@@ -146,18 +194,23 @@ export function RepositoryGraphCanvas({
       const drawEdge = (edge: GraphEdge, outgoing: boolean, incoming: boolean, raised = false) => {
         const from = points.get(edge.source);
         const to = points.get(edge.target);
+        const source = byId.get(edge.source);
         const target = byId.get(edge.target);
-        if (!from || !to || !target) return;
+        if (!from || !to || !source || !target) return;
+        const sourceMotion = bandMotion[source.band];
+        const targetMotion = bandMotion[target.band];
+        const visibility = Math.min(sourceMotion.opacity, targetMotion.opacity);
+        if (!visibility) return;
         const angle = Math.atan2(to.y - from.y, to.x - from.x);
         const tangentX = Math.cos(angle);
         const tangentY = Math.sin(angle);
-        const startOffset = raised ? byId.get(edge.source)!.radius * scale : 0;
-        const endOffset = target.radius * scale + 2;
+        const startOffset = raised ? source.radius * sourceMotion.radiusScale * scale : 0;
+        const endOffset = target.radius * targetMotion.radiusScale * scale + 2;
         if (raised && Math.hypot(to.x - from.x, to.y - from.y) <= startOffset + endOffset) return;
         const endX = to.x - tangentX * endOffset;
         const endY = to.y - tangentY * endOffset;
         ctx.lineWidth = 1;
-        ctx.globalAlpha = raised ? 0.9 : highlighted ? 0.24 : 0.72;
+        ctx.globalAlpha = (raised ? 0.9 : highlighted ? 0.24 : 0.72) * visibility;
         ctx.strokeStyle = raised ? (outgoing ? primary : muted) : border;
         ctx.setLineDash(incoming ? [4, 4] : []);
         ctx.beginPath();
@@ -182,14 +235,17 @@ export function RepositoryGraphCanvas({
         else drawEdge(edge, outgoing, incoming);
       }
       for (const node of nodes) {
+        const { opacity: visibility, radiusScale } = bandMotion[node.band];
+        if (!visibility) continue;
         const point = points.get(node.id)!;
         const emphasized = node.id === emphasis;
         ctx.beginPath();
-        ctx.arc(point.x, point.y, node.radius * scale, 0, Math.PI * 2);
-        ctx.globalAlpha = 1;
+        ctx.arc(point.x, point.y, node.radius * radiusScale * scale, 0, Math.PI * 2);
+        ctx.globalAlpha = visibility;
         ctx.fillStyle = background;
         ctx.fill();
-        ctx.globalAlpha = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
+        const opacity = highlighted && !emphasized && !neighbors.has(node.id) ? 0.32 : emphasized ? 1 : 0.82;
+        ctx.globalAlpha = opacity * visibility;
         ctx.fillStyle = bandColors[node.band];
         ctx.fill();
         if (node.id === keyboard) {
@@ -199,7 +255,7 @@ export function RepositoryGraphCanvas({
         }
       }
       for (const { edge, outgoing, incoming } of raisedEdges) drawEdge(edge, outgoing, incoming, true);
-      if (camera.zoom > 0.55) {
+      if (camera.zoom > 0.55 && revealTime === dotRevealDuration) {
         const boxes: { x: number; y: number; width: number; height: number }[] = [];
         const order = (node: PositionedNode) => node.id === emphasis ? 0 : node.id === focused ? 1 : neighbors.has(node.id) ? 2 : 3;
         const ordered = [...nodes].sort((a, b) => order(a) - order(b) || (b.incoming + b.outgoing) - (a.incoming + a.outgoing));
@@ -237,11 +293,11 @@ export function RepositoryGraphCanvas({
       }
       ctx.globalAlpha = 1;
     };
-    const frame = requestAnimationFrame(draw);
+    draw();
     const observer = new MutationObserver(draw);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [byId, camera, direction, focus, graph.edges, hover, keyboard, nodes, size]);
+    return () => observer.disconnect();
+  }, [bandMotion, byId, camera, direction, dotRevealDuration, focus, graph.edges, hover, keyboard, nodes, revealTime, size]);
 
   function moveCamera(next: Camera) {
     cameras.current.set(viewKey, next);
@@ -260,13 +316,12 @@ export function RepositoryGraphCanvas({
   useEffect(() => {
     const element = canvas.current;
     if (!element) return;
-    function wheel(event: WheelEvent) {
+    const wheel = (event: WheelEvent) => {
       if (!ready) return;
       event.preventDefault();
-      if (!element) return;
       const rect = element.getBoundingClientRect();
       zoomBy(event.deltaY < 0 ? 1.15 : 1 / 1.15, { x: event.clientX - rect.left, y: event.clientY - rect.top });
-    }
+    };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
   });
@@ -280,9 +335,11 @@ export function RepositoryGraphCanvas({
     let closest: PositionedNode | undefined;
     let distance = Infinity;
     for (const node of nodes) {
+      const { opacity, radiusScale } = bandMotion[node.band];
+      if (!opacity) continue;
       const center = project(node, camera, size);
       const delta = Math.hypot(center.x - point.x, center.y - point.y);
-      if (delta < distance && delta <= Math.max(7, node.radius * camera.scale * camera.zoom + 3)) {
+      if (delta < distance && delta <= Math.max(7, node.radius * radiusScale * camera.scale * camera.zoom + 3)) {
         closest = node;
         distance = delta;
       }
@@ -333,11 +390,12 @@ export function RepositoryGraphCanvas({
       onBlur={() => setKeyboard(null)}
       onKeyDown={(event) => {
         if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
-          if (!nodes.length) return;
+          const visible = revealTime === dotRevealDuration ? nodes : nodes.filter((node) => bandMotion[node.band].opacity);
+          if (!visible.length) return;
           event.preventDefault();
-          const index = nodes.findIndex((node) => node.id === keyboard);
-          const next = index < 0 ? 0 : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + nodes.length) % nodes.length;
-          setKeyboard(nodes[next].id);
+          const index = visible.findIndex((node) => node.id === keyboard);
+          const next = index < 0 ? 0 : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + visible.length) % visible.length;
+          setKeyboard(visible[next].id);
         } else if ((event.key === "Enter" || event.key === " ") && activeNode) {
           event.preventDefault();
           setKeyboard(null);

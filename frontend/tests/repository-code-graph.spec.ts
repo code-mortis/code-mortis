@@ -48,8 +48,10 @@ async function mockRepository(page: Page, options: { admin?: boolean; dense?: bo
         if (options.denied) return route.fulfill({ status: 403, json: { detail: "Graph access was revoked." } });
         await new Promise((resolve) => setTimeout(resolve, 150));
         const incoming = url.searchParams.get("direction") === "incoming";
-        body = graph({ nodes: files.slice(0, incoming ? 2 : 3), edges: incoming ? edges.slice(0, 1) : edges,
-          total_files: incoming ? 2 : 3, total_links: incoming ? 1 : 2 });
+        body = files.some((node) => node.path === focus)
+          ? graph({ nodes: files.slice(0, incoming ? 2 : 3), edges: incoming ? edges.slice(0, 1) : edges,
+            total_files: incoming ? 2 : 3, total_links: incoming ? 1 : 2 })
+          : graph({ nodes: [], edges: [], total_files: 0, total_links: 0 });
       } else if (url.searchParams.get("folder") === "src/lib") body = graph({ nodes: [files[2]], edges: [], total_files: 1, total_links: 0 });
       else if (url.searchParams.get("folder") || url.searchParams.get("hide_unlinked")) body = graph({ nodes: files.slice(0, 3), total_files: 3 });
       else if (options.dense) body = graph({ nodes: denseFiles, edges: denseEdges, total_files: 5000, total_links: 20000, max_connections: 8 });
@@ -68,6 +70,122 @@ async function openFirstNode(page: Page) {
   await canvas(page).press("ArrowRight");
   await canvas(page).press("Enter");
 }
+
+test("settled graph dots pop on load and file navigation without moving their centers", async ({ page }) => {
+  type Circle = [x: number, y: number, radius: number];
+  await mockRepository(page);
+  let workers = 0;
+  page.on("worker", () => workers++);
+  await page.route("**/assets/repository-graph-layout.worker-*.js", (route) => route.fulfill({
+    contentType: "text/javascript",
+    body: `self.onmessage = ({ data }) => {
+      const positions = (x) => Object.fromEntries(data.nodes.map((node, i) =>
+        [node.id, { x: [x, -80, 80, 0][i], y: [0, -40, 40, 0][i] }]));
+      const preview = positions(-40);
+      self.previewLayout = () => self.postMessage({ positions: preview, settled: false });
+      self.settleLayout = () => self.postMessage({ positions: positions(40), settled: true });
+      self.postMessage({ positions: { [data.nodes[0].id]: preview[data.nodes[0].id] }, settled: true });
+    }`,
+  }));
+  await page.addInitScript(() => {
+    const context = CanvasRenderingContext2D.prototype;
+    const { clearRect, arc } = context;
+    const frames: Circle[][] = [];
+    Object.assign(window, { graphFrames: frames });
+    context.clearRect = function (...args) {
+      if (this.canvas.dataset.testid === "repository-code-graph-canvas") frames.push([]);
+      clearRect.apply(this, args);
+    };
+    context.arc = function (...args) {
+      if (this.canvas.dataset.testid === "repository-code-graph-canvas") {
+        frames.at(-1)?.push([args[0], args[1], args[2]]);
+      }
+      arc.apply(this, args);
+    };
+  });
+
+  for (const reducedMotion of ["no-preference", "reduce"] as const) {
+    await page.emulateMedia({ reducedMotion });
+    const [worker] = await Promise.all([page.waitForEvent("worker"), page.goto(base)]);
+    const frames = () => page.evaluate(() => (window as Window & { graphFrames?: Circle[][] }).graphFrames ?? []);
+    await expect(canvas(page)).toHaveAttribute("data-ready", "false");
+    expect((await frames()).every((frame) => frame.length === 0)).toBe(true);
+    await worker.evaluate("self.previewLayout()");
+    await expect(canvas(page)).toHaveAttribute("data-ready", "false");
+    await expect(canvas(page)).toHaveAttribute("data-settled", "false");
+    expect((await frames()).every((frame) => frame.length === 0)).toBe(true);
+    await worker.evaluate("setTimeout(self.settleLayout, 10)");
+    await expect(canvas(page)).toHaveAttribute("data-settled", "true");
+    await expect.poll(async () => {
+      const frame = (await frames()).at(-1);
+      return frame?.length === 4 ? frame[0][2] / frame[3][2] : 0;
+    }).toBeCloseTo(11 / 4.5, 7);
+    const visibleFrames = (await frames()).filter((frame) => frame.length);
+    expect([...new Set(visibleFrames.map((frame) => frame.length))]).toEqual(reducedMotion === "reduce" ? [4] : [1, 3, 4]);
+    const final = visibleFrames.at(-1)!;
+    for (const frame of visibleFrames) {
+      expect(frame.map(([x, y]) => [x, y])).toEqual(final.slice(-frame.length).map(([x, y]) => [x, y]));
+    }
+    for (const [index, circle] of final.entries()) {
+      const radii = visibleFrames.flatMap((frame) => {
+        const dot = frame.at(index - final.length);
+        return dot ? [dot[2]] : [];
+      });
+      if (reducedMotion === "reduce") {
+        expect(radii.every((radius) => radius === circle[2])).toBe(true);
+      } else {
+        expect(radii[0]).toBeLessThan(circle[2]);
+        expect(Math.max(...radii)).toBeGreaterThan(circle[2]);
+      }
+    }
+    if (reducedMotion === "reduce") continue;
+
+    const clearFrames = () => page.evaluate(() => (window as Window & { graphFrames?: Circle[][] }).graphFrames?.splice(0));
+    const searchForService = async () => {
+      await page.getByRole("combobox", { name: "Find a file" }).fill("service");
+      await page.getByRole("option", { name: /src\/service\.ts/ }).click();
+    };
+    const finishFocus = () => expect.poll(async () => {
+      const frame = (await frames()).at(-1);
+      return frame?.length === 3 ? frame[0][2] / frame[1][2] : 0;
+    }).toBeCloseTo(11 / 7.5, 7);
+    const expectFocusReveal = async (path: string) => {
+      await expect(page).toHaveURL((url) => url.pathname === base && url.searchParams.get("focus") === path);
+      await expect(page.getByRole("link", { name: "Open " + path, exact: true })).toBeVisible();
+      await expect.poll(async () => (await frames()).some((frame) => frame.length === 2)).toBe(true);
+      await finishFocus();
+      expect(workers).toBe(1);
+    };
+
+    await clearFrames();
+    await searchForService();
+    await expectFocusReveal(service);
+    const [x, y] = (await frames()).at(-1)![1];
+
+    await clearFrames();
+    await canvas(page).click({ position: { x, y } });
+    await expectFocusReveal(files[1].path);
+
+    await clearFrames();
+    await page.getByRole("button", { name: "2 hops" }).click();
+    await expect(page.getByRole("button", { name: "2 hops" })).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas(page)).toBeVisible();
+    await finishFocus();
+    expect((await frames()).filter((frame) => frame.length).every((frame) => frame.length === 3)).toBe(true);
+
+    await clearFrames();
+    await openFirstNode(page);
+    await expectFocusReveal(service);
+
+    await page.getByRole("button", { name: "Repository graph" }).click();
+    await expect(page).toHaveURL((url) => url.pathname === base && !url.search);
+    await expect(page.getByRole("link", { name: `Open ${service}`, exact: true })).toHaveCount(0);
+    await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+    await clearFrames();
+    await searchForService();
+    await expectFocusReveal(service);
+  }
+});
 
 test("node colors and sizes share the three connection bands", async ({ page }) => {
   await mockRepository(page);
@@ -195,6 +313,7 @@ test("the graph toolbar places the revision before search and the counts at the 
   }));
   await page.goto(base);
   const header = page.locator("header").filter({ has: page.getByRole("heading", { name: "Code graph", exact: true }) });
+  await expect(header.getByRole("heading", { name: "Code graph", exact: true })).toHaveCSS("font-size", "24px");
   const filters = header.getByRole("button", { name: "Filters" });
   const settings = header.getByRole("link", { name: "Code graph settings" });
   await expect(filters).toBeVisible();
@@ -333,6 +452,14 @@ test("graph filters offer indexed folders and languages even after filtering", a
   await expect(folder).toHaveValue("");
   await expect(language).toHaveValue("");
   await expect(page.getByText("4 files · 2 resolved imports")).toBeVisible();
+
+  await folder.fill("src");
+  await page.getByRole("option", { name: "src", exact: true }).click();
+  await expect(folder).toHaveValue("src");
+  await page.goBack();
+  await expect(folder).toHaveValue("src/lib");
+  await expect(language).toHaveValue("typescript");
+  await expect(page.getByText("1 files · 0 resolved imports")).toBeVisible();
 });
 
 test("selecting a search result focuses the file at the indexed revision without fetching source", async ({ page }, info) => {
@@ -375,7 +502,47 @@ test("selecting a search result focuses the file at the indexed revision without
   expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
 });
 
-test("the 5,000-file overview is interactive before it settles and stays searchable", async ({ page }, info) => {
+test("graph links restore the focused file, depth, and filters on reload and through browser history", async ({ page }) => {
+  const calls = await mockRepository(page);
+  const link = base + "?" + new URLSearchParams({ focus: service, depth: "2", folder: "src", direction: "incoming" });
+  const focusedFile = page.getByRole("link", { name: "Open " + service, exact: true });
+  const twoHops = page.getByRole("button", { name: "2 hops" });
+  await page.goto(link);
+  await expect(focusedFile).toBeVisible();
+  await expect(twoHops).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("2 files · 1 resolved imports")).toBeVisible();
+  expect(calls.some(({ searchParams }) => searchParams.get("commit_sha") === commit
+    && searchParams.get("focus") === service && searchParams.get("depth") === "2"
+    && searchParams.get("folder") === "src" && searchParams.get("direction") === "incoming")).toBe(true);
+
+  await page.getByRole("button", { name: "1 hop" }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("focus") === service && !url.searchParams.has("depth"));
+  await page.getByRole("button", { name: "Repository graph" }).click();
+  await expect(page).toHaveURL((url) => !url.searchParams.has("focus") && url.searchParams.get("folder") === "src");
+  await expect(focusedFile).toHaveCount(0);
+
+  await page.goBack();
+  await expect(focusedFile).toBeVisible();
+  await expect(page.getByRole("button", { name: "1 hop" })).toHaveAttribute("aria-pressed", "true");
+  await page.goBack();
+  await expect(page).toHaveURL((url) => url.pathname + url.search === link);
+  await expect(twoHops).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(page.getByText("2 files · 1 resolved imports")).toBeVisible();
+  await expect(twoHops).toHaveAttribute("aria-pressed", "true");
+  await page.goForward();
+  await expect(focusedFile).toBeVisible();
+  await expect(page.getByRole("button", { name: "1 hop" })).toHaveAttribute("aria-pressed", "true");
+
+  await page.goto(base + "?" + new URLSearchParams({ focus: "src/deleted file.ts" }));
+  await expect(page.getByText("File not in the index")).toBeVisible();
+  await page.getByRole("button", { name: "Repository graph" }).click();
+  await expect(page).toHaveURL((url) => url.pathname === base && !url.search);
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true");
+  expect(calls.some((url) => url.pathname.endsWith(`${base}/source`))).toBe(false);
+});
+
+test("the 5,000-file overview waits for the settled layout and stays searchable", async ({ page }, info) => {
   test.setTimeout(45_000);
   const calls = await mockRepository(page, { dense: true });
   const workerScript = "**/assets/repository-graph-layout.worker-*.js";
@@ -390,6 +557,8 @@ test("the 5,000-file overview is interactive before it settles and stays searcha
     await Promise.all([page.waitForRequest(workerScript), page.goto(base, { waitUntil: "domcontentloaded" })]);
     await expect(page.getByText("5000 files · 20000 resolved imports")).toBeVisible();
     await expect(canvas(page)).toHaveAttribute("data-ready", "false");
+    await expect(page.getByText("Arranging files…")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Zoom out" })).toBeDisabled();
     const wheelAllowed = await canvas(page).evaluate((element) => element.dispatchEvent(new WheelEvent("wheel", {
       deltaY: -120, bubbles: true, cancelable: true,
     })));
@@ -397,13 +566,11 @@ test("the 5,000-file overview is interactive before it settles and stays searcha
   } finally {
     releaseWorker();
   }
-  await expect(canvas(page)).toHaveAttribute("data-ready", "true", { timeout: 15_000 });
-  await expect(canvas(page)).toHaveAttribute("data-settled", "false");
+  await expect(canvas(page)).toHaveAttribute("data-ready", "true", { timeout: 30_000 });
+  await expect(canvas(page)).toHaveAttribute("data-settled", "true");
   await expect(zoom(page)).toHaveText("100%");
   const overviewMs = Date.now() - start;
   await page.getByRole("button", { name: "Zoom out" }).click();
-  await expect(zoom(page)).toHaveText("83%");
-  await expect(canvas(page)).toHaveAttribute("data-settled", "true", { timeout: 30_000 });
   await expect(zoom(page)).toHaveText("83%");
   if (info.project.name === "desktop") await page.screenshot({ path: info.outputPath("repository-code-graph.png") });
   await openFirstNode(page);

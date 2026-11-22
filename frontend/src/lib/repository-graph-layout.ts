@@ -33,9 +33,6 @@ export function positionGraph(nodes: LayoutNode[], edges: LayoutEdge[], publish:
         if ("vy" in node && typeof node.vy === "number") node.vy -= node.y * spring;
       }
     });
-  const stages = nodes.length > 300 || edges.length > 1000 ? [12, 48, 100] : [160];
-  for (const [index, ticks] of stages.entries()) {
-    simulation.tick(ticks);
-    publish({ positions: Object.fromEntries(particles.map(({ id, x, y }) => [id, { x, y }])), settled: index === stages.length - 1 });
-  }
+  simulation.tick(160);
+  publish({ positions: Object.fromEntries(particles.map(({ id, x, y }) => [id, { x, y }])), settled: true });
 }
