@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { ChartNoAxesCombined, House, GitPullRequest, LoaderCircle, Settings, ShieldCheck, X } from "lucide-react";
+import { ChartNoAxesCombined, House, GitPullRequest, ListChecks, LoaderCircle, Settings, ShieldCheck, X } from "lucide-react";
 import { useWorkspaceNavigation } from "../hooks/use-workspace-navigation";
 import { getInboxReturn } from "../lib/inbox-filters";
 import { getRepositoryReturn } from "../lib/navigation";
@@ -33,6 +33,7 @@ export function AppSidebar({ admin }: { admin: boolean }) {
     { key: "overview", label: "Overview", path: base + "/overview", icon: House },
     { key: "analytics", label: "Analytics", path: base + "/analytics", icon: ChartNoAxesCombined },
     { key: "pulls", label: "Pull requests", path: pullPath, icon: GitPullRequest },
+    ...(admin ? [{ key: "custom-rules", label: "Custom rules", path: base + "/custom-rules", icon: ListChecks }] : []),
     { key: "security", label: "Security", path: `/security/repositories/${repository.id}`, icon: ShieldCheck },
     ...(admin ? [{ key: "settings", label: "Repository settings", path: base + "/settings", icon: Settings }] : []),
   ];

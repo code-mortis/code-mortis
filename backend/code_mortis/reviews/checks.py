@@ -338,5 +338,6 @@ def rerequest(db: Session, body: dict, delivery_id: str):
             run.status, run.error, run.blocked_reason, run.failure_reason = "queued", None, None, None
             enqueue(db, "review", {"run_id": run.id})
         else:
-            create_run(db, pr, repo, "manual", actor, connection.id)
+            create_run(db, pr, repo, "manual", actor, connection.id,
+                       original_rules_from=run if run.engine == "mortis" else None)
     delivery.handled_at = now()

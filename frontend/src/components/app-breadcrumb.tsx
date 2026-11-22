@@ -34,6 +34,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
   const overviewRoute = useMatch("/repositories/:repositoryId/overview");
   const analyticsRoute = useMatch("/repositories/:repositoryId/analytics");
   const repositorySettingsRoute = useMatch("/repositories/:repositoryId/settings");
+  const customRulesRoute = useMatch("/repositories/:repositoryId/custom-rules");
   const pullListRoute = useMatch("/repositories/:repositoryId");
   const pull = detail.error ? undefined : detail.data?.pull_request;
   const security = securityDetail.error ? undefined : securityDetail.data;
@@ -53,8 +54,8 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
     crumbs.push({ label: repo.full_name.split("/").at(-1) || repo.full_name, to: repositoryPath + "/overview", state: returnState });
     if (overviewRoute || analyticsRoute) {
       crumbs.push({ label: analyticsRoute ? "Analytics" : "Overview", to: path });
-    } else if (repositorySettingsRoute && admin) {
-      crumbs.push({ label: "Repository settings", to: path });
+    } else if ((repositorySettingsRoute || customRulesRoute) && admin) {
+      crumbs.push({ label: customRulesRoute ? "Custom rules" : "Repository settings", to: path });
     } else if (securityPath) {
       crumbs.push({ label: "Security", to: `/security/repositories/${repo.id}` });
       if (securityScanRoute) crumbs.push({ label: security?.scan?.head_sha ? `Scan · ${security.scan.head_sha.slice(0, 7)}` : "Security scan", to: path });
@@ -63,7 +64,7 @@ export function AppBreadcrumb({ admin }: { admin: boolean }) {
       if (pull) crumbs.push({ label: `#${pull.number}`, to: `/pulls/${pull.id}`, state: returnState });
       if (path.startsWith("/runs/")) crumbs.push({ label: "Review run", to: path });
     }
-  } else if (path === "/repositories" || pullListRoute || repositorySettingsRoute || overviewRoute || analyticsRoute) {
+  } else if (path === "/repositories" || pullListRoute || repositorySettingsRoute || customRulesRoute || overviewRoute || analyticsRoute) {
     crumbs.push({ label: analyticsRoute ? "Analytics" : overviewRoute ? "Overview" : "Repositories", to: path });
   } else if (organizationRoute) {
     crumbs.push({ label: organizationRoute.params.owner ?? "Repositories", to: path });

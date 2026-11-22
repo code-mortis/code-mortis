@@ -64,7 +64,8 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
              "rule": unit.rule, "path": unit.path, "old_path": unit.old_path}, credentials, stopped))
              for group in plan.batches for unit in group}
     redacted_plan = replace(plan, batches=[[units[unit.key] for unit in group] for group in plan.batches])
-    redacted_options = context.sanitize(dict(options), credentials, stopped)
+    redacted_options = context.sanitize({key: value for key, value in options.items() if key != "review_rules"},
+                                        credentials, stopped)
     redacted_options["max_output_tokens"] = analysis.output_token_limit(output_token_policy)
     graphs = context.sanitize(graph_by_path, credentials, stopped) if graph_by_path else None
     engine_credentials = {key: value for key, value in credentials.items() if key != "redaction_rules"}

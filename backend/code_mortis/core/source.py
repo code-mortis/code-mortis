@@ -47,9 +47,10 @@ def repository_path(value):
     return value
 
 
-def read_source(repo, env, sha, path, stopped, *, git=git):
+def read_source(repo, env, sha, path, stopped, *, git=git, literal=False):
     repository_path(path)
-    entry = git(repo, env, "ls-tree", "-z", sha, "--", path, stopped=stopped)
+    flags = ("--literal-pathspecs",) if literal else ()
+    entry = git(repo, env, *flags, "ls-tree", "-z", sha, "--", path, stopped=stopped)
     if (not re.match(r"^100(?:644|755) blob [0-9a-f]{40}\t", entry)
         or entry.rstrip("\0\n").partition("\t")[2] != path):
         raise ValueError(f"The source file {path!r} is missing or is not a regular file in commit {sha}. Check the original and current code manually.")

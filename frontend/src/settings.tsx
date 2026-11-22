@@ -255,8 +255,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
   const savedProjectSummary = useRef(repo.settings.project_summary ?? null);
   const expectedBackground = useRef<string>(undefined);
   const expectedProjectSummary = useRef<string | null>(undefined);
+  const { rules: _legacyRules, ...editableSettings } = repo.settings;
   const [settings, setSettings] = useState({
-    ...repo.settings,
+    ...editableSettings,
     analysis_engine: "mortis" as const,
     timeout_seconds: repo.settings.timeout_seconds ?? null,
     token_budget: repo.settings.token_budget ?? null,
@@ -281,15 +282,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
     verification_token_budget: repo.scan_settings?.verification_token_budget ?? null,
   });
   const savedScanSettings = useRef(scanSettings);
-  const [rules, setRules] = useState(
-    repo.settings.rules ? JSON.stringify(repo.settings.rules, null, 2) : "",
-  );
-  const initialRulesOpen = useRef(!!rules);
-  const rulesDisclosure = useRef<HTMLDetailsElement>(null);
-  const rulesInput = useRef<HTMLTextAreaElement>(null);
   const saveBar = useRef<HTMLElement>(null);
   const [invalidLimitDrafts, setInvalidLimitDrafts] = useState<ReadonlySet<string>>(() => new Set());
-  const draft = { enabled, codeGraphEnabled, graphDraft, connection, settings, scanSettings, rules };
+  const draft = { enabled, codeGraphEnabled, graphDraft, connection, settings, scanSettings };
   const [savedDraft, setSavedDraft] = useState(draft);
   const dirty = JSON.stringify(draft) !== JSON.stringify(savedDraft) || invalidLimitDrafts.size > 0;
   useEffect(() => {
@@ -326,99 +321,85 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
     });
   }
   return (
-    <form
-      aria-label="Repository settings"
-      className="space-y-6"
-      onFocus={(event) => {
-        const bar = saveBar.current;
-        if (bar && !bar.contains(event.target)
-          && event.target.getBoundingClientRect().bottom > bar.getBoundingClientRect().top) {
-          event.target.scrollIntoView({ block: "center" });
-        }
-      }}
-      onInvalidCapture={(event) => {
-        event.preventDefault();
-        const invalid = event.currentTarget.querySelector<HTMLInputElement>(":invalid");
-        if (!invalid || invalid !== event.target) return;
-        const field = invalid.getAttribute("aria-hidden") === "true"
-          ? invalid.parentElement?.querySelector<HTMLInputElement>('input[role="combobox"]') ?? invalid
-          : invalid;
-        const target = invalid.closest<HTMLElement>("[data-settings-section]")?.dataset.settingsSection;
-        setError(new Error(invalid.validationMessage));
-        revealInvalidField(field, target);
-      }}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setError(undefined);
-        let nextRules: unknown = null;
-        try {
-          if (rules.trim()) nextRules = parseObject(rules, "Rules");
-        } catch (e) {
-          setError(e);
-          if (rulesDisclosure.current) rulesDisclosure.current.open = true;
-          if (rulesInput.current) revealInvalidField(rulesInput.current, "reviews");
-          return;
-        }
-        const scanSettingsChanged = JSON.stringify(scanSettings) !== JSON.stringify(savedScanSettings.current);
-        const { token_budget, timeout_seconds, concurrency, ...scanOptions } = scanSettings;
-        const changedScanOptions = Object.fromEntries(Object.entries(scanOptions)
-          .filter(([key, value]) => value !== savedScanSettings.current[key as keyof typeof scanOptions]));
-        try {
-          const { background, project_summary: summaryDraft, ...nextSettings } = settings;
-          const project_summary = summaryDraft?.trim() || null;
-          const contextChanged = savedBackground.current !== background;
-          const summaryChanged = savedProjectSummary.current !== project_summary;
-          await action.mutateAsync({
-            path: `/repositories/${repo.id}`,
-            method: "PUT",
-            body: {
-              enabled,
-              code_graph_enabled: codeGraphEnabled,
-              code_graph_limits: graphLimits,
-              connection_id: connection || null,
-              ...(contextChanged ? { expected_background: expectedBackground.current ?? savedBackground.current } : {}),
-              ...(summaryChanged ? { expected_project_summary: expectedProjectSummary.current === undefined
-                ? savedProjectSummary.current : expectedProjectSummary.current } : {}),
-              ...(scanSettingsChanged ? { scan_settings: { token_budget, timeout_seconds, concurrency, ...changedScanOptions } } : {}),
-              settings: {
-                ...nextSettings,
-                ...(contextChanged ? { background } : {}),
-                ...(summaryChanged ? { project_summary } : {}),
-                concurrency: settings.concurrency,
-                rules: nextRules,
-              },
-            },
-          });
-          if (contextChanged) {
-            savedBackground.current = background;
-            expectedBackground.current = background;
-          }
-          if (summaryChanged) {
-            savedProjectSummary.current = project_summary;
-            expectedProjectSummary.current = project_summary;
-          }
-          if (contextGeneration && (contextChanged || summaryChanged || generatedDraft.current)) {
-            const state = { ...location.state };
-            delete state.contextGeneration;
-            navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state });
-          }
-          if (scanSettingsChanged) savedScanSettings.current = scanSettings;
-          setSavedDraft(draft);
-          if (nextRules === null && rulesDisclosure.current && rulesInput.current?.value === rules
-            && document.activeElement !== rulesInput.current) {
-            rulesDisclosure.current.open = false;
-          }
-          toast.success("Repository settings saved.", { position: "top-right" });
-        } catch (e) {
-          setError(e);
-        }
-      }}
-    >
+    <div className="space-y-6">
       <PageTitle title="Repository settings" />
       <div className="grid gap-6 border-t pt-6 lg:grid-cols-[192px_minmax(0,1fr)] lg:gap-8">
         <SettingsNavigation label="Repository settings sections" value={section}
           items={sections.map((item) => ({ ...item, to: `?${sectionSearch(item.value)}`, state: location.state }))} />
-        <div className="min-w-0 max-w-2xl">
+        <form
+          aria-label="Repository settings"
+          className="min-w-0 max-w-2xl"
+          onFocus={(event) => {
+            const bar = saveBar.current;
+            if (bar && !bar.contains(event.target)
+              && event.target.getBoundingClientRect().bottom > bar.getBoundingClientRect().top) {
+              event.target.scrollIntoView({ block: "center" });
+            }
+          }}
+          onInvalidCapture={(event) => {
+            event.preventDefault();
+            const invalid = event.currentTarget.querySelector<HTMLInputElement>(":invalid");
+            if (!invalid || invalid !== event.target) return;
+            const field = invalid.getAttribute("aria-hidden") === "true"
+              ? invalid.parentElement?.querySelector<HTMLInputElement>('input[role="combobox"]') ?? invalid
+              : invalid;
+            const target = invalid.closest<HTMLElement>("[data-settings-section]")?.dataset.settingsSection;
+            setError(new Error(invalid.validationMessage));
+            revealInvalidField(field, target);
+          }}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setError(undefined);
+            const scanSettingsChanged = JSON.stringify(scanSettings) !== JSON.stringify(savedScanSettings.current);
+            const { token_budget, timeout_seconds, concurrency, ...scanOptions } = scanSettings;
+            const changedScanOptions = Object.fromEntries(Object.entries(scanOptions)
+              .filter(([key, value]) => value !== savedScanSettings.current[key as keyof typeof scanOptions]));
+            try {
+              const { background, project_summary: summaryDraft, ...nextSettings } = settings;
+              const project_summary = summaryDraft?.trim() || null;
+              const contextChanged = savedBackground.current !== background;
+              const summaryChanged = savedProjectSummary.current !== project_summary;
+              await action.mutateAsync({
+                path: `/repositories/${repo.id}`,
+                method: "PUT",
+                body: {
+                  enabled,
+                  code_graph_enabled: codeGraphEnabled,
+                  code_graph_limits: graphLimits,
+                  connection_id: connection || null,
+                  ...(contextChanged ? { expected_background: expectedBackground.current ?? savedBackground.current } : {}),
+                  ...(summaryChanged ? { expected_project_summary: expectedProjectSummary.current === undefined
+                    ? savedProjectSummary.current : expectedProjectSummary.current } : {}),
+                  ...(scanSettingsChanged ? { scan_settings: { token_budget, timeout_seconds, concurrency, ...changedScanOptions } } : {}),
+                  settings: {
+                    ...nextSettings,
+                    ...(contextChanged ? { background } : {}),
+                    ...(summaryChanged ? { project_summary } : {}),
+                    concurrency: settings.concurrency,
+                  },
+                },
+              });
+              if (contextChanged) {
+                savedBackground.current = background;
+                expectedBackground.current = background;
+              }
+              if (summaryChanged) {
+                savedProjectSummary.current = project_summary;
+                expectedProjectSummary.current = project_summary;
+              }
+              if (contextGeneration && (contextChanged || summaryChanged || generatedDraft.current)) {
+                const state = { ...location.state };
+                delete state.contextGeneration;
+                navigate(`${location.pathname}${location.search}${location.hash}`, { replace: true, state });
+              }
+              if (scanSettingsChanged) savedScanSettings.current = scanSettings;
+              setSavedDraft(draft);
+              toast.success("Repository settings saved.", { position: "top-right" });
+            } catch (e) {
+              setError(e);
+            }
+          }}
+        >
           <section hidden={section !== "reviews"} data-settings-section="reviews" aria-labelledby={`${id}-reviews`} className="space-y-6">
             <div>
               <h2 id={`${id}-reviews`} className="text-xl font-semibold tracking-tight">Pull request reviews</h2>
@@ -507,24 +488,6 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                   </div>
                   <Switch id={`${id}-resolve`} aria-describedby={`${id}-resolve-hint`} checked={settings.auto_resolve ?? false} onCheckedChange={(value) => change("auto_resolve", value)} className="mt-0.5 shrink-0" />
                 </div>
-                <details ref={rulesDisclosure} open={initialRulesOpen.current}>
-                  <summary className="cursor-pointer rounded-lg p-5 text-sm font-medium">Custom review rules</summary>
-                  <div className="space-y-3 px-5 pb-5">
-                    <label htmlFor={`${id}-rules-json`} className="sr-only">Custom review rules (JSON)</label>
-                    <p id={`${id}-rules-hint`} className="text-xs leading-relaxed text-muted-foreground">
-                      Leave blank to use rules from the trusted base revision.
-                    </p>
-                    <Textarea
-                      ref={rulesInput}
-                      id={`${id}-rules-json`}
-                      aria-describedby={`${id}-rules-hint`}
-                      rows={6}
-                      className="min-h-40 max-h-96 resize-y font-mono text-xs"
-                      value={rules}
-                      onChange={(e) => setRules(e.target.value)}
-                    />
-                  </div>
-                </details>
               </div>
             </section>
             <section aria-labelledby={`${id}-review-output`} className="space-y-3">
@@ -796,9 +759,9 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
               </Button>
             </div>
           </footer>
-        </div>
+        </form>
       </div>
-    </form>
+    </div>
   );
 }
 

@@ -1,13 +1,23 @@
 import json
 from datetime import datetime
+from operator import not_
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    UUID4,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from code_mortis.core import file_policy
 from code_mortis.core.ordering import CandidateOrdering, FindingOrdering
-from code_mortis.schemas.code_graph import CodeGraphLimits
+from code_mortis.schemas.code_graph import CodeGraphLimits, RepositoryPath
 
 NATIVE_REVIEW_INSTRUCTIONS = (
     "Review the assigned code for actionable defects using the supplied review rules. "
@@ -149,6 +159,87 @@ class ScanSettings(ScanLimits):
 ProjectSummary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]
 
 
+class ReviewRule(StrictModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    instructions: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    glob: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+    files: list[RepositoryPath] = Field(default_factory=list, max_length=20, exclude_if=not_)
+    globs: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20, exclude_if=not_,
+    )
+    active: bool = Field(default=True, strict=True)
+
+    @model_validator(mode="after")
+    def bounded_globs(self):
+        from code_mortis.reviews.planning import MAX_RULE_ALTERNATIVES, _brace_patterns
+
+        patterns = [self.glob, *self.globs] if self.glob else self.globs
+        if len(patterns) > 20:
+            raise ValueError("A review rule can have at most 20 glob patterns.")
+        alternatives = 0
+        for pattern in patterns:
+            alternatives += len(_brace_patterns(pattern))
+            if alternatives > MAX_RULE_ALTERNATIVES:
+                raise ValueError("Review rule glob patterns have too many alternatives.")
+        return self
+
+
+class StoredReviewRule(ReviewRule):
+    rule_id: UUID4 | None = Field(default=None, exclude_if=lambda value: value is None)
+    created_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
+    updated_at: AwareDatetime | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    def for_execution(self):
+        return self.model_dump(exclude={"rule_id", "created_at", "updated_at"})
+
+
+REVIEW_RULE_LIMIT = 50
+ReviewRules = Annotated[list[StoredReviewRule], Field(max_length=REVIEW_RULE_LIMIT)]
+
+
+class AddReviewRule(StrictModel):
+    operation: Literal["add"]
+    rule: ReviewRule
+
+
+class EditReviewRule(StrictModel):
+    operation: Literal["edit"]
+    index: int = Field(ge=0, strict=True)
+    rule: ReviewRule
+
+
+class DeleteReviewRule(StrictModel):
+    operation: Literal["delete"]
+    index: int = Field(ge=0, strict=True)
+
+
+class ReviewRulesUpdate(StrictModel):
+    change: Annotated[AddReviewRule | EditReviewRule | DeleteReviewRule, Field(discriminator="operation")]
+    expected_rules: ReviewRules
+
+
+class ReviewRulesPreviewInput(StrictModel):
+    path: str = Field(min_length=1, max_length=4096)
+    rules: ReviewRules
+
+
+class AppliedReviewRule(StrictModel):
+    name: str
+    source: Literal["mortis", "repository", "legacy_settings", "trusted_base", "workspace"]
+    glob: str = ""
+    files: list[str] = Field(default_factory=list, exclude_if=not_)
+    globs: list[str] = Field(default_factory=list, exclude_if=not_)
+
+
+class ReviewRulesPreview(StrictModel):
+    branch: str
+    base_sha: str
+    reviewable: bool
+    matches: list[AppliedReviewRule]
+    instructions: str
+    rule_size_exceeds_limit: bool = False
+
+
 class RepoSettings(RunLimits):
     analysis_engine: Literal["mortis"] = "mortis"
     assessment_token_budget: int | None = Field(default=None, ge=1000, le=5000000)
@@ -190,7 +281,8 @@ class RepoSettings(RunLimits):
 
     @classmethod
     def for_execution(cls, settings):
-        return cls.model_validate({key: value for key, value in settings.items() if key != "project_summary"}).model_dump()
+        return cls.model_validate({key: value for key, value in settings.items()
+                                   if key not in {"project_summary", "review_rules"}}).model_dump()
 
 
 class RepoSettingsWithSummary(RepoSettings):
@@ -388,12 +480,20 @@ class RepositoryOut(ORMModel):
     connection_id: str | None
     connection_requires_setup: bool = False
     settings: RepoSettingsWithSummary
+    review_rules: ReviewRules = Field(default_factory=list)
     scan_settings: ScanSettings = Field(default_factory=ScanSettings)
     open_prs: int = 0
     has_running_review: bool = False
     last_pr_sync_check_at: datetime | None = None
     latest_completed_review: RepositoryReviewSummary | None = None
     security: SecuritySummary | None = None
+
+    @field_validator("settings", mode="before")
+    @classmethod
+    def repository_settings(cls, value):
+        if isinstance(value, dict) and "review_rules" in value:
+            return {key: setting for key, setting in value.items() if key != "review_rules"}
+        return value
 
 
 class SummaryGroup(StrictModel):

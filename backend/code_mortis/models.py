@@ -148,6 +148,25 @@ class Repository(Base):
     code_graph_limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default=text("'{}'::json"))
 
 
+class CustomReviewRule(Base):
+    __tablename__ = "review_rules"
+    __table_args__ = (
+        CheckConstraint("(scope = 'repository' AND repository_id IS NOT NULL) OR "
+                        "(scope = 'workspace' AND repository_id IS NULL)", name="ck_review_rule_scope"),
+        CheckConstraint("position >= 0", name="ck_review_rule_position"),
+        UniqueConstraint("repository_id", "position", name="uq_review_rule_repository_position"),
+        Index("uq_review_rule_workspace_position", "position", unique=True, postgresql_where=text("scope = 'workspace'")),
+    )
+
+    rule_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    repository_id: Mapped[int | None] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    scope: Mapped[str] = mapped_column(String(16))
+    position: Mapped[int] = mapped_column(Integer)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CodeGraphRepository(Base):
     __tablename__ = "code_graph_repositories"
     repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
@@ -295,6 +314,7 @@ class ReviewRun(Base):
     base_sha: Mapped[str] = mapped_column(String(40))
     head_sha: Mapped[str] = mapped_column(String(40))
     config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    rule_tracking: Mapped[list[dict[str, str] | None] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     publication: Mapped[str] = mapped_column(String(30), default="pending")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -329,6 +349,17 @@ class ReviewRun(Base):
     check_error: Mapped[str | None] = mapped_column(Text)
     check_payload_hash: Mapped[str | None] = mapped_column(String(64))
     check_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewRuleUse(Base):
+    __tablename__ = "review_rule_uses"
+    __table_args__ = (Index("ix_review_rule_uses_rule_date", "rule_id", "used_at"),)
+    run_id: Mapped[str] = mapped_column(ForeignKey("review_runs.id", ondelete="CASCADE"), primary_key=True)
+    rule_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    path_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    path: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Finding(Base):

@@ -277,6 +277,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repositories/{repository_id}/review-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Review Rules */
+        put: operations["update_review_rules_api_v1_repositories__repository_id__review_rules_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/review-rules/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Review Rule Files */
+        get: operations["review_rule_files_api_v1_repositories__repository_id__review_rules_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/repositories/{repository_id}/review-rules/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Review Rules */
+        post: operations["preview_review_rules_api_v1_repositories__repository_id__review_rules_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/repositories/{repository_id}/code-graph": {
         parameters: {
             query?: never;
@@ -2044,6 +2095,15 @@ export interface components {
             /** Finished At */
             finished_at?: string | null;
         };
+        /** AddReviewRule */
+        AddReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "add";
+            rule: components["schemas"]["ReviewRule"];
+        };
         /** AnalyticsCount */
         AnalyticsCount: {
             /** Key */
@@ -2362,6 +2422,25 @@ export interface components {
             avatar_url: string;
             /** Role */
             role: string;
+        };
+        /** AppliedReviewRule */
+        AppliedReviewRule: {
+            /** Name */
+            name: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "mortis" | "repository" | "legacy_settings" | "trusted_base" | "workspace";
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
         };
         /** AssessmentProgress */
         AssessmentProgress: {
@@ -3062,6 +3141,16 @@ export interface components {
             /** Auth Message */
             auth_message: string | null;
         };
+        /** DeleteReviewRule */
+        DeleteReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "delete";
+            /** Index */
+            index: number;
+        };
         /** DiagramEdge */
         DiagramEdge: {
             /** Source */
@@ -3077,6 +3166,17 @@ export interface components {
             label: string;
             /** Paths */
             paths: string[];
+        };
+        /** EditReviewRule */
+        EditReviewRule: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            operation: "edit";
+            /** Index */
+            index: number;
+            rule: components["schemas"]["ReviewRule"];
         };
         /** ExplorerQuery */
         ExplorerQuery: {
@@ -4049,6 +4149,8 @@ export interface components {
              */
             connection_requires_setup: boolean;
             settings: components["schemas"]["RepoSettingsWithSummary"];
+            /** Review Rules */
+            review_rules?: components["schemas"]["StoredReviewRule"][];
             scan_settings?: components["schemas"]["ScanSettings"];
             /**
              * Open Prs
@@ -4134,6 +4236,59 @@ export interface components {
              * @default 10
              */
             page_size: number;
+        };
+        /** ReviewRule */
+        ReviewRule: {
+            /** Name */
+            name: string;
+            /** Instructions */
+            instructions: string;
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+        };
+        /** ReviewRulesPreview */
+        ReviewRulesPreview: {
+            /** Branch */
+            branch: string;
+            /** Base Sha */
+            base_sha: string;
+            /** Reviewable */
+            reviewable: boolean;
+            /** Matches */
+            matches: components["schemas"]["AppliedReviewRule"][];
+            /** Instructions */
+            instructions: string;
+            /**
+             * Rule Size Exceeds Limit
+             * @default false
+             */
+            rule_size_exceeds_limit: boolean;
+        };
+        /** ReviewRulesPreviewInput */
+        ReviewRulesPreviewInput: {
+            /** Path */
+            path: string;
+            /** Rules */
+            rules: components["schemas"]["StoredReviewRule"][];
+        };
+        /** ReviewRulesUpdate */
+        ReviewRulesUpdate: {
+            /** Change */
+            change: components["schemas"]["AddReviewRule"] | components["schemas"]["EditReviewRule"] | components["schemas"]["DeleteReviewRule"];
+            /** Expected Rules */
+            expected_rules: components["schemas"]["StoredReviewRule"][];
         };
         /** RunDetail */
         RunDetail: {
@@ -4984,6 +5139,33 @@ export interface components {
             /** Connection Id */
             connection_id?: string | null;
         };
+        /** StoredReviewRule */
+        StoredReviewRule: {
+            /** Name */
+            name: string;
+            /** Instructions */
+            instructions: string;
+            /**
+             * Glob
+             * @default
+             */
+            glob: string;
+            /** Files */
+            files?: string[];
+            /** Globs */
+            globs?: string[];
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Rule Id */
+            rule_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
         /** SummaryAttemptOut */
         SummaryAttemptOut: {
             /** Id */
@@ -5628,6 +5810,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_review_rules_api_v1_repositories__repository_id__review_rules_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewRulesUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredReviewRule"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_rule_files_api_v1_repositories__repository_id__review_rules_files_get: {
+        parameters: {
+            query: {
+                q: string;
+            };
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_review_rules_api_v1_repositories__repository_id__review_rules_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewRulesPreviewInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRulesPreview"];
                 };
             };
             /** @description Validation Error */
