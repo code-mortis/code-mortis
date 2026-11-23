@@ -76,8 +76,11 @@ test("PR Overview uses saved diagram navigation and opens the filtered Code tab"
   const { paths, groupsRequested } = await mockOverview(page);
   await page.goto("/pulls/pr");
   const tabs = page.getByRole("tablist", { name: "Pull request views" });
-  await expect(tabs.getByRole("tab").first()).toHaveText("Overview");
-  await expect(tabs.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  await expect(tabs.getByRole("tab")).toHaveText([/^Findings/, /^Resolved/, /^Dismissed/, "Code", "Overview", /^Run history/]);
+  await expect(tabs.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+  expect(paths).not.toContain("/pulls/pr/overview");
+  await tabs.getByRole("tab", { name: "Overview", exact: true }).click();
+  await expect(page).toHaveURL(/tab=overview/);
   const panel = page.getByRole("tabpanel");
   await expect(panel.getByRole("heading", { level: 2 })).toHaveText(["PR description", "Mortis summary", "Change diagram", "Grouped changes"]);
   const description = panel.getByRole("region", { name: "PR description", exact: true });
@@ -176,7 +179,7 @@ test("PR Overview uses saved diagram navigation and opens the filtered Code tab"
 
 test("PR Overview zooms, pans and fits the diagram while keeping nodes selectable", async ({ page, isMobile }) => {
   await mockOverview(page);
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=overview");
   const diagram = page.getByRole("region", { name: "Change diagram", exact: true });
   const viewport = diagram.getByRole("region", { name: "Diagram viewport" });
   const zoom = diagram.getByLabel("Graph zoom");
@@ -224,7 +227,7 @@ test("PR Overview safely renders author Markdown and leaves groups usable withou
     "[Unsafe](javascript:alert%281%29) ![Remote image](https://example.com/remote.png)", "",
     "<script>alert(1)</script>", "", "<iframe src='https://example.com/frame'></iframe>",
   ].join("\n") });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=overview");
   const panel = page.getByRole("tabpanel");
   await expect(panel.getByRole("heading", { level: 2 })).toHaveText(["PR description", "Mortis summary", "Grouped changes"]);
   await panel.getByRole("region", { name: "PR description", exact: true }).locator("summary").click();
@@ -263,7 +266,7 @@ test("PR Overview routes the PR #54 cycle around the nodes", async ({ page }, in
       "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
     } });
   });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=overview");
   const viewport = page.getByRole("region", { name: "Diagram viewport" });
   await expect(viewport.getByRole("button")).toHaveText(nodes.map(({ label }) => label));
   await expect(viewport.locator("path[marker-end]")).toHaveCount(edges.length);
@@ -297,7 +300,7 @@ test("PR Overview keeps groups usable if the diagram layout fails", async ({ pag
     ...sampleSummary,
     diagram: { ...sampleSummary.diagram!, edges: [{ source: "snapshot", target: "missing" }] },
   } });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=overview");
   await expect(page.getByRole("status").filter({ hasText: "The diagram could not be displayed." })).toBeVisible();
   const changes = page.getByRole("region", { name: "Grouped changes" });
   await changes.getByRole("button", { name: /PR file navigation/ }).click();
@@ -314,7 +317,7 @@ test("PR Overview renders a saved self-loop and keeps its node label literal", a
       edges: [{ source: "loop", target: "loop" }, { source: "loop", target: "loop" }],
     },
   } });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=overview");
   const viewport = page.getByRole("region", { name: "Diagram viewport" });
   const node = viewport.getByRole("button", { name: label, exact: true });
   await expect(node).toBeVisible();
@@ -333,10 +336,10 @@ test("PR Overview omits a blank description and selects all groups sharing a dia
       node.id === "explorer" ? { ...node, paths: [groups[0].paths[0], groups[1].paths[0]] } : node) },
   };
   await mockOverview(page, { description: "  ", summary });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?overview_change=node%3Arun%3Aexplorer");
   const panel = page.getByRole("tabpanel");
   await expect(panel.getByRole("heading", { name: "PR description" })).toHaveCount(0);
-  await panel.getByRole("button", { name: "Graph explorer", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "Graph explorer", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(panel.getByRole("link", { name: "Open in Code" })).toHaveCount(2);
   await expect(panel.getByRole("heading", { name: groups[0].title, exact: true })).toBeVisible();
   await expect(panel.getByRole("heading", { name: groups[1].title, exact: true })).toBeVisible();
@@ -344,7 +347,7 @@ test("PR Overview omits a blank description and selects all groups sharing a dia
 
 test("PR Overview keeps author text without a review and preserves legacy findings links", async ({ page }) => {
   const { paths } = await mockOverview(page, { summary: null, description: "Author text only" });
-  await page.goto("/pulls/pr?status=open");
+  await page.goto("/pulls/pr?tab=overview&status=open");
   await expect(page.getByRole("heading", { name: "PR description" })).toBeVisible();
   await expect(page.getByText("Author text only")).toBeHidden();
   await page.getByRole("region", { name: "PR description", exact: true }).locator("summary").click();

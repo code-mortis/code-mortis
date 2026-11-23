@@ -949,9 +949,8 @@ test("primary page tabs stay keyboard accessible when they wrap", async ({ page 
     await expect(tabs.getByRole("tab", { name: /^Resolved/ })).toHaveAttribute("aria-selected", "true");
     await tabs.getByRole("tab", { name: /^Resolved/ }).focus();
     await page.keyboard.press("Home");
-    const firstTab = path.startsWith("/pulls/") ? tabs.getByRole("tab", { name: "Overview", exact: true }) : findings;
-    await expect(firstTab).toBeFocused();
-    await expect(firstTab).toHaveAttribute("aria-selected", "true");
+    await expect(findings).toBeFocused();
+    await expect(findings).toHaveAttribute("aria-selected", "true");
     const targets = await tabs.getByRole("tab").evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height));
     expect(targets.every((height) => height >= 44)).toBe(true);
     await noOverflow(page);

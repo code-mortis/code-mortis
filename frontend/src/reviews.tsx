@@ -291,7 +291,8 @@ export function PullDetail({ admin }: { admin: boolean }) {
   const [params, setParams] = useSearchParams();
   const findingLink = params.get("status") === "dismissed"
     || ["finding", "q", "severity", "category", "ordering", "open_page"].some((key) => params.has(key));
-  const [urlTab, setTab] = useUrlTab("tab", ["overview", "findings", "resolved", "dismissed", "history", "code", "impact"], findingLink ? "findings" : "overview");
+  const defaultTab = !findingLink && params.has("overview_change") ? "overview" : "findings";
+  const [urlTab, setTab] = useUrlTab("tab", ["overview", "findings", "resolved", "dismissed", "history", "code", "impact"], defaultTab);
   const tab = urlTab === "impact" ? "code" : urlTab;
   const resolved = tab === "resolved";
   const dismissed = tab === "dismissed";
@@ -441,12 +442,12 @@ export function PullDetail({ admin }: { admin: boolean }) {
     {latest && <RunFeedback run={latest} repositoryId={repository.id} admin={admin} />}
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList variant="page" aria-label="Pull request views" className="mb-4">
-        <TabsTrigger value="overview">Overview</TabsTrigger>
         <TabsTrigger value="findings" aria-live="polite" aria-atomic="true">Findings <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("open") : <span className="sr-only">{findingsQuery.error ? "unavailable" : "loading…"}</span>}</span></TabsTrigger>
         <TabsTrigger value="resolved">Resolved <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("resolved") : "…"}</span></TabsTrigger>
         <TabsTrigger value="dismissed">Dismissed <span className="ml-1 text-xs tabular-nums text-muted-foreground">{counts ? count("dismissed") : "…"}</span></TabsTrigger>
-        <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
         <TabsTrigger value="code">Code</TabsTrigger>
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        <TabsTrigger value="history">Run history <span className="ml-1 text-xs tabular-nums text-muted-foreground">{run_count}</span></TabsTrigger>
       </TabsList>
       <TabsContent value="overview" className="min-w-0">{tab === "overview" && <PROverview key={`${pr.id}:${pr.base_sha}:${pr.head_sha}`} pr={pr} />}</TabsContent>
       <TabsContent value="code" className="min-w-0">{tab === "code" && <PRCode key={`${pr.id}:${pr.base_sha}:${pr.head_sha}`} prId={pr.id} repositoryId={repository.id} admin={admin} canWrite={can_write} renderFinding={(item) => <FindingPanel key={item.occurrence_id} id={item.finding_id} canWrite={can_write} snapshot={item.snapshot} headSha={item.source_sha ?? undefined} />} />}</TabsContent>
