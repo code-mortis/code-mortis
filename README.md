@@ -2,6 +2,8 @@
 
 Self-hosted GitHub pull request reviews and repository security scans powered by [Mortis Engine](https://github.com/code-mortis/mortis-engine).
 
+![Code Mortis overview with sample review findings, security findings, and repository activity](assets/code-mortis-overview.svg)
+
 ## Features
 
 - Automatic and on-demand PR reviews with inline comments and GitHub checks from your own GitHub App.
