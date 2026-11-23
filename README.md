@@ -53,3 +53,5 @@ docker compose -f compose.yaml -f compose.coolify.yaml up -d
 Deploy, then open your HTTPS URL and enter `CM_BOOTSTRAP_TOKEN`. Register and install your GitHub App on the repositories you want to connect, add a model connection, and enable reviews in repository settings.
 
 Licensed under [Apache 2.0](LICENSE).
+
+[Sponsor Code Mortis on GitHub](https://github.com/sponsors/wilfredinni).

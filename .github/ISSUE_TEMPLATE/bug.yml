@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem in Code Mortis.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, private URLs, repository data, and sensitive logs before posting.
+        Report vulnerabilities through the [security policy](https://github.com/code-mortis/code-mortis/security/policy).
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed and expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the shortest steps that reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      placeholder: Code Mortis commit or image tag, deployment method, and OS or browser if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
