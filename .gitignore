@@ -16,8 +16,8 @@ data/
 *.db
 *.log
 graphify-out
-.impeccable/*
-!.impeccable/design.json
-!.impeccable/config.json
+/.codex/
+/.impeccable/
+/docs/
 .agents/skills/graphify
 .graphifyignore

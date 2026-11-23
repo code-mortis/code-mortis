@@ -17,9 +17,8 @@ not this skill's directory. Confirm the checkout and working directory before co
   changes, required repository checks, failures or unresolved impact.
 - Verification does not authorize commits, pushes, deployment, worker restarts,
   provider calls or paid evaluations. Preserve unrelated changes and existing artifacts.
-- When verifying another agent's implementation, return confirmed defects and generation
-  drift to its implementation owner. Do not silently repair application code or hand-edit
-  generated types. Coordinate any regeneration when another writer owns those files.
+- Coordinate with any other writer before changing application code or regenerating
+  types. Report confirmed defects and drift without overwriting their work.
 
 ## Backend checks
 
@@ -38,9 +37,9 @@ Owning sources: `backend/pyproject.toml`, `backend/tests/conftest.py`,
   Run `uv run python -m pytest -q` with selected existing test paths or node IDs appended.
   Run `uv run ruff check .` for backend changes. Do not add parallel pytest processes
   against the shared services; CI shards use separate infrastructure.
-- Choose tests around the shared owner. For example, durable inference changes may
-  require `tests/test_analysis_foundation.py`, `tests/test_inference_admission.py` and
-  affected review/security workflow cases, rather than only the edited module's tests.
+- Choose tests around the shared code. For durable inference changes, consider
+  `backend/tests/test_analysis_foundation.py`, `backend/tests/test_inference_admission.py`
+  and affected review and security workflow cases.
 
 ## API contracts and frontend
 
@@ -48,8 +47,8 @@ Owning sources: `backend/code_mortis/manage.py`, `frontend/package.json`,
 `frontend/playwright.config.ts`, `.github/workflows/ci.yml` and `frontend/tests/`.
 
 - For schema or public response changes, from `backend/` run
-  `uv run python -m code_mortis.manage export-openapi`. Its default output is
-  `frontend/node_modules/.cache/code-mortis-openapi.json`, relative to repository root.
+  `uv run python -m code_mortis.manage export-openapi` to generate the input for
+  `bun run api:types`.
 - From `frontend/`, run `bun install --frozen-lockfile` only if dependencies need setup.
   If `frontend/src/api.generated.ts` has unrelated edits or another writer owns it,
   export the schema with `export-openapi --output` to a temporary path and use
@@ -72,8 +71,8 @@ Owning sources: `backend/code_mortis/manage.py`, `frontend/package.json`,
   relevant tests before selecting them; use Python unittest discovery with that start
   directory and a selected test filename pattern. Do not run a pilot or live launcher
   as an incidental check. Historical execution entrypoints are retired.
-- Keep offline/synthetic results separate from retained pilot evidence and milestone
-  gates in `docs/plans/engine/plan.md`, `docs/plans/engine/m5.md` and `docs/acceptance.md`.
+- Report synthetic evaluator checks as local regressions. Assess an engine acceptance
+  claim against its supplied run evidence and protocol. See the [engine evidence skill](../mortis-engine-evidence/SKILL.md).
 - Report changed behavior, exact commands and outcomes, generated-file changes,
   failures, skips and remaining boundaries. Focused checks establish only their scope;
   local tests do not establish hosted CI, real provider success or engine acceptance.

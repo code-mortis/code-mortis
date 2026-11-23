@@ -5,24 +5,24 @@ description: Inspect, validate, or rescore retained Code Mortis engine evaluatio
 
 # Assess Code Mortis engine evidence
 
-Resolve paths from the repository root. Start with `docs/plans/engine/plan.md` for
-current decisions, then the relevant dated section of `docs/plans/engine/m5.md` and
-the actual manifest/seal/results. Older documents describe historical contracts;
-their thresholds or permissions do not automatically govern a new evaluation.
+Read `AGENTS.md` and resolve paths from the repository root. Start with the requested
+claim and any supplied manifest, seal and results. The checked-in protocols describe
+the scoring methods. Use the original protocol and thresholds for retained evidence.
 
 ## Identify the evidence before interpreting it
 
 Record the requested claim, evidence location, source revision/image, workload,
 schema/protocol, corpus and split, provider/model, graph/cache strata, repetitions,
-and frozen input identities. Read only the records needed for that claim. Retained
-private artifacts may be absent from a checkout; absence is missing evidence, not
-a reason to fabricate replacement rows or retrieve credentials.
+and frozen input identities. Read only the records needed for that claim. If results
+or a seal were not supplied or otherwise authorized for read access, report the
+evidence gap. The public protocols and synthetic fixtures support planning and offline
+checks on their own.
 
 Distinguish these outcomes explicitly:
 - Offline tests validate implementation behavior on synthetic fixtures.
 - Retained live runs describe their pinned versions and finite corpus.
 - Frozen experimental acceptance follows that run's original protocol and seal.
-- Scoped engineering approval and personal adoption are separate decisions.
+- Scope engineering approvals to the decision they actually cover.
 - Broad quality/performance or production acceptance needs its own evidence.
 
 ## Use the supported offline path
@@ -31,10 +31,10 @@ Inspect the relevant CLI and its `--help` before composing a command:
 
 | Evidence family | Owning tooling |
 | --- | --- |
-| Original pilot scoring and blinded packets | `scripts/engine_eval/score.py` and `scoring_protocol.json` |
-| Prospective sealed acceptance and controlled performance | `scripts/engine_eval/acceptance.py` and the protocol embedded in the supplied seal |
+| Original pilot scoring and blinded packets | `scripts/engine_eval/score.py` and `scripts/engine_eval/scoring_protocol.json` |
+| Sealed acceptance and controlled performance | `scripts/engine_eval/acceptance.py` with the protocol embedded in the supplied seal. Use `scripts/engine_eval/acceptance_protocol.json` as a starting point for prospective planning. |
 | Historical launchers and execution retirement | `scripts/engine_eval/test_retirement.py` and the launchers' entry-point guards |
-| Offline scorer regressions | `scripts/engine_eval/test_score.py` and `test_acceptance.py` |
+| Offline scorer regressions | `scripts/engine_eval/test_score.py` and `scripts/engine_eval/test_acceptance.py` |
 
 For explicitly requested rescoring, use the matching scorer with the supplied records
 and a fresh output path. Preserve original seals, artifacts, judgments, hashes and
@@ -42,11 +42,9 @@ reports. Label a report produced by newer scorer code as a new interpretation an
 record that revision; do not overwrite the original result or silently change thresholds.
 Do not run a new freeze over old outputs to make a retrospective result prospective.
 
-The historical OCR/native launchers (`run.py`, `runtime.py`, `workloads.py`, `faults.py`
-and retired graph evaluation launchers) intentionally reject new execution. Their
-remaining implementation is historical evidence, not a supported runner. Never bypass
-the entry-point guard by importing and calling those functions or restoring old images
-as part of this skill. Offline regression tests may inspect these guards.
+The retired OCR and native-client entry points in `scripts/engine_eval/` and the
+retired graph evaluation launchers reject new execution. Keep their guards intact and
+use the supported offline tests to verify them.
 
 ## Check the substance of a claim
 
