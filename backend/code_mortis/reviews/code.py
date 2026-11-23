@@ -94,8 +94,8 @@ def saved_summary(db, user, repo, pr, files=None):
     # A description can mention any member. Withhold the entire summary if any path is now hidden.
     if any(path not in paths for group in result.groups for path in group.paths):
         return None
-    diagram = result.diagram
-    if overview and diagram and any(path not in paths for node in diagram.nodes for path in node.paths):
+    diagram = result.diagram if overview else None
+    if diagram and any(path not in paths for node in diagram.nodes for path in node.paths):
         return None
     if diagram and (len(ids := {node.id for node in diagram.nodes}) != len(diagram.nodes)
                     or any(edge.source not in ids or edge.target not in ids for edge in diagram.edges)):
@@ -107,18 +107,18 @@ def saved_summary(db, user, repo, pr, files=None):
         explorer.check_source(db, user, repo, serialized)
     except HTTPException:
         return None
-    return {"run_id": run.id, "narrative": result.narrative,
-            "groups": [{"id": f"{run.id}:{i}", **group.model_dump()} for i, group in enumerate(result.groups)],
-            "diagram": diagram.model_dump() if diagram else None}
+    groups = [{"id": f"{run.id}:{i}", **group.model_dump()} for i, group in enumerate(result.groups)]
+    graph = diagram.model_dump() if diagram else None
+    for item in groups + (graph["nodes"] if graph else []):
+        item["paths"] = list(dict.fromkeys(paths[path] for path in item["paths"]))
+    return {"run_id": run.id, "narrative": result.narrative, "groups": groups, "diagram": graph}
 
 
 def saved_groups(db, user, repo, pr, files):
     summary = saved_summary(db, user, repo, pr, files)
     if not summary:
         return [], None
-    paths = visible_paths(files)
-    groups = [{**group, "paths": list(dict.fromkeys(paths[path] for path in group["paths"]))} for group in summary["groups"]]
-    return groups, summary["run_id"]
+    return summary["groups"], summary["run_id"]
 
 
 def pull_overview(db, user, pr_id):

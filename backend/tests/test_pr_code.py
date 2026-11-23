@@ -149,7 +149,7 @@ def test_pull_overview_checks_retry_policy_instead_of_original_analysis_coverage
     assert client.get(URL + "?group=run:0").json()["group"] == "run:0"
 
 
-def test_pull_overview_keeps_rename_paths_and_code_reuses_the_current_diff_row(comparison, client):
+def test_pull_overview_and_code_share_one_canonical_path_for_a_rename(comparison, client):
     seed_summary_and_findings()
     with transaction() as db:
         run = db.get(ReviewRun, "run")
@@ -157,9 +157,10 @@ def test_pull_overview_keeps_rename_paths_and_code_reuses_the_current_diff_row(c
         diagram = {"nodes": [{"id": "rename", "label": "Rename", "paths": ["old.py"]}], "edges": []}
         run.summary = {**run.summary, "result": {**run.summary["result"], "groups": [group], "diagram": diagram}}
     summary = client.get("/api/v1/pulls/pr/overview").json()["summary"]
-    assert summary["groups"][0]["paths"] == ["old.py", "next.py"]
-    assert summary["diagram"] == diagram
+    assert summary["groups"][0]["paths"] == ["next.py"]
+    assert summary["diagram"] == {"nodes": [{"id": "rename", "label": "Rename", "paths": ["next.py"]}], "edges": []}
     code_group = client.get(URL + "?group=run:0").json()
+    assert code_group["groups"] == summary["groups"]
     assert code_group["group"] == "run:0" and [file["path"] for file in code_group["files"]] == ["next.py"]
 
 
