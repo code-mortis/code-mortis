@@ -4,6 +4,7 @@ x-app: &app
   image: code-mortis:0.1.0
   build:
     context: .
+    dockerfile: docker/Dockerfile
     args:
       CM_SENTRY_FRONTEND_DSN: ${CM_SENTRY_FRONTEND_DSN:-}
       CM_SENTRY_ENVIRONMENT: ${CM_SENTRY_ENVIRONMENT:-production}
@@ -139,7 +140,7 @@ services:
   code-graph-parser:
     image: code-mortis-code-graph:0.1.0
     profiles: [code-graph]
-    build: {context: ., dockerfile: Dockerfile.code-graph}
+    build: {context: ., dockerfile: docker/Dockerfile.code-graph}
     environment:
       CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:-}
     networks: [code-graph]

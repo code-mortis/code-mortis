@@ -1,4 +1,4 @@
-"""Run by compose.code-graph.test.yaml inside a disposable, private-network client."""
+"""Run by docker/compose.code-graph.test.yaml inside a disposable, private-network client."""
 
 import asyncio
 import base64

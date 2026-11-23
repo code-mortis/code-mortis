@@ -23,7 +23,7 @@ not this skill's directory. Confirm the checkout and working directory before co
 ## Backend checks
 
 Owning sources: `backend/pyproject.toml`, `backend/tests/conftest.py`,
-`compose.test.yaml` and `.github/workflows/backend.yml`.
+`docker/compose.test.yaml` and `.github/workflows/backend.yml`.
 
 - One owner runs database-backed tests at a time across agents and worktrees. The
   autouse fixtures truncate all application tables and clear shared Redis keys per case;
@@ -32,7 +32,7 @@ Owning sources: `backend/pyproject.toml`, `backend/tests/conftest.py`,
   its fixture default. Require the isolated `mortis_test` database on port 55439 and
   `redis://127.0.0.1:56389/0`; never substitute development or production services.
 - From repository root, start the test services if needed and within task scope:
-  `docker compose -f compose.test.yaml up -d --wait`.
+  `docker compose --project-directory . -f docker/compose.test.yaml up -d --wait`.
 - From `backend/`, install only if needed with `uv sync --frozen --python 3.13`.
   Run `uv run python -m pytest -q` with selected existing test paths or node IDs appended.
   Run `uv run ruff check .` for backend changes. Do not add parallel pytest processes

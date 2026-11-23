@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "disposable-code-graph-test-token"
 ENV = os.environ | {"CM_CODE_GRAPH_TOKEN": TOKEN, "POSTGRES_PASSWORD": "test-only",
                     "COMPOSE_PROFILES": "", "CM_PUBLIC_HOST": "example.test", "COOLIFY_RESOURCE_UUID": "test-only"}
-COMPOSE = ["docker", "compose", "-f", "compose.code-graph.test.yaml"]
+COMPOSE = ["docker", "compose", "--project-directory", ".", "-f", "docker/compose.code-graph.test.yaml"]
 
 
 def command(args, **kwargs):

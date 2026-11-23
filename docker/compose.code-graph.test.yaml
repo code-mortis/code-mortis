@@ -13,7 +13,7 @@ services:
     security_opt: [no-new-privileges:true]
   probe:
     image: code-mortis-code-graph-checks:0.1.0
-    build: {context: ., dockerfile: Dockerfile.code-graph, target: checks}
+    build: {context: ., dockerfile: docker/Dockerfile.code-graph, target: checks}
     environment:
       CM_CODE_GRAPH_TOKEN: ${CM_CODE_GRAPH_TOKEN:?Use a disposable test token}
       PYTHONPATH: /app/backend

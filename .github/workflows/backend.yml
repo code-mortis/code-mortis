@@ -7,7 +7,7 @@ on:
       - '.github/workflows/backend.yml'
       - '.github/ci-filters.test.ts'
       - 'backend/**'
-      - 'compose.test.yaml'
+      - 'docker/compose.test.yaml'
   pull_request:
     branches: [main]
     paths: *paths
@@ -32,7 +32,7 @@ jobs:
         image: mirror.gcr.io/library/postgres:17-alpine
         env: { POSTGRES_USER: mortis, POSTGRES_PASSWORD: mortis-test-only, POSTGRES_DB: mortis_test }
         ports: [55439:5432]
-        # Match compose.test.yaml: test data is disposable, so avoid disk I/O on every reset/commit.
+        # Match docker/compose.test.yaml: test data is disposable, so avoid disk I/O on every reset/commit.
         options: >-
           --tmpfs /var/lib/postgresql/data
           --health-cmd "pg_isready -U mortis -d mortis_test" --health-interval 5s --health-retries 10

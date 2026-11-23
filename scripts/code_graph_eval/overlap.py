@@ -69,7 +69,10 @@ subprocess.run(['uv', 'run', 'python', '-c',
     cwd=ROOT / 'backend', check=True, env={key: value for key, value in os.environ.items() if not key.startswith('CM_')})
 
 containers = command(COMPOSE + ['ps', '-q'], text=True).split()
-containers += command(['docker', 'compose', '-f', 'compose.test.yaml', 'ps', '-q'], text=True).split()
+containers += command(
+    ['docker', 'compose', '--project-directory', '.', '-f', 'docker/compose.test.yaml', 'ps', '-q'],
+    text=True,
+).split()
 containers = sorted(set(containers))
 fields = '{{json .Name}} {{json .State.OOMKilled}} {{json .RestartCount}} {{json .HostConfig.Memory}}'
 before = {c: command(['docker', 'inspect', '--format', fields, c], text=True).strip() for c in containers}

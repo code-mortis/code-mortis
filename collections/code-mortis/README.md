@@ -164,7 +164,7 @@ are not authentication for the browser REST API.
 
 ```sh
 noodle collection audit collections/code-mortis --json
-docker compose -f compose.test.yaml up -d --wait
+docker compose --project-directory . -f docker/compose.test.yaml up -d --wait
 cd backend
 uv run python -m pytest -q tests/test_noodle_collection.py
 ```

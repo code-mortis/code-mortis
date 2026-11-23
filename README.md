@@ -1,6 +1,6 @@
 # Code Mortis
 
-Self-hosted GitHub pull request reviews and repository security scans powered by Mortis Engine.
+Self-hosted GitHub pull request reviews and repository security scans powered by [Mortis Engine](https://github.com/code-mortis/mortis-engine).
 
 ## Features
 

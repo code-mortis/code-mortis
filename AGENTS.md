@@ -13,7 +13,7 @@ Code Mortis is a self-hosted GitHub pull request review and repository security 
 Run the backend checks from the repository root with Docker Compose and `uv`.
 
 ```sh
-docker compose -f compose.test.yaml up -d --wait
+docker compose --project-directory . -f docker/compose.test.yaml up -d --wait
 cd backend
 uv sync --frozen --python 3.13
 uv run ruff check .

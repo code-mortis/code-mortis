@@ -52,10 +52,10 @@ test.each([
   ["backend dependencies", ["backend/pyproject.toml", "backend/uv.lock"], allJobs],
   ["migration", ["backend/migrations/versions/new.py"], ["backend", "image"]],
   ["database configuration", ["backend/alembic.ini"], ["backend", "image"]],
-  ["test services", ["compose.test.yaml"], ["backend"]],
-  ["Docker build", ["Dockerfile"], ["image"]],
+  ["test services", ["docker/compose.test.yaml"], ["backend"]],
+  ["Docker build", ["docker/Dockerfile"], ["image"]],
   ["Docker context", [".dockerignore"], ["image"]],
-  ["Docker-specific context", ["Dockerfile.dockerignore"], ["image"]],
+  ["Docker-specific context", ["docker/Dockerfile.dockerignore"], ["image"]],
   ["image notices", ["THIRD_PARTY_NOTICES.md", "LICENSE", "LICENSES/Apache-2.0.txt"], ["image"]],
   ["frontend workflow", [".github/workflows/ci.yml"], ["export-openapi", "frontend"]],
   ["backend workflow", [".github/workflows/backend.yml"], ["backend"]],
@@ -63,7 +63,7 @@ test.each([
   ["filter tests", [".github/ci-filters.test.ts"], allJobs],
   ["Mortis image smoke", ["backend/tests/mortis_container_smoke.py"], ["backend", "image"]],
   ["rename out of backend", ["backend/removed.py", "docs/removed.py"], ["backend", "image"]],
-  ["mixed changes", ["frontend/src/reviews.tsx", "compose.test.yaml"], ["backend", "export-openapi", "frontend", "image"]],
+  ["mixed changes", ["frontend/src/reviews.tsx", "docker/compose.test.yaml"], ["backend", "export-openapi", "frontend", "image"]],
   ["no changes", [], []],
 ])("selects jobs for %s", (_, files, jobs) => {
   for (const event of ["push", "pull_request"] as const) {
