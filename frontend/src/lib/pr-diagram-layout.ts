@@ -20,6 +20,9 @@ function loadRenderer() {
       flowchart: { curve: "rounded", padding: 12, nodeSpacing: 24, rankSpacing: 34, wrappingWidth: 144, minNodeWidth: 104 },
     });
     return mermaid;
+  }).catch((error) => {
+    renderer = undefined;
+    throw error;
   });
 }
 
