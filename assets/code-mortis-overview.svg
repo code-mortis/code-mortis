@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="967" height="929" viewBox="0 0 967 929" role="img" aria-labelledby="overview-title overview-description">
+<svg xmlns="http://www.w3.org/2000/svg" width="967" height="965" viewBox="0 0 967 965" role="img" aria-labelledby="overview-title overview-description">
 <title id="overview-title">Code Mortis repository overview</title>
 <desc id="overview-description">Code Mortis Overview in dark mode, recreated as a vector illustration with sample activity and security data. The reviews card shows two open findings. The security card shows Grade D with seven open findings, including three high-severity findings. The activity calendar shows 248 runs across 365 days. Recent review results appear beneath the calendar.</desc>
 <!-- Interface text is outlined in Inter. Interface icons use Lucide.
@@ -173,7 +173,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 <path id="g650-270" d="M149.84894 0V205.85187L672.29968 708.20093Q742.69934 778.40039 790.94916 834.02505Q839.19897 889.64972 864.2739 942.82449Q889.34882 995.99927 889.34882 1057.79907Q889.34882 1126.34882 857.97397 1175.92361Q826.59912 1225.49841 772.82437 1252.17331Q719.04962 1278.84821 649.84991 1278.84821Q577.90027 1278.84821 524.40051 1249.74835Q470.90076 1220.6485 441.62589 1166.92374Q412.35101 1113.19897 412.35101 1038.64923H139.44855Q139.44855 1181.89954 204.72366 1287.74969Q269.99878 1393.59985 385.79907 1451.79993Q501.59937 1510 652.59985 1510Q806.30042 1510 921.62576 1453.82498Q1036.95111 1397.64996 1101.30127 1299.37485Q1165.65143 1201.09973 1165.65143 1074.19946Q1165.65143 990.9494 1133.72635 910.8493Q1101.80127 830.74921 1020.25104 731.04913Q938.70081 631.34906 789.15033 490.89905L546.8526 247.85187V236.75189H1186.60132V0Z"/>
 <path id="g650-275" d="M250.24908 0 877.14813 1242.14813V1252.34808H148.24908V1490H1175.60083V1246.84821L547.45172 0Z"/>
 </defs>
-<rect x="0" y="0" width="967" height="929" fill="#252329"/>
+<rect x="0.5" y="0.5" width="966" height="964" fill="#252329" rx="9.5" stroke="#443e49"/>
 <g id="top-bar">
 <rect x="0" y="56" width="967" height="1" fill="#443e49"/>
 <path fill="#ff7545" fill-rule="evenodd" transform="translate(28.5 14) scale(.14583)" d="M11 180 39 108Q48 80 70 60L103 29Q122 10 144 15Q160 17 169 32Q195 34 212 49Q222 57 222 72Q204 61 184 60L164 60Q146 71 143 91Q138 126 120 146L91 169L97 137L64 167L75 143L11 180Z M58 130Q87 91 130 69Q113 90 90 106Z M147 36l11 2-9 5z"/>
