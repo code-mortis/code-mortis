@@ -78,7 +78,9 @@ test("PR Overview uses saved diagram navigation and opens the filtered Code tab"
   const tabs = page.getByRole("tablist", { name: "Pull request views" });
   await expect(tabs.getByRole("tab")).toHaveText([/^Findings/, /^Resolved/, /^Dismissed/, "Code", "Overview", /^Run history/]);
   await expect(tabs.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => paths.includes("/pulls/pr/findings")).toBe(true);
   expect(paths).not.toContain("/pulls/pr/overview");
+  const findingReads = paths.filter((path) => path === "/pulls/pr/findings").length;
   await tabs.getByRole("tab", { name: "Overview", exact: true }).click();
   await expect(page).toHaveURL(/tab=overview/);
   const panel = page.getByRole("tabpanel");
@@ -129,7 +131,7 @@ test("PR Overview uses saved diagram navigation and opens the filtered Code tab"
   }
   await expect(panel.locator("path[marker-end]")).toHaveCount(3);
   await expect(panel.getByRole("list", { name: "Diagram connections" })).toContainText("Graph API leads to PR Code tab");
-  expect(paths).not.toContain("/pulls/pr/findings");
+  expect(paths.filter((path) => path === "/pulls/pr/findings")).toHaveLength(findingReads);
   expect(paths).not.toContain("/pulls/pr/code/workspace");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width);
   if (screenshots) {

@@ -2750,7 +2750,8 @@ test("page tabs retain themed text, underlines and keyboard selection", async ({
       expect(rendered.background).toBe(theme[mode]["--background"]);
       expect(rendered.underline).toBe("1");
       expect(contrast(rendered.count, rendered.background), `${theme.label} ${mode} count`).toBeGreaterThanOrEqual(4.5);
-      const tabs = [findings, page.getByRole("tab", { name: /^Resolved/ }), page.getByRole("tab", { name: /^Dismissed/ }), history];
+      const tabs = [findings, page.getByRole("tab", { name: /^Resolved/ }), page.getByRole("tab", { name: /^Dismissed/ }),
+        page.getByRole("tab", { name: "Code", exact: true }), page.getByRole("tab", { name: "Overview", exact: true }), history];
       for (let index = 1; index < tabs.length; index++) {
         await tabs[index - 1].press("ArrowRight");
         await expect(tabs[index]).toHaveAttribute("aria-selected", "true");
