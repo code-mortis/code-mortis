@@ -11,6 +11,7 @@ import { FilterBar } from "./filter-bar";
 import { FindingCard, FindingCategory } from "./finding-card";
 import { SearchSelect } from "./search-select";
 import { Pagination } from "./pagination";
+import { useWorkspaceProgress } from "./workspace-progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
@@ -133,6 +134,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
   const contentView = view === "findings" ? "diff" : view;
   const workspace = usePRCode(prId, { page, reviewed: reviewed.map((value) => value === "1"), findings, query: search, group: group || null, path: params.get("graph_file"),
     view: contentView, revision });
+  useWorkspaceProgress(workspace.loading && workspace.fetching);
   const { position: positionValue, setPosition } = workspace;
   function change(values: Record<string, string | string[] | null>) {
     navigationId.current++;
@@ -199,7 +201,7 @@ export function PRCode({ prId, repositoryId, admin, canWrite, renderFinding }: {
     </div>
     <p role="status" className="text-xs tabular-nums text-muted-foreground">{reviewedCount} of {data.files.length}{data.comparison_truncated || data.metadata_truncated ? " shown files" : ""} reviewed</p>
     </div>
-    {selectedGroup && <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{selectedGroup.description}</p>}
+    {selectedGroup && <p className="text-sm leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{selectedGroup.description}</p>}
     <div className="grid min-w-0 items-start gap-6 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
       <section aria-label="Changed files" className="min-w-0 space-y-3">
         <div className="flex min-h-9 flex-wrap items-center gap-x-2"><h3 className="text-sm font-semibold">Changed files <span className="ml-1 font-normal tabular-nums text-muted-foreground">{workspace.files.length}</span></h3>{(data.comparison_truncated || data.metadata_truncated) && <StatusHint value="partial" label="Limited comparison">{data.metadata_truncated ? "The file inventory reached its display limit. Search covers only returned files." : "GitHub returned at most 300 files. This list and its search may be incomplete."}</StatusHint>}</div>

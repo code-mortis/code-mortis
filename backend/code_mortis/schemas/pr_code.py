@@ -7,7 +7,7 @@ from pydantic import Field, field_validator
 from code_mortis.schemas.code_graph import MAX_INDEXED_FILE_BYTES as MAX_FILE_BYTES
 from code_mortis.schemas.code_graph import Digest, GitSha, RepositoryPath
 from code_mortis.schemas.code_graph_explorer import GraphRead
-from code_mortis.schemas.common import StrictModel
+from code_mortis.schemas.common import StrictModel, SummaryDiagram
 
 
 class CodeIdentity(StrictModel):
@@ -33,6 +33,20 @@ class CodeGroup(StrictModel):
     title: str
     description: str
     paths: list[RepositoryPath]
+
+
+class PullOverviewSummary(StrictModel):
+    run_id: str
+    narrative: str
+    groups: list[CodeGroup]
+    diagram: SummaryDiagram | None = None
+
+
+class PullOverview(StrictModel):
+    base_sha: GitSha
+    head_sha: GitSha
+    description: str | None = None
+    summary: PullOverviewSummary | None = None
 
 
 class CodeOverview(CodeIdentity):

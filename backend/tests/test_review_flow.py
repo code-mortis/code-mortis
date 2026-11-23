@@ -911,6 +911,34 @@ def test_pr_webhooks_only_automatically_review_human_prs(
         assert db.scalar(select(func.count()).select_from(Job).where(Job.kind == "review")) == expected
 
 
+def test_pr_description_sync_edits_clears_and_preserves_omitted_body(seed, github_stub, monkeypatch):
+    data = {**remote(), "body": "  Author **Markdown**\n\n- [ ] Verify"}
+    monkeypatch.setattr(github, "request", lambda *args, **kwargs: data)
+    jobs.process_webhook({"event": "pull_request", "body": {
+        "action": "edited", "installation": {"id": 10}, "repository": {"id": 22},
+        "sender": {"type": "User"}, "pull_request": {"number": 3},
+    }})
+    with transaction() as db:
+        payload = db.scalar(select(Job).where(Job.kind == "sync_pr")).payload
+        assert payload["automatic"] is False
+        updated_at = db.get(PullRequest, "pr").updated_at
+    jobs.execute("sync_pr", payload)
+    with transaction() as db:
+        pr = db.get(PullRequest, "pr")
+        assert pr.description == data["body"]
+        assert pr.updated_at == updated_at
+        assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
+
+    for body, expected in [("Edited", "Edited"), (None, None), ("  \n", None)]:
+        data["body"] = body
+        jobs.execute("sync_pr", payload)
+        del data["body"]
+        jobs.execute("sync_pr", payload)
+        with transaction() as db:
+            assert db.get(PullRequest, "pr").description == expected
+            assert db.scalar(select(func.count()).select_from(ReviewRun)) == 0
+
+
 def test_queued_review_cannot_send_rotated_credentials_to_old_endpoint(seed, github_stub, monkeypatch):
     run_id = new_run()
     monkeypatch.setattr(github, "request", lambda *a, **k: remote())

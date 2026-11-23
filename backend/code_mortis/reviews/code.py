@@ -13,7 +13,7 @@ from code_mortis.code_graph import explorer, store
 from code_mortis.core import file_policy
 from code_mortis.integrations.comparison import MAX_RESPONSE_BYTES as MAX_RESPONSE_BYTES
 from code_mortis.integrations.comparison import load as comparison
-from code_mortis.models import Finding, FindingVerification, Occurrence, ReviewRun
+from code_mortis.models import Finding, FindingVerification, Job, Occurrence, ReviewRun
 from code_mortis.schemas.code_graph import GitSha, RepositoryPath
 from code_mortis.schemas.code_graph_explorer import ExplorerQuery
 from code_mortis.schemas.common import SummaryResult, VerificationResult
@@ -28,43 +28,105 @@ MAX_VERIFICATION_BYTES = 128 * 1024
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
 
 
-def load(repo, pr):
+def load(repo, pr, *, recover_patches=True):
     base, head = (TypeAdapter(GitSha).validate_python(sha) for sha in (pr.base_sha, pr.head_sha))
-    merge_base, files, truncated = comparison(repo.id, repo.installation_id, repo.full_name, base, head, pr.number)
+    merge_base, files, truncated = comparison(repo.id, repo.installation_id, repo.full_name, base, head,
+                                              pr.number if recover_patches else None)
     rules = store.policy(repo)
     files = [(info, patch) for info, patch in files if not any(store.excluded(p, rules)
              for p in (info.path, info.previous_path) if p)]
     return {"base_sha": base, "head_sha": head, "merge_base_sha": merge_base}, files, truncated
 
 
-def saved_groups(db, user, repo, pr, files):
+def visible_paths(files):
+    # Summary Git input represents both sides of a rename as paths. Code shows one diff row.
+    aliases = {info.previous_path: info.path for info, _ in files if info.change == "renamed" and info.previous_path}
+    return {**aliases, **{info.path: info.path for info, _ in files}}
+
+
+def saved_summary(db, user, repo, pr, files=None):
     run = db.scalar(select(ReviewRun).where(ReviewRun.pr_id == pr.id, ReviewRun.base_sha == pr.base_sha,
         ReviewRun.head_sha == pr.head_sha, ReviewRun.summary["status"].as_string() == "completed")
         .order_by(ReviewRun.created_at.desc(), ReviewRun.id.desc()).limit(1))
-    if not run or not isinstance(run.config, dict) or not isinstance(run.config.get("settings"), dict):
-        return [], None
+    if not run or not isinstance(run.config, dict):
+        return None
+    overview = files is None
     try:
-        if ("exclusions" not in run.config["settings"]
-            or file_policy.policy(run.config["settings"]) != file_policy.policy(repo.settings)):
-            return [], None
-        coverage = run.report
-        for key in ("manifest", "coverage"):
-            coverage = coverage.get(key) if isinstance(coverage, dict) else None
-        selected = coverage.get("selected") if isinstance(coverage, dict) else None
-        if not isinstance(selected, list) or not selected or any(
-            not isinstance(item, dict) or store.excluded(TypeAdapter(RepositoryPath).validate_python(item.get("path")), store.policy(repo))
-            for item in selected
-        ):
-            return [], None
+        settings = run.config.get("settings")
+        # The independent summary stage pins its own Git inventory before analysis records coverage.
+        independent = (run.config.get("pipeline_version") == 2
+                       and run.stages.get("summary", {}).get("status") in {"running", "completed"})
+        attempts = run.progress.get("summary_attempts", [])
+        if not isinstance(attempts, list):
+            return None
+        retry_id = run.progress.get("summary_retry")
+        if retry_id or attempts:
+            retry_id = retry_id or attempts[-1]
+            if not isinstance(retry_id, str) or not retry_id:
+                return None
+            retry = db.get(Job, retry_id)
+            if (not retry or retry.kind != "generate_summary" or retry.payload.get("run_id") != run.id
+                    or retry.payload.get("summary_attempt_result") != run.summary):
+                return None
+            settings = retry.payload["config"]["settings"]
+            independent = True
+        if (not isinstance(settings, dict) or "exclusions" not in settings
+            or file_policy.policy(settings) != file_policy.policy(repo.settings)):
+            return None
+        if not independent:
+            coverage = run.report
+            for key in ("manifest", "coverage"):
+                coverage = coverage.get(key) if isinstance(coverage, dict) else None
+            selected = coverage.get("selected") if isinstance(coverage, dict) else None
+            rules = store.policy(repo)
+            if not isinstance(selected, list) or not selected or any(
+                not isinstance(item, dict) or store.excluded(TypeAdapter(RepositoryPath).validate_python(item.get("path")), rules)
+                for item in selected
+            ):
+                return None
         result = SummaryResult.model_validate(run.summary.get("result"))
-        paths = {info.path for info, _ in files}
-        # A description can mention any member. Withhold the entire summary if any path is now hidden.
-        if any(p not in paths for group in result.groups for p in group.paths):
-            return [], None
-        explorer.check_source(db, user, repo, result.model_dump_json())
-    except (ValueError, TypeError, HTTPException):
+    except (ValueError, TypeError, KeyError):
+        return None
+    if files is None:
+        # The overview needs only the immutable comparison inventory, not recovered patches.
+        _, files, _ = load(repo, pr, recover_patches=False)
+    paths = visible_paths(files)
+    # A description can mention any member. Withhold the entire summary if any path is now hidden.
+    if any(path not in paths for group in result.groups for path in group.paths):
+        return None
+    diagram = result.diagram if overview else None
+    if diagram and any(path not in paths for node in diagram.nodes for path in node.paths):
+        return None
+    if diagram and (len(ids := {node.id for node in diagram.nodes}) != len(diagram.nodes)
+                    or any(edge.source not in ids or edge.target not in ids for edge in diagram.edges)):
+        diagram = None
+    serialized = result.model_dump_json()
+    if overview and len(serialized.encode()) > MAX_METADATA_BYTES:
+        return None
+    try:
+        explorer.check_source(db, user, repo, serialized)
+    except HTTPException:
+        return None
+    groups = [{"id": f"{run.id}:{i}", **group.model_dump()} for i, group in enumerate(result.groups)]
+    graph = diagram.model_dump() if diagram else None
+    for item in groups + (graph["nodes"] if graph else []):
+        item["paths"] = list(dict.fromkeys(paths[path] for path in item["paths"]))
+    return {"run_id": run.id, "narrative": result.narrative, "groups": groups, "diagram": graph}
+
+
+def saved_groups(db, user, repo, pr, files):
+    summary = saved_summary(db, user, repo, pr, files)
+    if not summary:
         return [], None
-    return [{"id": f"{run.id}:{i}", **group.model_dump()} for i, group in enumerate(result.groups)], run.id
+    return summary["groups"], summary["run_id"]
+
+
+def pull_overview(db, user, pr_id):
+    pr, repo, _ = explorer.context(db, user, pr_id)
+    description = explorer.source_redactor(db, user, repo)(pr.description) if pr.description else None
+    result = {"base_sha": pr.base_sha, "head_sha": pr.head_sha, "description": description,
+              "summary": saved_summary(db, user, repo, pr)}
+    return explorer.finish(pr, repo, user, result, enabled=False)
 
 
 def overview(db, user, pr_id, page=1, query="", group=None):

@@ -560,6 +560,8 @@ async function mock(
       ];
     else if (path === "/pulls/pr/runs" && method === "GET")
       data = runPage([currentRun], new URL(request.url()).searchParams);
+    else if (path === "/pulls/pr/overview")
+      data = { base_sha: pr.base_sha, head_sha: pr.head_sha, description: null, summary: null };
     else if (path === "/pulls/pr" || path === "/pulls/pr/findings") {
       const detail = {
         pull_request: pr,
@@ -2718,7 +2720,7 @@ test("page tabs retain themed text, underlines and keyboard selection", async ({
   test.setTimeout(60_000);
   await mock(page);
   await page.addInitScript(() => localStorage.setItem("theme", "system"));
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   const rgb = (hex: string) => `rgb(${[1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(", ")})`;
   for (const theme of themes) {
     await page.evaluate((id) => localStorage.setItem("color-theme", id), theme.id);
@@ -2748,7 +2750,8 @@ test("page tabs retain themed text, underlines and keyboard selection", async ({
       expect(rendered.background).toBe(theme[mode]["--background"]);
       expect(rendered.underline).toBe("1");
       expect(contrast(rendered.count, rendered.background), `${theme.label} ${mode} count`).toBeGreaterThanOrEqual(4.5);
-      const tabs = [findings, page.getByRole("tab", { name: /^Resolved/ }), page.getByRole("tab", { name: /^Dismissed/ }), history];
+      const tabs = [findings, page.getByRole("tab", { name: /^Resolved/ }), page.getByRole("tab", { name: /^Dismissed/ }),
+        page.getByRole("tab", { name: "Code", exact: true }), page.getByRole("tab", { name: "Overview", exact: true }), history];
       for (let index = 1; index < tabs.length; index++) {
         await tabs[index - 1].press("ArrowRight");
         await expect(tabs[index]).toHaveAttribute("aria-selected", "true");
@@ -3017,7 +3020,7 @@ test("resolution waits for GitHub and preserves the confirmed status", async ({
   page,
 }, info) => {
   const requests = await mock(page);
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await page
     .getByRole("button", { name: /retry loop has no upper bound/ })
     .click();
@@ -3051,7 +3054,7 @@ test("resolution waits for GitHub and preserves the confirmed status", async ({
 test("finding code shows a unified diff and safe Markdown highlighting in both themes", async ({ page }, info) => {
   const source = 'def deliver():\n    return "<img src=x onerror=alert(1)>"\n';
   await mock(page, { finding: { content: `The retry loop has no upper bound. Keep \`MAX_ATTEMPTS\` bounded.\n\n\`\`\`python\n${source}\`\`\`` } });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   const panel = page.getByRole("dialog");
   const patch = panel.getByRole("region", { name: "Suggested change diff" });
@@ -3100,7 +3103,7 @@ for (const example of [
 ]) {
   test(`finding code fallback: ${example.name}`, async ({ page }) => {
     await mock(page, { finding: { existing_code: example.original, suggestion: example.suggested, path: example.path } });
-    await page.goto("/pulls/pr");
+    await page.goto("/pulls/pr?tab=findings");
     await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
     const panel = page.getByRole("dialog");
     await expect(panel.getByRole("region", { name: "Suggested change diff" })).toHaveCount(0);
@@ -3477,7 +3480,7 @@ test("invalid review tabs and URL filters recover to supported defaults", async 
   await page.goto("/pulls/pr?tab=unknown&status=invalid&severity=invalid&category=&finding=finding&finding_tab=snapshot");
   const sheet = page.getByRole("dialog", { name: "Finding details" });
   await expect(sheet.getByRole("tab", { name: "Evidence", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL((url) => !url.searchParams.has("tab") && !url.searchParams.has("finding_tab")
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "findings" && !url.searchParams.has("finding_tab")
     && !url.searchParams.has("severity") && !url.searchParams.has("category") && url.searchParams.getAll("status").join(",") === "open");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tab", { name: /^Findings/ })).toHaveAttribute("aria-selected", "true");
@@ -3493,7 +3496,7 @@ test("focused finding cards preserve long file locations, state, and keyboard ac
     finding: { path: directory + file, content, category: "custom_rule", desired_status: "resolved", sync_error: "GitHub unavailable", last_seen_run_id: "previous" },
     occurrences: [{ finding_id: "finding", inline_line: null, snapshot: { ...finding, path: directory + file, content } }],
   });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   const card = page.getByRole("button", { name: /retry loop has no upper bound/ });
   await expect(card.getByText(file, { exact: true })).toBeVisible();
   await expect(card.getByText(directory, { exact: true })).toBeVisible();
@@ -4062,7 +4065,7 @@ test("read-only members cannot change findings or instance settings", async ({
   page,
 }) => {
   await mock(page, { role: "member", canWrite: false });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await expect(page.getByRole("heading", { name: pr.title })).toBeVisible();
   await expect(page.getByRole("banner").getByRole("link", { name: "Settings", exact: true })).toHaveCount(1);
   await openNavigation(page);
@@ -5495,7 +5498,7 @@ test("review limits save and reopen independent unlimited choices", async ({ pag
 test("finding sheet keeps actions visible and preserves its active tab through polling", async ({ page }) => {
   const requests = await mock(page, { finding: { content: `${finding.content}\n\n` + "Long saved evidence.\n\n".repeat(50) } });
   await page.clock.install();
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   const trigger = page.getByRole("button", { name: /retry loop has no upper bound/ });
   await trigger.click();
   const sheet = page.getByRole("dialog", { name: "Finding details" });
@@ -6974,7 +6977,7 @@ test("appearance system mode and the header toggle keep the selected palette", a
 test("appearance themes reach finding dialogs and rendered code diffs", async ({ page }, info) => {
   await mock(page, { finding: { content: "Keep retries bounded.\n\n```python\ndef deliver():\n    return True\n```" } });
   await page.addInitScript(() => localStorage.setItem("color-theme", "dracula"));
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await page.getByRole("button", { name: /Keep retries bounded/ }).click();
   const dialog = page.getByRole("dialog");
   const patch = dialog.getByRole("region", { name: "Suggested change diff" });
@@ -7062,7 +7065,7 @@ test("verified fixes show evidence, pending sync, retry and manual override", as
       },
     }],
   });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   await page.getByRole("button", { name: "View verification", exact: true }).click();
   await expect(page.getByText("The retry loop now stops after three attempts.")).toBeVisible();
@@ -7174,7 +7177,7 @@ test("pending verification has one status and failed verification has an alert",
       resolution: "not_applicable", error: "Verification context is unavailable", result: null,
       created_at: at, finished_at: at },
   ] });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await page.getByRole("button", { name: /retry loop has no upper bound/ }).click();
   await page.getByRole("button", { name: "View verification", exact: true }).click();
   const panel = page.getByRole("dialog");
@@ -8639,7 +8642,7 @@ test("pull detail searches evidence and separates severity, status, and run hist
       { ...finding, id: "dismissed", status: "dismissed", severity: "low", category: "performance", content: "Batch dispatches to reduce unnecessary database queries.", path: "src/webhooks/dispatch.ts", desired_status: "open", sync_error: "GitHub unavailable" },
     ],
   }));
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   const title = page.getByRole("heading", { level: 1 });
   await expect(title.locator("..").getByText(/^open$/i)).toBeVisible();
   await expect(page.locator('main [data-slot="page-title"] code[data-slot="badge"]')).toHaveText([pr.head_ref, pr.head_sha.slice(0, 7)]);
@@ -8694,7 +8697,7 @@ test("pull detail distinguishes resolved history from unreviewed and incomplete 
   let findings = [{ ...finding, status: "resolved" }];
   let runs: typeof run[] = [run];
   await mockPullDetail(page, () => ({ pull_request: pr, repository: repo, can_write: true, runs, findings }));
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await expect(page.getByRole("heading", { name: "No open findings", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resolved findings", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Edit Status:/ })).toHaveCount(0);
@@ -8905,7 +8908,7 @@ test("pull detail keeps independent findings and resolved backend filters, order
     if (holdResolved && new URL(route.request().url()).searchParams.get("status") === "resolved") await held;
     await route.fallback();
   });
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   const panel = page.getByRole("tabpanel");
   const open = page.getByRole("region", { name: "Open findings", exact: true });
   const resolved = page.getByRole("region", { name: "Resolved findings", exact: true });
@@ -9047,7 +9050,7 @@ for (const state of ["merged", "closed", "paused", "running", "viewer", "fork"] 
 
 test("pull detail retains evidence on transient errors and hides it after access is denied", async ({ page }) => {
   await mock(page);
-  await page.goto("/pulls/pr");
+  await page.goto("/pulls/pr?tab=findings");
   await expect(page.getByRole("region", { name: "Findings", exact: true })).toBeVisible();
   let status = 503;
   await page.route("**/api/v1/pulls/pr", (route) => route.fulfill({ status, json: { detail: status === 403 ? "Access denied" : "Service unavailable" } }));
@@ -9074,7 +9077,7 @@ for (const kind of ["repository", "findings"] as const) {
       if (failure && params.has("group")) return route.fulfill({ status: failure, json: { detail: failure === 403 ? "Access denied" : "Page unavailable" } });
       return route.fulfill({ json: kind === "repository" ? repositoryPage(pulls, params) : findingPage(findings, params) });
     });
-    await page.goto(kind === "repository" ? "/repositories/22" : "/pulls/pr");
+    await page.goto(kind === "repository" ? "/repositories/22" : "/pulls/pr?tab=findings");
     const group = page.getByRole("region", { name: kind === "repository" ? "Open" : "Open findings", exact: true });
     const rows = group.getByRole(kind === "repository" ? "link" : "button", { name: /Test (finding|pull request)/ });
     await expect(rows).toHaveCount(10);

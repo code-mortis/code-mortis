@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from "react-router-dom";
 import { normalizeReviewFilters, reviewFilterKeys, reviewFilterPrefixes, withReviewFilters, type ReviewFilterKey, type ReviewFilterScope } from "../lib/review-filters";
 
-export function useReviewFilters(scope: ReviewFilterScope) {
+export function useReviewFilters(scope: ReviewFilterScope, { enabled = true, legacyTab }: {
+  enabled?: boolean; legacyTab?: "findings";
+} = {}) {
   const [raw, setParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -14,11 +16,14 @@ export function useReviewFilters(scope: ReviewFilterScope) {
   const rawQuery = raw.toString();
   const current = new URLSearchParams();
   for (const key of reviewFilterKeys[scope]) for (const value of raw.getAll(`${reviewFilterPrefixes[scope]}${key}`)) current.append(key, value);
-  const needsNormalization = current.toString() !== canonical;
-  const normalized = withReviewFilters(raw, params, scope).toString();
+  const normalized = withReviewFilters(raw, params, scope);
+  const needsTab = legacyTab && !normalized.has("tab");
+  if (needsTab) normalized.set("tab", legacyTab);
+  const needsNormalization = current.toString() !== canonical || needsTab;
+  const normalizedQuery = normalized.toString();
   useEffect(() => {
-    if (needsNormalization) setParams(normalized, { replace: true, state: location.state });
-  }, [needsNormalization, normalized, setParams, location.state]);
+    if (enabled && needsNormalization) setParams(normalizedQuery, { replace: true, state: location.state });
+  }, [enabled, needsNormalization, normalizedQuery, setParams, location.state]);
   function resetPages(params: URLSearchParams) {
     for (const status of scope === "pull" || scope === "run" ? ["open"] : scope === "resolved" || scope === "dismissed" ? [scope] : []) params.delete(`${status}_page`);
     return params;

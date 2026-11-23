@@ -287,6 +287,7 @@ class PullRequest(Base):
     repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"), index=True)
     number: Mapped[int] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
     author: Mapped[str] = mapped_column(String(100))
     url: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(20), default="open")

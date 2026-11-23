@@ -104,6 +104,7 @@ EXPECTED_PUBLIC = {
 EXPECTED_SESSION_ONLY = {
     ("GET", "/api/v1/activity"),
     ("POST", "/api/v1/activity/read"),
+    ("GET", "/api/v1/pulls/{pr_id}/overview"),
     ("GET", "/api/v1/pulls/{pr_id}/code"),
     ("POST", "/api/v1/pulls/{pr_id}/code/file"),
     ("POST", "/api/v1/pulls/{pr_id}/code/workspace"),

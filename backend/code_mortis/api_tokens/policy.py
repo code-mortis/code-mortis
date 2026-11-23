@@ -85,6 +85,7 @@ SESSION_ONLY_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/activity"),
     ("POST", "/api/v1/activity/read"),
     ("GET", "/api/v1/runs/{run_id}/summary/attempts/{job_id}"),
+    ("GET", "/api/v1/pulls/{pr_id}/overview"),
     ("GET", "/api/v1/pulls/{pr_id}/code"),
     ("POST", "/api/v1/pulls/{pr_id}/code/file"),
     ("POST", "/api/v1/pulls/{pr_id}/code/workspace"),

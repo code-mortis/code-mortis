@@ -128,6 +128,10 @@
   list-style: decimal;
   padding-left: 1.4rem;
 }
+.markdown .contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
 .markdown code {
   font-size: 0.86em;
   background: var(--muted);

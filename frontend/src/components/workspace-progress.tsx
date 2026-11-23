@@ -12,9 +12,13 @@ export function WorkspaceProgressProvider({ children }: { children: ReactNode })
   return <PendingFallbacks.Provider value={{ pending, register }}>{children}</PendingFallbacks.Provider>;
 }
 
-export function WorkspaceProgressFallback() {
+export function useWorkspaceProgress(active: boolean) {
   const { register } = useContext(PendingFallbacks);
-  useEffect(register, [register]);
+  useEffect(() => active ? register() : undefined, [active, register]);
+}
+
+export function WorkspaceProgressFallback() {
+  useWorkspaceProgress(true);
   return null;
 }
 
