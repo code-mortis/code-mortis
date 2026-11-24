@@ -13,3 +13,5 @@ stop_workers() {
 trap stop_workers EXIT
 trap 'exit 0' TERM INT
 wait -n "$sync_pid" "$graph_pid"
+# A worker returning normally still means the service stopped unexpectedly.
+exit 1
