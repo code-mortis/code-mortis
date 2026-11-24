@@ -57,7 +57,7 @@ def main():
         for package in {entry[0].replace("tsx", "typescript") for entry in LANGUAGES.values()}:
             importlib.import_module(f"tree_sitter_{package}")
         restrict_syscalls()
-    except (ImportError, OSError, RuntimeError, ValueError):
+    except (ImportError, MemoryError, OSError, RuntimeError, ValueError):
         return 5
     try:
         body = bytearray()
@@ -71,7 +71,7 @@ def main():
             return 2
     except ValueError:
         return 2
-    except MemoryError:
+    except (MemoryError, OSError):
         return 3
     try:
         result = memoryview(extract(request).model_dump_json().encode())

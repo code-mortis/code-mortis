@@ -1,13 +1,16 @@
 import base64
+import errno
 import json
 import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from code_mortis.code_graph import client
+from code_mortis.code_graph import client, sandbox
 from code_mortis.code_graph.extract import extract
 from code_mortis.code_graph.syntax import LANGUAGES
 from code_mortis.core import file_policy
@@ -400,6 +403,20 @@ def test_worker_failure_messages_do_not_disclose_private_details(monkeypatch, er
         client.extract(request())
     assert failure.value.failure.code == code
     assert "private worker details" not in str(failure.value)
+
+
+@pytest.mark.parametrize(("import_error", "read_error", "exit_code"), [
+    pytest.param(MemoryError(), None, 5, id="grammar-import-memory-error"),
+    pytest.param(None, OSError(errno.EIO, "stdin failed"), 3, id="stdin-io-error"),
+])
+def test_sandbox_returns_controlled_error_status(monkeypatch, import_error, read_error, exit_code):
+    monkeypatch.setattr(sandbox, "ctypes", SimpleNamespace(CDLL=lambda _: SimpleNamespace(prctl=lambda *_: 0)))
+    monkeypatch.setattr(sandbox, "os", SimpleNamespace(getppid=lambda: 42, read=Mock(return_value=b"", side_effect=read_error)))
+    monkeypatch.setattr(sandbox, "sys", SimpleNamespace(argv=["sandbox", "42"]))
+    monkeypatch.setattr(sandbox.resource, "setrlimit", Mock())
+    monkeypatch.setattr(sandbox, "importlib", SimpleNamespace(import_module=Mock(side_effect=import_error)))
+    monkeypatch.setattr(sandbox, "restrict_syscalls", Mock())
+    assert sandbox.main() == exit_code
 
 
 @pytest.mark.parametrize("cancel", [True, False])
