@@ -4117,6 +4117,11 @@ export interface components {
              */
             automatic: boolean;
             /**
+             * Incremental Reviews
+             * @default false
+             */
+            incremental_reviews: boolean;
+            /**
              * Include Bot Prs
              * @default false
              */

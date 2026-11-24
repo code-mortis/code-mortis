@@ -339,6 +339,7 @@ class ReviewPlan:
     units: list[ReviewUnit] = field(default_factory=list)
     batches: list[list[ReviewUnit]] = field(default_factory=list)
     limit_reason: str | None = None
+    comparison: dict = field(default_factory=dict)
 
     def snapshot(self):
         return asdict(self)

@@ -194,8 +194,9 @@ def create_run(
         ReviewRun.pr_id == pr.id, ReviewRun.status.in_(ACTIVE),
     ).with_for_update().execution_options(populate_existing=True)).all()
     for run in active:
-        # A planner or budget scheduler upgrade alone must not start a duplicate active review.
+        # Reuse active reviews when an upgrade only adds a default or changes the planner or scheduler.
         config_matches = {**run.config, "planner_version": config["planner_version"],
+                          "settings": {"incremental_reviews": False, **run.config.get("settings", {})},
                           "budget_schedule": config["budget_schedule"]} == config
         if run.head_sha == pr.head_sha and run.base_sha == pr.base_sha and config_matches:
             if request_key:

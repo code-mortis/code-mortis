@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { CircleCheck, FileCode2, History } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { Run } from "../api";
 import { fileFeedback } from "../lib/run-feedback";
 import { errorFeedback } from "../lib/error-feedback";
@@ -58,8 +59,10 @@ function FileStatus({ file }: { file: FileResult }) {
 export function RunCoverage({ run }: { run: Run }) {
   const [pages, setPages] = useState<Record<string, number>>({});
   const { items, hasScope, counts } = coverageFiles(run);
+  const baseline = record(run.report?.comparison).baseline_run_id;
   return <section aria-label="Coverage" className="min-w-0">
     <p className="text-xs leading-relaxed text-muted-foreground">See which files were reviewed or reused from earlier runs, and why others were left unreviewed.</p>
+    {counts.reused > 0 && typeof baseline === "string" && <p className="mt-2 text-xs text-muted-foreground">Coverage reused from the <Link to={`/runs/${encodeURIComponent(baseline)}?tab=coverage`} className="font-medium underline underline-offset-4">baseline review</Link>.</p>}
     {!run.report ? <div className="mt-4"><Empty title={active(run.status) ? "Coverage is being recorded" : "No coverage report was produced"}>{active(run.status) ? "Validated file results will appear as the review progresses." : "This run has no saved coverage evidence. No findings does not mean every file was reviewed."}</Empty></div> : <>
       {!hasScope && <p role="status" className="mt-2 text-xs text-muted-foreground">Selected review scope was not recorded.</p>}
       <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2">{countKeys.map((key) => <div key={key} className="flex items-baseline gap-2"><dt className="text-xs capitalize text-muted-foreground">{key}</dt><dd className={`text-sm tabular-nums ${key === "failed" && counts.failed ? "text-destructive" : ""}`}>{counts[key]}</dd></div>)}</dl>

@@ -158,12 +158,18 @@ def check_payload(run: ReviewRun, findings: int) -> dict:
         )
     coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
     if isinstance(coverage.get("selected"), list):
-        completed = len(coverage.get("completed", [])) + len(coverage.get("reused", []))
+        reused = len(coverage.get("reused", []))
+        completed = len(coverage.get("completed", [])) + reused
         lines.append(f"Coverage: {completed} of {len(coverage['selected'])} selected review items completed.")
+        if reused:
+            lines.append(f"Files reused from an earlier review: {reused}.")
     elif isinstance((run.progress or {}).get("selected"), int):
         lines.append(
             f"Coverage: {run.progress.get('completed', 0)} of {run.progress['selected']} assigned files completed."
         )
+        reused = run.progress.get("reused")
+        if type(reused) is int and reused > 0:
+            lines.append(f"Files reused from an earlier review: {reused}.")
     if conclusion == "success":
         lines.append(
             ("Historical assessment completed; no new comments were published. " if assessment_only(run)

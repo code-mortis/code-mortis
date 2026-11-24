@@ -73,7 +73,9 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
     ? current?.key ?? (summaryPublicationPending ? "summary" : phase) : "analysis";
   let unit = "files";
   let total = coverage.hasScope ? coverage.counts.selected : run.progress.selected;
-  let completed = coverage.hasScope ? coverage.counts.completed + coverage.counts.reused : run.progress.completed;
+  let completed: unknown = coverage.hasScope ? coverage.counts.completed + coverage.counts.reused
+    : typeof run.progress.completed === "number"
+      ? run.progress.completed + (typeof run.progress.reused === "number" ? run.progress.reused : 0) : undefined;
   if (progressPhase === "assessment") {
     unit = "candidates";
     total = assessment?.candidates;

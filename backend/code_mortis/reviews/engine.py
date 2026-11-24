@@ -238,7 +238,11 @@ def _completed_outcomes(result, batch):
 
 def _report(plan, prepared, outcomes, *, tokens, status=None):
     completed, failed, comments = [], [], []
+    reused = plan.comparison.get("reused_paths", [])
+    reused_paths = set(reused)
     for item in plan.selected:
+        if item.path in reused_paths:
+            continue
         units = item.units
         if not item.error and units and all(outcomes.get(unit.key, {}).get("status") == "completed" for unit in units):
             completed.append(item.path)
@@ -249,13 +253,13 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
                 comments.extend(outcomes[unit.key].get("comments", []))
     if status is None:
         status = ("skipped" if plan.limit_reason or not plan.selected
-                  else "partial" if failed and any(value["status"] == "completed" for value in outcomes.values())
+                  else "partial" if failed and (reused or any(value["status"] == "completed" for value in outcomes.values()))
                   else "failed" if failed else "completed")
     def entries(paths):
         return [{"item_id": analysis.fingerprint(path), "path": path} for path in paths]
     report = {"manifest": {"schema_version": "code-mortis.pr-analysis/v1", "terminal_state": status,
                 "coverage": {"selected": entries([item.path for item in plan.selected]),
-                    "completed": entries(completed), "failed": entries(failed), "reused": [], "waived": []}},
+                    "completed": entries(completed), "failed": entries(failed), "reused": entries(reused), "waived": []}},
               "engine": "mortis", "engine_version": VERSION, "excluded_files": plan.exclusions,
               "errors": [{"path": item.path, "message": item.error or next((outcomes.get(unit.key, {}).get("error")
                     for unit in item.units if outcomes.get(unit.key, {}).get("error")), "incomplete_analysis")}
@@ -264,6 +268,9 @@ def _report(plan, prepared, outcomes, *, tokens, status=None):
               "units": [{"key": unit.key, "path": unit.path, "start_line": unit.start_line,
                          "end_line": unit.end_line, **outcomes.get(unit.key, {"status": "incomplete"})}
                         for batch in prepared for unit in batch.units]}
+    if reused:
+        report["comparison"] = {"strategy": "incremental", "baseline_run_id": plan.comparison["baseline_run_id"],
+                                "baseline_head_sha": plan.comparison["baseline_head_sha"]}
     if plan.limit_reason:
         selected = report["manifest"]["coverage"]["selected"]
         report["manifest"] = {"schema_version": "code-mortis.file-limit/v1", "terminal_state": "skipped",
@@ -476,12 +483,16 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
             admission_until = (float("inf") if batch.options.get("max_output_tokens") == 0 else
                            time.monotonic() + min(60, batch.connection.get("options", {}).get("timeout_sec", 120)))
     progress_lock = asyncio.Lock()
+    reused = set(plan.comparison.get("reused_paths", ()))
 
     async def save_progress(batch_outcomes):
         async with progress_lock:
             reported_outcomes.update(batch_outcomes)
             items = {}
             for item in plan.selected:
+                if item.path in reused:
+                    items[item.path] = {"status": "reused"}
+                    continue
                 values = [reported_outcomes.get(unit.key) for unit in item.units]
                 state = ("failed" if item.error or any(value and value["status"] == "failed" for value in values)
                          else "completed" if values and all(value and value["status"] == "completed" for value in values)
@@ -489,6 +500,7 @@ def review(repo, env, plan, prepared, *, job_id, job_attempt, credentials, autho
                 items[item.path] = {"status": state}
             await asyncio.to_thread(progress, {"phase": "analysis", "selected": len(plan.selected),
                 "completed": sum(value["status"] == "completed" for value in items.values()),
+                **({"reused": len(reused)} if reused else {}),
                 "failed": sum(value["status"] == "failed" for value in items.values()), "items": items,
                 "completed_units": sum(value["status"] == "completed" for value in reported_outcomes.values()),
                 "selected_units": sum(len(batch.units) for batch in prepared)})
