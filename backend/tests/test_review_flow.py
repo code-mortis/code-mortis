@@ -491,16 +491,19 @@ def test_runs_deduplicate_and_new_commits_supersede(seed):
         assert first.publication == "not_applicable" and second.id != first.id
 
 
-def test_review_planner_upgrade_reuses_active_same_revision(seed):
+def test_review_upgrade_reuses_active_same_revision(seed):
     with transaction() as db:
         repo, pr, actor = db.get(Repository, 22), db.get(PullRequest, "pr"), db.get(User, 7)
         first = reviews.create_run(db, pr, repo, "manual", actor)
         assert first.config["planner_version"] == planning.VERSION
-        first.config = {**first.config, "planner_version": planning.LEGACY_VERSION}
+        legacy_settings = dict(first.config["settings"])
+        assert legacy_settings.pop("incremental_reviews") is False
+        first.config = {**first.config, "planner_version": planning.LEGACY_VERSION, "settings": legacy_settings}
         db.flush()
         again = reviews.create_run(db, pr, repo, "manual", actor)
         assert again.id == first.id
         assert again.config["planner_version"] == planning.LEGACY_VERSION
+        assert "incremental_reviews" not in again.config["settings"]
 
 
 def test_supersession_refreshes_assessment_revision_before_withholding(seed):
