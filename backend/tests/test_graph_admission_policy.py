@@ -1,7 +1,6 @@
 import base64
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from test_code_graph_workflow import fixture_git, run
 from test_code_graph_workflow import graph as graph
@@ -129,25 +128,6 @@ def test_changed_limits_refresh_identity_failure_preserves_prior_index(graph, cl
     state = client.get("/api/v1/repositories/22/code-graph").json()
     assert state["indexed_sha"] == first.commit_sha and state["state"] == "failed"
     assert state["failure"]["attempt_reference"] and "2,001" in state["error"]
-
-
-@pytest.mark.parametrize("status,code", [(401, "parser_authentication"), (403, "parser_authentication"),
-                                       (409, "parser_busy"), (413, "transport_limit"),
-                                       (422, "parser_invalid_request"), (504, "parser_timeout"),
-                                       (502, "parser_terminated"), (507, "parser_storage_limit"), (500, "parser_invalid_result"), (200, "parser_invalid_result")])
-def test_safe_parser_failures(monkeypatch, status, code):
-    original = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda request: httpx.Response(status, stream=httpx.ByteStream(b"private-worker-secret")))
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=transport, **kw))
-    payload = CodeGraphRequest(repository_id=22, commit_sha="a" * 40, policy_digest="b" * 64, files=[])
-    from code_mortis.core.config import settings
-
-    monkeypatch.setattr(settings(), "code_graph_parser_url", "http://parser")
-    monkeypatch.setattr(settings(), "code_graph_token", "fixture")
-    with pytest.raises(errors.GraphError) as raised:
-        parser.extract(payload)
-    assert raised.value.failure.code == code
-    assert "private-worker-secret" not in str(raised.value)
 
 
 def test_tree_guard_is_independent_and_errors_are_sanitized(monkeypatch, tmp_path, caplog):

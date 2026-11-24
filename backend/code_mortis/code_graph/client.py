@@ -1,11 +1,14 @@
 """Trusted worker transport and validation against the submitted snapshot manifest."""
 
-import asyncio
+import os
+import signal
+import subprocess
+import sys
+import tempfile
 import time
 from bisect import bisect_right
+from contextlib import suppress
 from pathlib import PurePosixPath
-
-import httpx
 
 from code_mortis.code_graph import errors
 from code_mortis.code_graph.syntax import LANGUAGES, import_target, python_module_targets
@@ -20,7 +23,7 @@ from code_mortis.schemas.code_graph import (
 
 
 class ParserUnavailable(errors.GraphError):
-    def __init__(self, message="Parser unavailable", *, code="parser_unavailable"):
+    def __init__(self, *, code="parser_unavailable"):
         super().__init__(code, "parser", *errors.PARSER_ERRORS[code])
 
 
@@ -98,70 +101,67 @@ def validate_result(request: CodeGraphRequest, result: CodeGraphResult) -> CodeG
     return result
 
 
-async def _request(payload, body, url, token, stopped):
-    deadline = time.monotonic() + EXTRACTION_SECONDS
-
-    async def exchange():
-        async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=EXTRACTION_SECONDS) as client:
-            async with client.stream("POST", url.rstrip("/") + "/extract", content=body,
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
-                                              "Accept-Encoding": "identity"}) as response:
-                if response.status_code != 200:
-                    code = {401: "parser_authentication", 403: "parser_authentication", 409: "parser_busy",
-                            413: "transport_limit", 422: "parser_invalid_request", 504: "parser_timeout",
-                            502: "parser_terminated", 507: "parser_storage_limit"}.get(response.status_code, "parser_invalid_result")
-                    raise ParserUnavailable(code=code)
-                if response.headers.get("content-encoding", "identity") != "identity":
-                    raise ParserUnavailable(code="parser_invalid_result")
-                length = response.headers.get("content-length")
-                if length is not None and not 0 <= int(length) <= MAX_RESULT_BYTES:
-                    raise ParserUnavailable(code="parser_invalid_result")
-                raw = bytearray()
-                async for chunk in response.aiter_raw():
-                    if len(raw) + len(chunk) > MAX_RESULT_BYTES:
-                        raise ParserUnavailable(code="parser_invalid_result")
-                    raw.extend(chunk)
-                result = CodeGraphResult.model_validate_json(raw)
-                if not {"schema_version", "extractor_version"} <= result.model_fields_set:
-                    raise ParserUnavailable(code="parser_invalid_result")
-                result = validate_result(payload, result)
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Parser validation exceeded the deadline")
-                return result
-
-    task = asyncio.create_task(exchange())
-    try:
-        async with asyncio.timeout(EXTRACTION_SECONDS):
-            while not task.done():
-                if stopped():
-                    raise ExtractionCancelled("Code graph extraction cancelled")
-                await asyncio.wait({task}, timeout=0.1)
-            if stopped():
-                raise ExtractionCancelled("Code graph extraction cancelled")
-            return await task
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+def _run(body, stopped, deadline):
+    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as result:
+        request.write(body)
+        request.seek(0)
+        with subprocess.Popen(
+            [sys.executable, "-IB", "-m", "code_mortis.code_graph.sandbox", str(os.getpid())],
+            env={}, cwd="/", stdin=request, stdout=result, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        ) as process:
+            try:
+                while True:
+                    if stopped():
+                        raise ExtractionCancelled("Code graph extraction cancelled")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Code graph extraction exceeded the deadline")
+                    try:
+                        status = process.wait(timeout=min(0.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                if process.poll() is None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+        if status != 0:
+            code = {2: "parser_invalid_request", 3: "parser_invalid_result", 4: "parser_storage_limit",
+                    5: "parser_unavailable", -signal.SIGXFSZ: "parser_storage_limit"}.get(status, "parser_terminated")
+            raise ParserUnavailable(code=code)
+        result.seek(0)
+        data = result.read(MAX_RESULT_BYTES + 1)
+        if len(data) > MAX_RESULT_BYTES:
+            raise ParserUnavailable(code="parser_invalid_result")
+        return data
 
 
 def extract(payload: CodeGraphRequest, stopped=lambda: False) -> CodeGraphResult:
-    from code_mortis.core.config import settings
-
     # Revalidate callers' models too: Pydantic model_copy/model_construct can bypass validators.
     payload = CodeGraphRequest.model_validate(payload.model_dump())
     body = payload.model_dump_json().encode()
     if len(body) > MAX_REQUEST_BYTES:
         raise errors.failure("transport_limit")
-    config = settings()
-    if not config.code_graph_parser_url or not config.code_graph_token:
-        raise ParserUnavailable("Code graph parser is not configured")
+    if stopped():
+        raise ExtractionCancelled("Code graph extraction cancelled")
+    deadline = time.monotonic() + EXTRACTION_SECONDS
     try:
-        return asyncio.run(_request(payload, body, config.code_graph_parser_url, config.code_graph_token, stopped))
+        raw = _run(body, stopped, deadline)
+        result = CodeGraphResult.model_validate_json(raw)
+        if not {"schema_version", "extractor_version"} <= result.model_fields_set:
+            raise ParserUnavailable(code="parser_invalid_result")
+        result = validate_result(payload, result)
+        if stopped():
+            raise ExtractionCancelled("Code graph extraction cancelled")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Parser validation exceeded the deadline")
+        return result
     except (ExtractionCancelled, errors.GraphError):
         raise
-    except (httpx.TimeoutException, TimeoutError):
+    except TimeoutError:
         raise ParserUnavailable(code="parser_timeout") from None
-    except httpx.HTTPError:
+    except OSError:
         raise ParserUnavailable() from None
     except ValueError:
         raise ParserUnavailable(code="parser_invalid_result") from None

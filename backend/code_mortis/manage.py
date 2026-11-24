@@ -50,24 +50,7 @@ def main():
         path = Path(args.file)
         if not path.is_file():
             parser.error(f"{args.file} does not exist; use init-env for a new instance")
-        content = path.read_text()
-        missing = []
-        for key in ("CM_CODE_GRAPH_TOKEN",):
-            if re.search(rf"(?m)^{key}=.+$", content):
-                continue
-            if re.search(rf"(?m)^{key}=", content):
-                parser.error(f"{key} is empty; remove the empty line before upgrading")
-            missing.append(key)
-        if not missing:
-            print("Service configuration already exists; no values were changed.")
-            return
-        path.chmod(0o600)
-        with path.open("a") as output:
-            output.write(
-                ("" if content.endswith("\n") else "\n")
-                + "".join(f"{key}={secrets.token_urlsafe(32)}\n" for key in missing)
-            )
-        print(f"Added {', '.join(missing)}. Existing keys, credentials, URLs and data were preserved.")
+        print("Service configuration is current.")
     elif args.command == "init-env":
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", args.owner):
             parser.error("Use a valid GitHub username")
@@ -100,7 +83,6 @@ def main():
             "CM_OWNER_GITHUB_LOGIN": args.owner,
             "CM_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
             "CM_BOOTSTRAP_TOKEN": secrets.token_urlsafe(32),
-            "CM_CODE_GRAPH_TOKEN": secrets.token_urlsafe(32),
             "COMPOSE_PROFILES": "",
             "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
             "CM_COOKIE_SECURE": "true" if url.scheme == "https" else "false",

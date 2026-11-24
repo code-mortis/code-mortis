@@ -28,7 +28,7 @@ def measured(code, actual, limit):
 
 
 PARSER_ERRORS = {
-    "parser_unavailable": ("The indexing worker could not connect to the parser.", "Check the parser service, then retry."),
+    "parser_unavailable": ("The indexing worker could not start the isolated parser.", "Check the worker image and Linux sandbox support, then retry."),
     "parser_authentication": ("The parser rejected the worker's credentials.", "Check that worker and parser use the same token, then retry."),
     "parser_busy": ("The parser is already processing another index.", "Wait for that attempt to finish, then retry."),
     "parser_timeout": ("The parser exceeded the indexing deadline.", "Reduce the source scope or check parser resources, then retry."),

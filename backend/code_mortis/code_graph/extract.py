@@ -2,17 +2,13 @@
 
 import importlib
 import re
-import resource
-import sys
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 from tree_sitter import Language, Parser
 
 from code_mortis.code_graph.syntax import LANGUAGES, descendants, import_target, python_module_targets
 from code_mortis.schemas.code_graph import (
     MAX_FACTS,
-    MAX_REQUEST_BYTES,
-    MAX_RESULT_BYTES,
     CodeGraphFile,
     CodeGraphImport,
     CodeGraphRequest,
@@ -225,26 +221,3 @@ def extract(request: CodeGraphRequest) -> CodeGraphResult:
             item.target_path = target
             item.provenance = "relative_path" if item.specifier.startswith(".") else "absolute_path"
     return CodeGraphResult(**request.model_dump(exclude={"files"}), files=files, symbols=symbols, imports=imports)
-
-
-def main():
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_RESULT_BYTES, MAX_RESULT_BYTES))
-    request_path, result_path = map(Path, sys.argv[1:])
-    try:
-        if request_path.stat().st_size > MAX_REQUEST_BYTES:
-            raise ValueError("Oversize request")
-        request = CodeGraphRequest.model_validate_json(request_path.read_bytes())
-        if not {"schema_version", "extractor_version"} <= request.model_fields_set:
-            raise ValueError("Explicit protocol and extractor versions are required")
-    except ValueError:
-        return 2
-    try:
-        result_path.write_text(extract(request).model_dump_json(), encoding="utf-8")
-    except OSError as exc:
-        return 4 if exc.errno in {28, 122} else 3
-    except (ValueError, MemoryError):
-        return 3
-    return 0
-
-if __name__ == "__main__":
-    sys.exit(main())
