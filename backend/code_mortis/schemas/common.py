@@ -249,6 +249,7 @@ class RepoSettings(RunLimits):
     summary_diagram_enabled: bool = False
     ai_fix_prompts_enabled: bool = False
     automatic: bool = True
+    incremental_reviews: bool = False
     include_bot_prs: bool = False
     auto_resolve: bool = False
     model: str = Field(default="", max_length=150)

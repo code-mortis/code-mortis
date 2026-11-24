@@ -699,12 +699,15 @@ def render(db, pr, run):
     coverage = (run.report or {}).get("manifest", {}).get("coverage", {})
     details = []
     if isinstance(coverage.get("selected"), list):
-        completed = len(coverage.get("completed", [])) + len(coverage.get("reused", []))
+        completed = len(coverage.get("completed", []))
+        reused = len(coverage.get("reused", []))
         details = [f"Selected: {len(coverage['selected'])}. Completed: {completed}. Failed: {len(coverage.get('failed', []))}. Skipped: {len(coverage.get('waived', []))}."]
+        if reused:
+            details.append(f"Reused from an earlier review: {reused}.")
         excluded = (run.report or {}).get("excluded_files")
         if isinstance(excluded, list):
             details.append(f"Excluded: {len(excluded)}.")
-        if run.status != "completed" or completed != len(coverage["selected"]):
+        if run.status != "completed" or completed + reused != len(coverage["selected"]):
             details.append("Detailed review coverage is incomplete. This is not a clean review of the entire PR.")
         for item in coverage.get("failed", [])[:10] + coverage.get("waived", [])[:10]:
             details.append(f"- {text(item.get('path', ''))}: {text(item.get('reason', 'Not completed'))}")

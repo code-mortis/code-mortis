@@ -430,6 +430,13 @@ export function RepositorySettings({ repository: repo }: { repository: Repositor
                 </div>
                 <div className="flex items-start justify-between gap-4 p-5">
                   <div className="space-y-2">
+                    <label htmlFor={`${id}-incremental`} className="text-sm font-medium">Incremental automatic reviews</label>
+                    <p id={`${id}-incremental-hint`} className="text-xs leading-relaxed text-muted-foreground">Reuse coverage for unchanged files when a compatible review exists. Manual reviews and reviews using code graph context cover every eligible file.</p>
+                  </div>
+                  <Switch id={`${id}-incremental`} aria-describedby={`${id}-incremental-hint`} checked={settings.incremental_reviews ?? false} disabled={!settings.automatic} onCheckedChange={(value) => change("incremental_reviews", value)} className="mt-0.5 shrink-0" />
+                </div>
+                <div className="flex items-start justify-between gap-4 p-5">
+                  <div className="space-y-2">
                     <label htmlFor={`${id}-bots`} className="text-sm font-medium">Include bot pull requests</label>
                     <p id={`${id}-bots-hint`} className="text-xs leading-relaxed text-muted-foreground">Import pull requests from bots such as Dependabot and apply your automatic review settings. Existing pull requests stay visible when this is off.</p>
                   </div>

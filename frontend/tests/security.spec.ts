@@ -14,7 +14,7 @@ const sha = "a".repeat(40);
 const repository: Schema["RepositoryOut"] = { id: 22, installation_id: 10, full_name: "acme/payments", private: false,
   active: true, enabled: false, code_graph_enabled: false, connection_id: "connection", connection_requires_setup: false, open_prs: 0, has_running_review: false,
   settings: { analysis_engine: "mortis", timeout_seconds: 900, token_budget: 200000, language: "English",
-    summary_diagram_enabled: false, ai_fix_prompts_enabled: false, automatic: false, include_bot_prs: false,
+    summary_diagram_enabled: false, ai_fix_prompts_enabled: false, automatic: false, incremental_reviews: false, include_bot_prs: false,
     model: "", review_sensitivity: "balanced", background: "", exclusions: "",
     delegated_context_bytes: 800000, concurrency: 2, effort: "high", max_files: 40, auto_resolve: false } };
 const summary: Schema["SecuritySummary"] = { grade: "D", state: "current", coverage: "complete", freshness: "current", grade_scan_id: "scan", grade_sha: sha,

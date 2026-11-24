@@ -26,6 +26,7 @@ from code_mortis.models import (
     AnalysisTask,
     CodeGraphRepository,
     Connection,
+    Finding,
     InferenceAdmission,
     Job,
     PullRequest,
@@ -34,7 +35,7 @@ from code_mortis.models import (
     User,
 )
 from code_mortis.reviews import engine, graph_context, mortis, planning
-from code_mortis.reviews.service import connection_snapshot
+from code_mortis.reviews.service import connection_snapshot, save_analysis
 from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, blob_sha
 from code_mortis.schemas.common import RepoSettings
 from code_mortis.schemas.inference import ToolCall
@@ -44,8 +45,6 @@ CREDENTIALS = {"api_key": "synthetic-provider-value", "extra_headers": {}}
 
 @pytest.mark.parametrize(("selected", "label"), [("mortis", "Mortis"), ("ocr", "The review engine")])
 def test_failed_analysis_names_selected_engine(scenario, selected, label):
-    from code_mortis.reviews.service import save_analysis
-
     with transaction() as db:
         run = db.get(ReviewRun, "mortis-run")
         run.config = {**run.config, "analysis_engine": selected}
@@ -165,6 +164,85 @@ def settings(scenario, **changes):
         run = db.get(ReviewRun, "mortis-run")
         run.config = {**run.config, "settings": scenario["options"]}
         db.get(Repository, 22).settings = scenario["options"]
+
+
+@pytest.mark.parametrize(("case", "new_paths", "reused_paths"), [
+    ("new_push", ["guide.md"], ["app.py"]),
+    ("unchanged_scope", [], ["app.py", "guide.md"]),
+    ("incomplete", ["app.py", "guide.md"], []),
+    ("unpublished", ["app.py", "guide.md"], []),
+    ("settings_changed", ["app.py", "guide.md"], []),
+    ("rewritten_history", ["app.py", "guide.md"], []),
+    ("manual", ["app.py", "guide.md"], []),
+])
+def test_incremental_review_uses_only_compatible_saved_coverage(scenario, monkeypatch, case, new_paths, reused_paths):
+    settings(scenario, incremental_reviews=True)
+    with transaction() as db:
+        run = db.get(ReviewRun, "mortis-run")
+        run.config = {**run.config, "planner_version": planning.VERSION}
+    baseline = scenario["head"]
+    assert (first := review(scenario))[0] == "completed"
+    save_analysis("mortis-run", "mortis-job:1", *first)
+
+    root = scenario["root"]
+    fixture_git(root, "checkout", "--detach", "-q", baseline)
+    if case == "rewritten_history":
+        fixture_git(root, "reset", "--soft", scenario["base"])
+    name = ".env" if case == "unchanged_scope" else "guide.md"
+    (root / name).write_text("Updated behavior.\n")
+    fixture_git(root, "add", name)
+    fixture_git(root, "commit", "-qm", "subsequent push")
+    head = fixture_git(root, "rev-parse", "HEAD")
+    if case == "settings_changed":
+        scenario["options"] = {**scenario["options"], "language": "Spanish"}
+    with transaction() as db:
+        previous = db.get(ReviewRun, "mortis-run")
+        previous.status = "partial" if case == "incomplete" else "completed"
+        previous.publication = "failed" if case == "unpublished" else "published"
+        previous.stages = {"assessment": {"status": "completed"}}
+        previous.progress = {**previous.progress, **scenario["progress"][1]}
+        db.get(PullRequest, "pr").head_sha = head
+        db.add(ReviewRun(id="next-run", pr_id="pr", actor_id=7,
+                         trigger="manual" if case == "manual" else "automatic", engine="mortis",
+                         dedup_key="next-run", base_sha=scenario["base"], head_sha=head, started_at=now(),
+                         created_at=previous.created_at + timedelta(seconds=1), status="running",
+                         config={**previous.config, "settings": scenario["options"]},
+                         progress={"execution": "next-job:1"}))
+        db.add(Job(id="next-job", kind="review", payload={"run_id": "next-run"}, status="running",
+                   attempts=1, lease_until=now() + timedelta(minutes=10)))
+
+    @contextmanager
+    def snapshot_repo(name, number, base_sha, head_sha, token, stopped, **kwargs):
+        assert (base_sha, head_sha) == (scenario["base"], head)
+        assert not stopped()
+        yield root, {}, {}, base_sha
+
+    monkeypatch.setattr(source, "review_snapshot", snapshot_repo)
+    scenario.update(head=head, remote_head=head)
+    scenario["wire"].clear()
+    result = review(scenario, run_id="next-run", claim="next-job:1")
+    status, report, comments = result
+    coverage = report["manifest"]["coverage"]
+    assert status == "completed"
+    assert [item["path"] for item in coverage["selected"]] == ["app.py", "guide.md"]
+    assert [item["path"] for item in coverage["completed"]] == new_paths
+    assert [item["path"] for item in coverage["reused"]] == reused_paths
+    assert len(scenario["wire"]) == len(new_paths)
+    if reused_paths:
+        assert report["comparison"] == {"strategy": "incremental", "baseline_run_id": "mortis-run",
+                                        "baseline_head_sha": baseline}
+        assert not comments
+        # A later baseline change must not rewrite the current job's frozen assignments.
+        with transaction() as db:
+            db.get(ReviewRun, "mortis-run").publication = "failed"
+        assert review(scenario, run_id="next-run", claim="next-job:1") == result
+        assert len(scenario["wire"]) == len(new_paths)
+        save_analysis("next-run", "next-job:1", *result)
+        with transaction() as db:
+            finding = db.scalar(select(Finding))
+            assert finding.status == "open" and finding.last_seen_run_id == "mortis-run"
+    else:
+        assert "comparison" not in report
 
 
 @pytest.mark.parametrize("workflow", [False, True])

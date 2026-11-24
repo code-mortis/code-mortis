@@ -155,6 +155,8 @@ def create_run(
         raise ValueError("The selected connection no longer exists.")
     authorize_connection(db, connection, repo, trigger, actor)
     options = RepoSettings.for_execution(repo.settings)
+    if not options["incremental_reviews"]:
+        del options["incremental_reviews"]
     if original_rules_from is not None:
         original_rule_settings = original_rules_from.config["settings"]
         options["rules"] = original_rule_settings.get("rules")

@@ -24,7 +24,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import engine, graph_context, planning
+from code_mortis.reviews import comparison, engine, graph_context, planning
 from code_mortis.schemas.analysis import PlanSpec, TaskSpec
 
 
@@ -144,27 +144,39 @@ def review(full_name, number, base_sha, head_sha, connection, credentials, optio
         source_code_policy = frozen_plan["versions"].get("source_code") if frozen_plan else engine.SOURCE_CODE_POLICY
         prompt_version = frozen_plan["versions"]["prompt"] if frozen_plan else engine.PROMPT_VERSION
         source_tool_policy = frozen_plan["versions"].get("source_tools") if frozen_plan else engine.SOURCE_TOOL_POLICY
+        recovery_policy = frozen_plan["versions"].get("output_recovery") if frozen_plan else analysis.OUTPUT_RECOVERY_POLICY
+        if recovery_policy not in {None, "split-units/v1", analysis.OUTPUT_RECOVERY_POLICY}:
+            raise ValueError("The saved output-recovery policy is unsupported")
+        versions = {"engine": engine.VERSION, "planner": planner_version, "prompt": prompt_version,
+                    "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
+                    **({"source_tools": source_tool_policy} if source_tool_policy else {}),
+                    **({"source_code": source_code_policy} if source_code_policy else {}),
+                    **({"output_recovery": recovery_policy} if recovery_policy else {}),
+                    **({"budget_schedule": budget_schedule} if budget_schedule else {}),
+                    **({"output_tokens": output_token_policy} if output_token_policy else {})}
+        execution_settings = {**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
+                              "workflow_contract": "mortis-workflow/v1"}
+        if frozen_plan is not None:
+            selection.comparison = frozen_plan["settings"].get("comparison", {})
+        elif immutable_options.get("incremental_reviews") and not graph_options and planner_version == planning.VERSION:
+            signature = comparison.signature(selection, execution_settings, versions, connection, secret,
+                                             credentials.get("redaction_rules", ()))
+            selection.comparison = comparison.select_baseline(run_id, signature, selection, path, env, cancelled)
+        if selection.comparison:
+            execution_settings["comparison"] = selection.comparison
+            reused = set(selection.comparison.get("reused_paths", ()))
+            # The frozen planner assigns one file per batch. Keep the full scope for coverage and source bounds.
+            selection.batches = [batch for batch in selection.batches if batch[0].path not in reused]
         prepared = engine.prepare_batches(selection, connection, immutable_options, credentials,
                                            graph_by_path=graph_sources, stopped=cancelled,
                                            output_token_policy=output_token_policy, source_code_policy=source_code_policy,
                                            prompt_version=prompt_version, source_tool_policy=source_tool_policy)
         graph_omissions = {batch.key: batch.graph_omitted for batch in prepared if batch.graph_omitted}
         graph = {"options": graph_options, "selections": graph_records, "prompt_omissions": graph_omissions}
-        recovery_policy = frozen_plan["versions"].get("output_recovery") if frozen_plan else analysis.OUTPUT_RECOVERY_POLICY
-        if recovery_policy not in {None, "split-units/v1", analysis.OUTPUT_RECOVERY_POLICY}:
-            raise ValueError("The saved output-recovery policy is unsupported")
         specification = PlanSpec(repository_id=repository_id, run_id=run_id, initiator_id=actor_id,
             authorization=authority, trigger=trigger, connection=connection,
             revisions={"base": base_sha, "head": head_sha, "merge_base": merge_base},
-            versions={"engine": engine.VERSION, "planner": planner_version, "prompt": prompt_version,
-                      "rules": selection.rules_digest, "schema": engine.SCHEMA_VERSION, "file_policy": str(file_policy.VERSION),
-                      **({"source_tools": source_tool_policy} if source_tool_policy else {}),
-                      **({"source_code": source_code_policy} if source_code_policy else {}),
-                      **({"output_recovery": recovery_policy} if recovery_policy else {}),
-                      **({"budget_schedule": budget_schedule} if budget_schedule else {}),
-                      **({"output_tokens": output_token_policy} if output_token_policy else {})},
-            settings={**immutable_options, "max_evidence_rounds": engine.ROUNDS[immutable_options["effort"]],
-                      "workflow_contract": "mortis-workflow/v1"},
+            versions=versions, settings=execution_settings,
             file_policy={**file_policy.policy(immutable_options), "digest": selection.policy_digest},
             selected=[{"path": item.path, "old_path": item.old_path, "status": item.status,
                        "blob_sha": item.blob_sha, "error": item.error,

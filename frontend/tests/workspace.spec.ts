@@ -1803,10 +1803,10 @@ test("repository scan limits validate across sections and save independently of 
     .toMatchObject({ scan_settings: { exclusions: "", assessment_token_budget: null } });
 });
 
-test("stage budgets and optional overview content save independently", async ({ page }) => {
+test("stage budgets, incremental reviews, and optional overview content save independently", async ({ page }) => {
   const requests = await mock(page);
   await page.goto("/repositories/22/settings?tab=reviews");
-  for (const name of ["Include a diagram in the PR overview", "Include AI fix prompts"]) {
+  for (const name of ["Incremental automatic reviews", "Include a diagram in the PR overview", "Include AI fix prompts"]) {
     const toggle = page.getByRole("switch", { name, exact: true });
     await expect(toggle).not.toBeChecked();
     await toggle.check();
@@ -1818,7 +1818,7 @@ test("stage budgets and optional overview content save independently", async ({ 
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect(requests.find((request) => request.path === "/repositories/22")?.body).toMatchObject({
     settings: { token_budget: 11000, assessment_token_budget: 22000, verification_token_budget: null,
-      summary_token_budget: 33000, summary_diagram_enabled: true, ai_fix_prompts_enabled: true },
+      summary_token_budget: 33000, summary_diagram_enabled: true, ai_fix_prompts_enabled: true, incremental_reviews: true },
   });
 });
 
@@ -3806,12 +3806,14 @@ test("run coverage shows compact file rows and reveals the remaining saved scope
   const failed = { path: "src/payments/context.ts", reason: "Context budget exceeded." };
   const waived = { path: "src/payments/config.ts", reason: "Token budget reached." };
   const missing = { path: `src/${"long-directory/".repeat(8)}unrecorded.ts` };
-  await mock(page, { run: { publication: "not_applicable", publication_error: null, check_enabled: false,
-    report: { manifest: { coverage: { selected: [...completed, reused, failed, waived, missing], completed, reused: [reused], failed: [failed], waived: [waived] } },
+  await mock(page, { run: { engine: "mortis", publication: "not_applicable", publication_error: null, check_enabled: false,
+    report: { comparison: { strategy: "incremental", baseline_run_id: "baseline" },
+      manifest: { coverage: { selected: [...completed, reused, failed, waived, missing], completed, reused: [reused], failed: [failed], waived: [waived] } },
       excluded_files: [{ path: "README.md", exclude_reason: "unsupported_ext" }] } } });
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: "Coverage", exact: true }).click();
   const coverage = page.getByRole("region", { name: "Coverage", exact: true });
+  await expect(coverage.getByRole("link", { name: "baseline review" })).toHaveAttribute("href", "/runs/baseline?tab=coverage");
   const reviewed = coverage.getByRole("region", { name: "Reviewed files", exact: true });
   const gaps = coverage.getByRole("region", { name: "Files not reviewed", exact: true });
   await expect(coverage.getByText("See which files were reviewed or reused from earlier runs, and why others were left unreviewed.", { exact: true })).toBeVisible();
