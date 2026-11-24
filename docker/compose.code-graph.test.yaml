@@ -21,7 +21,7 @@ services:
     entrypoint: [python, /checks/code_graph_container.py]
     volumes:
       - ./backend/tests/code_graph_container.py:/checks/code_graph_container.py:ro
-      - ./scripts/code_graph_eval/fixtures.json:/checks/fixtures.json:ro
+      - ./backend/tests/fixtures/code_graph_parser.json:/checks/fixtures.json:ro
     read_only: true
     tmpfs: ["/tmp:mode=1777,size=16m"]
     cap_drop: [ALL]

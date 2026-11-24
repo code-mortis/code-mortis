@@ -6,8 +6,9 @@ description: Inspect, validate, or rescore retained Code Mortis engine evaluatio
 # Assess Code Mortis engine evidence
 
 Read `AGENTS.md` and resolve paths from the repository root. Start with the requested
-claim and any supplied manifest, seal and results. The checked-in protocols describe
-the scoring methods. Use the original protocol and thresholds for retained evidence.
+claim and any supplied manifest, seal and results. The companion `mortis-benchmarks`
+project contains the protocols and scorers. Use the original protocol and
+thresholds for retained evidence.
 
 ## Identify the evidence before interpreting it
 
@@ -31,10 +32,10 @@ Inspect the relevant CLI and its `--help` before composing a command:
 
 | Evidence family | Owning tooling |
 | --- | --- |
-| Original pilot scoring and blinded packets | `scripts/engine_eval/score.py` and `scripts/engine_eval/scoring_protocol.json` |
-| Sealed acceptance and controlled performance | `scripts/engine_eval/acceptance.py` with the protocol embedded in the supplied seal. Use `scripts/engine_eval/acceptance_protocol.json` as a starting point for prospective planning. |
-| Historical launchers and execution retirement | `scripts/engine_eval/test_retirement.py` and the launchers' entry-point guards |
-| Offline scorer regressions | `scripts/engine_eval/test_score.py` and `scripts/engine_eval/test_acceptance.py` |
+| Original pilot scoring and blinded packets | `engine-eval/harness/score.py` and `engine-eval/harness/scoring_protocol.json` |
+| Sealed acceptance and controlled performance | `engine-eval/harness/acceptance.py` with the protocol embedded in the supplied seal. Use `engine-eval/harness/acceptance_protocol.json` as a starting point for prospective planning. |
+| Historical launchers and execution retirement | `engine-eval/harness/test_retirement.py` and the launchers' entry-point guards |
+| Offline scorer regressions | `engine-eval/harness/test_score.py` and `engine-eval/harness/test_acceptance.py` |
 
 For explicitly requested rescoring, use the matching scorer with the supplied records
 and a fresh output path. Preserve original seals, artifacts, judgments, hashes and
@@ -42,9 +43,9 @@ reports. Label a report produced by newer scorer code as a new interpretation an
 record that revision; do not overwrite the original result or silently change thresholds.
 Do not run a new freeze over old outputs to make a retrospective result prospective.
 
-The retired OCR and native-client entry points in `scripts/engine_eval/` and the
-retired graph evaluation launchers reject new execution. Keep their guards intact and
-use the supported offline tests to verify them.
+The archived OCR and native-client entry points under `engine-eval/harness` and
+`code-graph/harness` reject new execution. Keep their guards intact and use the
+supported offline tests to verify them.
 
 ## Check the substance of a claim
 

@@ -67,10 +67,10 @@ Owning sources: `backend/code_mortis/manage.py`, `frontend/package.json`,
 
 ## Evaluator changes and reporting
 
-- Offline evaluator unit tests live in `scripts/engine_eval/test_*.py`. Inspect the
-  relevant tests before selecting them; use Python unittest discovery with that start
-  directory and a selected test filename pattern. Do not run a pilot or live launcher
-  as an incidental check. Historical execution entrypoints are retired.
+- The companion `mortis-benchmarks` project has the offline evaluator checks under
+  `engine-eval/harness` and the app-backed checks under `engine-eval/tests`.
+  Use its suite README for the isolated commands. Historical execution entrypoints
+  are retired.
 - Report synthetic evaluator checks as local regressions. Assess an engine acceptance
   claim against its supplied run evidence and protocol. See the [engine evidence skill](../mortis-engine-evidence/SKILL.md).
 - Report changed behavior, exact commands and outcomes, generated-file changes,

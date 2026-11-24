@@ -30,8 +30,8 @@ def request(files=None):
                                    for raw in [text.encode() if isinstance(text, str) else text]])
 
 
-def test_phase0_fixtures():
-    source = json.loads((Path(__file__).parents[2] / "scripts/code_graph_eval/fixtures.json").read_text())
+def test_multilanguage_parser_fixtures():
+    source = json.loads((Path(__file__).parent / "fixtures/code_graph_parser.json").read_text())
     payload = request(source)
     result = client.validate_result(payload, extract(payload))
     files = {item.path: item for item in result.files}

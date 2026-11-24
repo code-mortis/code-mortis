@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from test_engine_evaluation import runtime
 from test_mortis_review import scenario as source_case  # noqa: F401
 from test_mortis_workflow import workflow as workflow
 
@@ -21,6 +20,10 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
+
+
+def row_data(row):
+    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
 
 
 @pytest.mark.parametrize("change", ["cancel", "revocation", "head"])
@@ -53,8 +56,8 @@ def test_full_mortis_workflow_discards_paid_results_after_authority_changes(work
         assert all(row.result is None for row in db.scalars(select(AnalysisTask)))
         assert not list(db.scalars(select(InferenceAdmission).where(InferenceAdmission.status == "active")))
         assert not workflow["reviews"]
-        evidence = {"fault": change, "run": runtime.row_data(run),
-                    "attempts": [runtime.row_data(row) for row in attempts],
+        evidence = {"fault": change, "run": row_data(run),
+                    "attempts": [row_data(row) for row in attempts],
                     "synthetic_http_requests": workflow["requests"], "github_publications": 0}
     if destination := os.environ.get("CM_WORKFLOW_FAULT_EVIDENCE_DIR"):
         (Path(destination) / ("workflow-" + change + ".json")).write_text(json.dumps(evidence, indent=2,

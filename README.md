@@ -27,6 +27,9 @@ docker compose --env-file .env.dev -f compose.dev.yaml --profile webhooks up -d 
 
 Open [localhost:5173](http://localhost:5173), enter `CM_BOOTSTRAP_TOKEN` from `.env.dev`, and register a development GitHub App. The frontend and API reload on edit. Restart the affected worker or scheduler after changing its code.
 
+The engine comparison, code graph benchmarks, and PR navigation benchmark live
+in the companion `mortis-benchmarks` project, alongside their recorded results.
+
 ## Deploy with Coolify
 
 Point an HTTPS hostname at your Coolify server and run its Traefik proxy. Create a Git-based Docker Compose application with the repository root as the base directory and `/compose.yaml` as the Compose location. Enable **Raw** Compose deployment so the overlay provides the proxy labels. [Coolify Docker Compose guide](https://coolify.io/docs/applications/builds/docker-compose)
