@@ -1,13 +1,13 @@
-import asyncio
 import base64
 import json
-import time
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
-import httpx
 import pytest
 
-from code_mortis.code_graph import client, server
+from code_mortis.code_graph import client
 from code_mortis.code_graph.extract import extract
 from code_mortis.code_graph.syntax import LANGUAGES
 from code_mortis.core import file_policy
@@ -376,129 +376,47 @@ def test_untrusted_import_resolution():
         client.validate_result(payload, CodeGraphResult.model_validate(result))
 
 
-def test_transport_bounds_errors_and_cancellation(monkeypatch):
+@pytest.mark.parametrize("field", ["schema_version", "extractor_version"])
+def test_transport_requires_explicit_response_versions(monkeypatch, field):
     payload = request()
-    original_client = httpx.AsyncClient
-    responses = [httpx.Response(200, stream=httpx.ByteStream(extract(payload).model_dump_json().encode())),
-                 httpx.Response(200, headers={"content-length": str(client.MAX_RESULT_BYTES + 1)}, stream=httpx.ByteStream(b"{}")),
-                 httpx.Response(200, stream=httpx.ByteStream(b"x" * 50)), httpx.Response(200, stream=httpx.ByteStream(b"invalid json")),
-                 httpx.Response(200, headers={"content-encoding": "gzip"}), httpx.Response(409),
-                 httpx.Response(302, headers={"location": "http://elsewhere"})]
-    async def handle(req):
-        assert req.headers["accept-encoding"] == "identity"
-        assert req.headers["authorization"] == "Bearer test"
-        return responses.pop(0)
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original_client(transport=httpx.MockTransport(handle), **kw))
-    def run(stopped=lambda: False):
-        return asyncio.run(client._request(payload, payload.model_dump_json().encode(), "http://parser", "test", stopped))
-    assert run().repository_id == 1
-    with pytest.raises(ValueError):
-        run()
-    monkeypatch.setattr(client, "MAX_RESULT_BYTES", 40)
-    for _ in range(5):
-        with pytest.raises(ValueError):
-            run()
-    with pytest.raises(client.ExtractionCancelled):
-        run(lambda: True)
-    async def hanging(req):
-        await asyncio.sleep(10)
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original_client(transport=httpx.MockTransport(hanging), **kw))
-    monkeypatch.setattr(client, "EXTRACTION_SECONDS", 0.1)
-    with pytest.raises(TimeoutError):
-        run()
+    result = extract(payload).model_dump(exclude={field})
+    monkeypatch.setattr(client, "_run", lambda *args: json.dumps(result).encode())
+    with pytest.raises(client.ParserUnavailable) as failure:
+        client.extract(payload)
+    assert failure.value.failure.code == "parser_invalid_result"
 
 
-def test_server_body_and_single_slot(monkeypatch):
-    monkeypatch.setenv("CM_CODE_GRAPH_TOKEN", "test")
-    async def exercise():
-        app = server.ParserApp()
-        events = []
-        pending = asyncio.Queue()
-        scope = {"path": "/extract", "method": "POST", "headers": [
-            (b"authorization", b"Bearer test"), (b"content-type", b"application/json")]}
-        async def send(event):
-            events.append(event)
-        task = asyncio.create_task(app(scope, pending.get, send))
-        await asyncio.sleep(0)
-        await app(scope, pending.get, send)
-        assert events[0]["status"] == 409
-        await pending.put({"type": "http.request", "body": b"x" * 16, "more_body": True})
-        monkeypatch.setattr(server, "MAX_REQUEST_BYTES", 10)
-        await task
-        assert events[-2]["status"] == 413
-        assert not app.active
-        events.clear()
-        await app(scope | {"headers": []}, pending.get, send)
-        assert events[0]["status"] == 401
-    asyncio.run(exercise())
+@pytest.mark.parametrize(("error", "code"), [
+    (OSError("private worker details"), "parser_unavailable"),
+    (TimeoutError("private worker details"), "parser_timeout"),
+    (ValueError("private worker details"), "parser_invalid_result"),
+])
+def test_worker_failure_messages_do_not_disclose_private_details(monkeypatch, error, code):
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(client, "_run", fail)
+    with pytest.raises(client.ParserUnavailable) as failure:
+        client.extract(request())
+    assert failure.value.failure.code == code
+    assert "private worker details" not in str(failure.value)
 
 
-def test_real_process_deadline_and_disconnect(monkeypatch):
-    monkeypatch.setenv("CM_CODE_GRAPH_TOKEN", "test")
-    original_spawn = asyncio.create_subprocess_exec
+@pytest.mark.parametrize("cancel", [True, False])
+def test_parser_is_reaped_on_cancel_or_deadline(monkeypatch, cancel):
+    spawn = subprocess.Popen
     children = []
-    async def spawn(*args, **kwargs):
-        # A trusted sleeping process simulates a stuck native parser without a production test hook.
-        process = await original_spawn(args[0], "-c", "import time; time.sleep(30)", **kwargs)
+
+    def slow_child(args, **kwargs):
+        assert kwargs["env"] == {} and kwargs["cwd"] == "/"
+        process = spawn([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
         children.append(process)
         return process
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(server, "EXTRACTION_SECONDS", 0.3)
-    async def exercise(disconnect):
-        app, queue, events = server.ParserApp(), asyncio.Queue(), []
-        await queue.put({"type": "http.request", "body": request().model_dump_json().encode()})
-        async def send(event):
-            events.append(event)
-        scope = {"path": "/extract", "method": "POST", "headers": [
-            (b"authorization", b"Bearer test"), (b"content-type", b"application/json")]}
-        task = asyncio.create_task(app(scope, queue.get, send))
-        while len(children) < (2 if disconnect else 1):
-            await asyncio.sleep(0.01)
-        if disconnect:
-            await queue.put({"type": "http.disconnect"})
-        await task
-        assert children[-1].returncode == -9
-        assert not app.active
-        if not disconnect:
-            assert events[0]["status"] == 504
-    started = time.monotonic()
-    asyncio.run(exercise(False))
-    asyncio.run(exercise(True))
-    assert time.monotonic() - started < 3
 
-
-@pytest.mark.parametrize("version", ["schema_version", "extractor_version"])
-def test_transport_requires_explicit_response_versions(monkeypatch, version):
-    payload = request()
-    result = extract(payload).model_dump()
-    result.pop(version)
-    original_client = httpx.AsyncClient
-    async def handle(req):
-        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(result).encode()))
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original_client(transport=httpx.MockTransport(handle), **kw))
-    with pytest.raises(ValueError, match="valid, bounded result|Field required"):
-        asyncio.run(client._request(payload, payload.model_dump_json().encode(), "http://parser", "test", lambda: False))
-
-
-def test_timeout_during_spawn_still_reaps_child(monkeypatch):
-    monkeypatch.setenv("CM_CODE_GRAPH_TOKEN", "test")
-    original_spawn, children = asyncio.create_subprocess_exec, []
-    async def spawn(*args, **kwargs):
-        process = await original_spawn(args[0], "-c", "import time; time.sleep(30)", **kwargs)
-        children.append(process)
-        await asyncio.sleep(0.1)
-        return process
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(server, "EXTRACTION_SECONDS", 0.05)
-    async def exercise():
-        app, events = server.ParserApp(), []
-        async def receive():
-            return {"type": "http.request", "body": b"{}"}
-        async def send(event):
-            events.append(event)
-        await app({"path": "/extract", "method": "POST", "headers": [
-            (b"authorization", b"Bearer test"), (b"content-type", b"application/json")]}, receive, send)
-        assert events[0]["status"] == 504
-        assert children[0].returncode == -9
-        assert not app.active
-    asyncio.run(exercise())
+    monkeypatch.setattr(client.subprocess, "Popen", slow_child)
+    monkeypatch.setattr(client, "EXTRACTION_SECONDS", 0.2)
+    with pytest.raises(client.ExtractionCancelled if cancel else client.ParserUnavailable) as failure:
+        client.extract(request(), stopped=lambda: cancel and bool(children))
+    assert children[0].returncode == -signal.SIGKILL
+    if not cancel:
+        assert failure.value.failure.code == "parser_timeout"

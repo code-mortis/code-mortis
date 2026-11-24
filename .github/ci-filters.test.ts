@@ -58,6 +58,8 @@ test.each([
   ["API smoke request", ["collections/code-mortis-ci/ready.yml"], ["image"]],
   ["interactive Noodle collection", ["collections/code-mortis/public/ready.yml"], []],
   ["Docker build", ["docker/Dockerfile"], ["image"]],
+  ["Build and deployment files", ["docker/sync-worker.sh", "compose.yaml", "compose.dev.yaml", "compose.coolify.yaml"], ["image"]],
+  ["Code graph Compose checks", ["scripts/check_code_graph.py"], ["image"]],
   ["Docker context", [".dockerignore"], ["image"]],
   ["Docker-specific context", ["docker/Dockerfile.dockerignore"], ["image"]],
   ["image notices", ["THIRD_PARTY_NOTICES.md", "LICENSE", "LICENSES/Apache-2.0.txt"], ["image"]],

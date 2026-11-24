@@ -10,7 +10,7 @@ Self-hosted GitHub pull request reviews and repository security scans powered by
 - Repository security scans combining AI analysis with Trivy checks.
 - Findings triage, run history, coverage, and model usage in one workspace.
 - Shared model connections for OpenAI-compatible APIs, Anthropic, and Amazon Bedrock.
-- Optional code graph indexing for PR context and code navigation.
+- Built-in code graph indexing for PR context and code navigation, enabled per repository in Settings.
 - Scoped REST API tokens and MCP access for reviews, security, and indexed code. A [Noodle collection](collections/code-mortis/README.md) is included for the REST API.
 
 ## Develop locally
@@ -29,6 +29,20 @@ Open [localhost:5173](http://localhost:5173), enter `CM_BOOTSTRAP_TOKEN` from `.
 
 The engine comparison, code graph benchmarks, and PR navigation benchmark live
 in the companion `mortis-benchmarks` project, alongside their recorded results.
+
+## Install from Docker Hub
+
+Download `compose.yaml` and `manage.py` from the same [GitHub release](https://github.com/code-mortis/code-mortis/releases). For a public installation, point an HTTPS reverse proxy at `127.0.0.1:8080` and use its origin when initializing the environment.
+
+```sh
+python3 manage.py init-env --owner YOUR_GITHUB_LOGIN --url https://reviews.example.com
+docker compose pull
+docker compose up -d --remove-orphans
+```
+
+Open the configured URL and enter `CM_BOOTSTRAP_TOKEN` from `.env`. Code Graph is included in the Code Mortis image. To index a repository, enable Code Graph in its Settings.
+
+For upgrades, keep the existing `.env` and volumes. `--remove-orphans` removes the retired graph containers from the Compose project.
 
 ## Deploy with Coolify
 
@@ -52,10 +66,16 @@ docker compose -f compose.yaml -f compose.coolify.yaml build
 Set **Custom Start Command** to:
 
 ```sh
-docker compose -f compose.yaml -f compose.coolify.yaml up -d
+docker compose -f compose.yaml -f compose.coolify.yaml up -d --remove-orphans
 ```
 
 Deploy, then open your HTTPS URL and enter `CM_BOOTSTRAP_TOKEN`. Register and install your GitHub App on the repositories you want to connect, add a model connection, and enable reviews in repository settings.
+
+## Publish a Docker image
+
+Create a public `code-mortis` repository on Docker Hub. Set the GitHub Actions variable `DOCKERHUB_USERNAME` and secret `DOCKERHUB_TOKEN` to a login with write access to it. Set `DOCKERHUB_NAMESPACE` if you use a namespace other than `code-mortis`.
+
+Push a stable version tag from `main`, such as `v0.1.0`. The release workflow tests the `amd64` and `arm64` images, then combines them under the same `0.1.0` tag. Attach `compose.yaml` and `manage.py` from the `code-mortis-v0.1.0-compose` workflow artifact to the matching GitHub release.
 
 Licensed under [Apache 2.0](LICENSE).
 

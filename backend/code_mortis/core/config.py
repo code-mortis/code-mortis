@@ -12,8 +12,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     public_url: str = "http://localhost:8080"
     webhook_url: str = ""
-    code_graph_parser_url: str = ""
-    code_graph_token: str = ""
     code_graph_store_dir: Path = Path("/var/lib/code-mortis/code-graph")
     encryption_key: str
     bootstrap_token: str = Field(min_length=24)
