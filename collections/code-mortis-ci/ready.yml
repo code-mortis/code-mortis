@@ -1,0 +1,12 @@
+name: Readiness
+method: GET
+url: $base_url/health/ready
+timeout: 5000
+followRedirects: false
+assert:
+  - expression: status
+    operator: equals
+    value: 200
+  - expression: body.status
+    operator: equals
+    value: ready

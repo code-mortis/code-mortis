@@ -1,0 +1,12 @@
+name: Fresh instance setup status
+method: GET
+url: $base_url/api/v1/setup/status
+timeout: 5000
+followRedirects: false
+assert:
+  - expression: status
+    operator: equals
+    value: 200
+  - expression: body.configured
+    operator: equals
+    value: false

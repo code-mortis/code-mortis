@@ -1,0 +1,5 @@
+collection_id: dbbd802c-499f-41f2-a3e1-d679a657c41d
+name: Code Mortis CI/CD
+environment: ci
+cookies:
+  enabled: false

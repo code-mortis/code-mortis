@@ -8,9 +8,11 @@ on:
       - '.github/ci-filters.test.ts'
       - 'docker/Dockerfile'
       - 'docker/Dockerfile.dockerignore'
+      - 'docker/compose.api-smoke.yaml'
       - '.dockerignore'
       - 'backend/**'
       - 'frontend/**'
+      - 'collections/code-mortis-ci/**'
       - 'LICENSE'
       - 'LICENSES/**'
       - 'THIRD_PARTY_NOTICES.md'
@@ -26,6 +28,8 @@ concurrency:
 jobs:
   image:
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_FILE: docker/compose.api-smoke.yaml
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -46,3 +50,30 @@ jobs:
           docker run --rm --network none --read-only
           --tmpfs /tmp:mode=1777,size=512m
           code-mortis:test python tests/security_scanner_smoke.py
+      - uses: noodle-rest/setup-noodle@dc79d16dbbd50a01e63f11bcca15c9398fe70915 # v1.0.1
+        with:
+          version: v1.0.0
+      - name: Start API and apply migrations
+        id: start-api
+        env:
+          CM_SMOKE_ENV_FILE: ${{ runner.temp }}/code-mortis-api-smoke.env
+        run: |
+          python3 backend/code_mortis/manage.py init-env --owner ci --output "$CM_SMOKE_ENV_FILE"
+          docker compose --env-file "$CM_SMOKE_ENV_FILE" up --wait --wait-timeout 120 api
+      - name: Run public API smoke tests
+        id: api-smoke
+        run: >-
+          noodle collection run collections/code-mortis-ci --env ci
+          --reporter junit --output "$RUNNER_TEMP/api-smoke.xml"
+      - name: Show API smoke stack logs on failure
+        if: ${{ failure() && (steps.start-api.outcome == 'failure' || steps.api-smoke.outcome == 'failure') }}
+        env:
+          CM_SMOKE_ENV_FILE: ${{ runner.temp }}/code-mortis-api-smoke.env
+        run: docker compose --env-file "$CM_SMOKE_ENV_FILE" logs --no-color
+      - name: Upload API smoke report
+        if: ${{ !cancelled() && (steps.api-smoke.outcome == 'success' || steps.api-smoke.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-smoke
+          path: ${{ runner.temp }}/api-smoke.xml
+          if-no-files-found: error
