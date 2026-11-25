@@ -31,7 +31,7 @@ Run from the Code Mortis repository root. Read `AGENTS.md`, the local setup in
 | Dependency lockfiles or Docker build inputs | Rebuild and recreate affected services; restart alone retains the old image. |
 | Environment or Compose settings | Recreate affected services; restarting does not apply changed container configuration. |
 | Additive migrations | Check upgrade compatibility, drain affected work and back up local data and its encryption key. Run the `migrate` service with the same development Compose options and verify successful completion before starting affected consumers. |
-| Graph parser/extraction | Check `EXTRACTOR_VERSION` in `backend/code_mortis/schemas/code_graph.py`, parser/worker compatibility, and enabled graph profile. Reindexing is separate work; never relabel old snapshots. |
+| Graph parser/extraction | Check `EXTRACTOR_VERSION` in `backend/code_mortis/schemas/code_graph.py`, the bundled parser in the App image, and the graph consumer in `sync-worker`. Reindexing is separate work; never relabel old snapshots. |
 
 Do not start an optional service merely because it appears in Compose. Preserve the
 existing profiles and pre-refresh running/stopped state of unrelated services.
