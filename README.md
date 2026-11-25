@@ -73,7 +73,7 @@ docker compose -f compose.yaml -f compose.coolify.yaml up -d --no-build --wait -
 
 For an existing deployment, keep the same Coolify resource, environment variables, and mounted volumes. The API and workers wait for database migrations on startup. For a new deployment, open your HTTPS URL, enter `CM_BOOTSTRAP_TOKEN`, register and install your GitHub App, add a model connection, and enable reviews in repository settings.
 
-The published image has browser Sentry reporting disabled. Browser reporting reads `CM_SENTRY_FRONTEND_DSN` at build time. Backend reporting still reads `CM_SENTRY_DSN` at startup.
+For releases with runtime browser Sentry support, set the public `CM_SENTRY_FRONTEND_DSN` in Coolify's runtime environment and redeploy with the same image. The `0.1.0` image predates runtime browser reporting. `CM_SENTRY_DSN` configures backend reporting independently.
 
 ## Publish a Docker image
 

@@ -5,10 +5,6 @@ x-app: &app
   build:
     context: .
     dockerfile: docker/Dockerfile
-    args:
-      CM_SENTRY_FRONTEND_DSN: ${CM_SENTRY_FRONTEND_DSN:-}
-      CM_SENTRY_ENVIRONMENT: ${CM_SENTRY_ENVIRONMENT:-development}
-      CM_SENTRY_RELEASE: ${CM_SENTRY_RELEASE:-}
   env_file: .env.dev
   environment: &environment
     CM_DATABASE_URL: postgresql+psycopg://mortis:${POSTGRES_PASSWORD:?Use --env-file .env.dev}@postgres:5432/mortis_dev
@@ -74,9 +70,6 @@ services:
     command: [sh, -c, "bun install --frozen-lockfile && bun run dev --host 0.0.0.0"]
     environment:
       CM_DEV_API_URL: http://api:8080
-      VITE_SENTRY_DSN: ${CM_SENTRY_FRONTEND_DSN:-}
-      VITE_SENTRY_ENVIRONMENT: ${CM_SENTRY_ENVIRONMENT:-development}
-      VITE_SENTRY_RELEASE: ${CM_SENTRY_RELEASE:-}
     volumes:
       - ./frontend:/src/frontend
       - frontend-modules:/src/frontend/node_modules

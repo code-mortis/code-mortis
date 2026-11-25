@@ -170,6 +170,25 @@ def test_browser_csp_allows_only_the_configured_sentry_origin(client, monkeypatc
     assert "connect-src 'self';" in client.get("/health/live").headers["content-security-policy"]
 
 
+@pytest.mark.parametrize("browser_dsn", ["", DSN], ids=["disabled", "enabled"])
+def test_browser_sentry_serves_only_public_runtime_settings(monkeypatch, browser_dsn):
+    monkeypatch.setenv("CM_SENTRY_FRONTEND_DSN", browser_dsn)
+    monkeypatch.setenv("CM_SENTRY_DSN", "https://backend@sentry.example.com/2")
+    monkeypatch.setenv("CM_SENTRY_ENVIRONMENT", "staging")
+    monkeypatch.setenv("CM_SENTRY_RELEASE", "candidate")
+    config = Settings(_env_file=None)
+    monkeypatch.setattr(main, "settings", lambda: config)
+
+    with TestClient(main.app) as browser:
+        response = browser.get("/api/browser-sentry")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == (
+        {"dsn": browser_dsn, "environment": "staging", "release": "candidate"} if browser_dsn else None
+    )
+
+
 @pytest.mark.parametrize("value", ["invalid", "https://sentry.example.com/1", "https://public:secret@sentry.example.com/1"])
 def test_sentry_rejects_invalid_or_private_dsns(value):
     with pytest.raises(ValueError):

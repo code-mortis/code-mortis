@@ -15,6 +15,7 @@ from code_mortis.core.db import engine
 from code_mortis.core.telemetry import init_sentry
 from code_mortis.integrations.github import GitHubError, close_http_client
 from code_mortis.mcp.server import install_mcp
+from code_mortis.schemas.common import BrowserSentryConfig
 
 init_sentry("api")
 
@@ -146,6 +147,18 @@ def ready():
     except Exception:
         return JSONResponse({"status": "unavailable"}, status_code=503)
     return {"status": "ready"}
+
+
+@app.get("/api/browser-sentry")
+def browser_sentry() -> BrowserSentryConfig | None:
+    config = settings()
+    if not config.sentry_frontend_dsn:
+        return None
+    return BrowserSentryConfig(
+        dsn=config.sentry_frontend_dsn,
+        environment=config.sentry_environment,
+        release=config.sentry_release,
+    )
 
 
 @app.get("/{path:path}", include_in_schema=False)

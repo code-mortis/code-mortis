@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Configure browser Sentry reporting through `CM_SENTRY_FRONTEND_DSN` at runtime. The same image can serve deployments with different Sentry settings.
+
 ## 0.1.0
 
 First stable release of the self-hosted Code Mortis App.

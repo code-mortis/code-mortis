@@ -5,10 +5,6 @@ x-app: &app
   build:
     context: .
     dockerfile: docker/Dockerfile
-    args:
-      CM_SENTRY_FRONTEND_DSN: ${CM_SENTRY_FRONTEND_DSN:-}
-      CM_SENTRY_ENVIRONMENT: ${CM_SENTRY_ENVIRONMENT:-production}
-      CM_SENTRY_RELEASE: ${CM_SENTRY_RELEASE:-}
   env_file: .env
   environment: &environment
     CM_DATABASE_URL: postgresql+psycopg://mortis:${POSTGRES_PASSWORD:?Run init-env first}@postgres:5432/mortis

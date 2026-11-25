@@ -36,6 +36,12 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BrowserSentryConfig(BaseModel):
+    dsn: str
+    environment: str
+    release: str
+
+
 class ConnectionConfig(StrictModel):
     kind: Literal["api", "chatgpt", "claude_code"] = "api"
     provider: str = Field(default="", max_length=100, pattern=r"^[a-z0-9-]*$")
