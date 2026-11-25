@@ -1,10 +1,8 @@
-x-coolify-app: &coolify-app
-  image: codemortis/code-mortis:0.1.0
-  build: !reset null
-
 services:
   api:
-    <<: *coolify-app
+    image: &coolify-app codemortis/code-mortis:0.1.0
+    # Compose 5.1.3 needs the build reset on each service.
+    build: !reset null
     ports: !reset []
     labels:
       - traefik.enable=true
@@ -16,19 +14,26 @@ services:
       - traefik.http.routers.code-mortis.service=code-mortis
       - traefik.http.services.code-mortis.loadbalancer.server.port=8080
   migrate:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   review-worker:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   security-worker:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   verification-worker:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   summary-worker:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   sync-worker:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
   scheduler:
-    <<: *coolify-app
+    image: *coolify-app
+    build: !reset null
 
 networks:
   default:
