@@ -48,7 +48,7 @@ To move an existing source deployment to the release image, back up PostgreSQL a
 
 ## Deploy with Coolify
 
-Point an HTTPS hostname at your Coolify server and run its Traefik proxy. Create a Git-based Docker Compose application with the repository root as the base directory and `/compose.yaml` as the Compose location. Enable **Raw** Compose deployment so the overlay provides the proxy labels. [Coolify Docker Compose guide](https://coolify.io/docs/applications/builds/docker-compose)
+Point an HTTPS hostname at your Coolify server and run its Traefik proxy. Create a Git-based Docker Compose application with the repository root as the base directory and `/compose.yaml` as the Compose location. Enable **Raw** Compose deployment so the overlay provides the proxy labels and selects the published App image. [Coolify Docker Compose guide](https://coolify.io/docs/applications/builds/docker-compose)
 
 Generate the environment from a local checkout:
 
@@ -62,16 +62,18 @@ Copy the generated `.env` values into Coolify’s **Environment Variables** and 
 Set **Custom Build Command** to:
 
 ```sh
-docker compose -f compose.yaml -f compose.coolify.yaml build
+docker compose -f compose.yaml -f compose.coolify.yaml pull api
 ```
 
 Set **Custom Start Command** to:
 
 ```sh
-docker compose -f compose.yaml -f compose.coolify.yaml up -d --remove-orphans
+docker compose -f compose.yaml -f compose.coolify.yaml up -d --no-build --wait --remove-orphans
 ```
 
-Deploy, then open your HTTPS URL and enter `CM_BOOTSTRAP_TOKEN`. Register and install your GitHub App on the repositories you want to connect, add a model connection, and enable reviews in repository settings.
+For an existing deployment, keep the same Coolify resource, environment variables, and mounted volumes. The API and workers wait for database migrations on startup. For a new deployment, open your HTTPS URL, enter `CM_BOOTSTRAP_TOKEN`, register and install your GitHub App, add a model connection, and enable reviews in repository settings.
+
+The published image has browser Sentry reporting disabled. Browser reporting reads `CM_SENTRY_FRONTEND_DSN` at build time. Backend reporting still reads `CM_SENTRY_DSN` at startup.
 
 ## Publish a Docker image
 

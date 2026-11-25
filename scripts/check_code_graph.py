@@ -1,4 +1,4 @@
-"""Verify that the existing sync service is the only Compose worker with graph storage."""
+"""Verify the App image and graph storage configuration across Compose deployments."""
 
 import json
 import os
@@ -23,6 +23,11 @@ def configurations():
         assert "code-graph" not in config.get("networks", {})
         assert services["sync-worker"]["command"] == ["/usr/local/bin/code-mortis-sync"]
         assert services["sync-worker"]["image"] == services["api"]["image"]
+        if "compose.coolify.yaml" in files:
+            app_image = services["api"]["image"]
+            assert app_image.startswith("codemortis/code-mortis:")
+            assert all(service["image"] == app_image and "build" not in service
+                       for name, service in services.items() if name not in {"postgres", "redis"})
         stores = [(name, volume) for name, service in services.items() for volume in service.get("volumes", [])
                   if volume.get("source") == "code-graph-data"]
         assert {name for name, volume in stores if not volume.get("read_only")} == {"sync-worker"}

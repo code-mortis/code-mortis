@@ -1,5 +1,10 @@
+x-coolify-app: &coolify-app
+  image: codemortis/code-mortis:0.1.0
+  build: !reset null
+
 services:
   api:
+    <<: *coolify-app
     ports: !reset []
     labels:
       - traefik.enable=true
@@ -10,6 +15,20 @@ services:
       - traefik.http.routers.code-mortis.tls.certresolver=letsencrypt
       - traefik.http.routers.code-mortis.service=code-mortis
       - traefik.http.services.code-mortis.loadbalancer.server.port=8080
+  migrate:
+    <<: *coolify-app
+  review-worker:
+    <<: *coolify-app
+  security-worker:
+    <<: *coolify-app
+  verification-worker:
+    <<: *coolify-app
+  summary-worker:
+    <<: *coolify-app
+  sync-worker:
+    <<: *coolify-app
+  scheduler:
+    <<: *coolify-app
 
 networks:
   default:
