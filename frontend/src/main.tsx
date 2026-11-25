@@ -1,4 +1,3 @@
-import "./sentry";
 import { reactErrorHandler } from "@sentry/react";
 import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -45,7 +44,10 @@ import { SettingsPage } from "./settings";
 import { McpAuthorizePage, McpApprovalPage } from "./mcp";
 import { applyAppearance, readAppearance, type ColorMode, type ThemeId } from "./lib/appearance";
 import { isBackgroundConnectionError } from "./hooks/use-background-generation";
+import { initBrowserSentry } from "./sentry";
 import "./index.css";
+
+void initBrowserSentry();
 
 const Analytics = lazy(() => import("./analytics"));
 const SecurityRepository = lazy(() => import("./security").then((module) => ({ default: module.SecurityRepository })));

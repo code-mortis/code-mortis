@@ -6,6 +6,8 @@ import path from "node:path";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
+  // Playwright supplies its own API responses against the static build.
+  preview: { proxy: {} },
   server: {
     host: "0.0.0.0",
     port: 5173,

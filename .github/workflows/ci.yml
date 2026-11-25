@@ -52,8 +52,6 @@ jobs:
           if-no-files-found: error
   frontend:
     needs: export-openapi
-    env:
-      VITE_SENTRY_DSN: https://public@sentry.example.com/1
     runs-on: ubuntu-latest
     defaults:
       run:
