@@ -594,7 +594,7 @@ async def send(connection: dict, credentials: dict, request: Request, *, client:
         raise ValueError("Inference headers cannot contain line breaks")
     endpoint = urlsplit(base)
     if endpoint.hostname == "opencode.ai" and endpoint.path.rstrip("/") == "/zen/go/v1":
-        headers["User-Agent"] = "code-mortis/0.1.1"
+        headers["User-Agent"] = "code-mortis/0.1.2"
         headers["x-opencode-session"] = request.session_id
     data, identity = await post_json(client, base + suffix, headers, body, stopped=stopped,
                                      timeout=duration - (time.monotonic() - started), retry_codes=options.get("retry_codes"))

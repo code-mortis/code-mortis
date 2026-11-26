@@ -73,7 +73,7 @@ Set **Custom Start Command** to:
 docker compose -f compose.yaml -f compose.coolify.yaml up -d --no-build --wait --remove-orphans
 ```
 
-For an existing deployment, keep the same Coolify resource, environment variables, and mounted volumes. The API and workers wait for database migrations on startup. For a new deployment, open your HTTPS URL, enter `CM_BOOTSTRAP_TOKEN`, register and install your GitHub App, add a model connection, and enable reviews in repository settings.
+For an existing deployment, keep the same Coolify resource, environment variables, and mounted volumes. The API and workers wait for database migrations on startup. Coolify checks that each worker responds and that the scheduler can reach Redis and has updated its schedule recently. For a new deployment, open your HTTPS URL, enter `CM_BOOTSTRAP_TOKEN`, register and install your GitHub App, add a model connection, and enable reviews in repository settings.
 
 To upgrade the App in Coolify, set the shared image anchor in `compose.coolify.yaml` to the published version you want to deploy, then redeploy the existing resource. With App v0.1.1 or later, set `CM_SENTRY_FRONTEND_DSN` in Coolify's runtime environment and redeploy to change browser reporting.
 

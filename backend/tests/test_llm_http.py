@@ -324,7 +324,7 @@ def test_go_session_is_stable_and_cannot_be_overridden(monkeypatch):
                     "X-OpenCode-Session": "forged", "user-agent": "forged"}}, task, client=client)
     asyncio.run(run())
     assert all(headers["x-opencode-session"] == "stable-session" for headers in seen)
-    assert all(headers["user-agent"] == "code-mortis/0.1.1" for headers in seen)
+    assert all(headers["user-agent"] == "code-mortis/0.1.2" for headers in seen)
 
 
 @pytest.mark.parametrize("status,code,unknown,retry", [(401, "authentication", False, False),

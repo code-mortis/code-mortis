@@ -1,8 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
-- Bundle [Mortis Engine 0.1.7](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.7). The first automatic incremental review after upgrading establishes a new baseline.
+- PR summary comments stay pending while Code Mortis retries temporary GitHub server errors. If all five sync attempts fail, the App shows the error.
+- The repository list, PR inbox, analytics, and security findings use fewer database queries or smaller parameter lists when loading large result sets.
+- Coolify now checks each worker and the scheduler. The sync worker's health check covers both repository sync and Code Graph indexing.
+- The App bundles [Mortis Engine 0.1.7](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.7) and preserves line references when resuming saved review plans. The first automatic incremental review after upgrading analyzes eligible files within the configured limits to establish a new baseline.
+
+### Upgrade
+
+Back up PostgreSQL and `CM_ENCRYPTION_KEY`. Download `compose.yaml` and `manage.py` from the v0.1.2 GitHub Release into your existing Compose project, keeping its `.env` and volumes. Run `docker compose pull` followed by `docker compose up -d --wait --remove-orphans`. The migration adds an index for publishing review findings. The release image is `docker.io/codemortis/code-mortis:0.1.2` for Linux `amd64` and `arm64`.
+
+For Coolify, select the v0.1.2 image in `compose.coolify.yaml` after publication and redeploy the existing resource. [Coolify deployment instructions](https://github.com/code-mortis/code-mortis#deploy-with-coolify)
 
 ## 0.1.1
 
