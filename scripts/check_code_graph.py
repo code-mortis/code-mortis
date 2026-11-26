@@ -1,4 +1,4 @@
-"""Verify the App image and graph storage configuration across Compose deployments."""
+"""Verify graph storage and Coolify settings across Compose deployments."""
 
 import json
 import os
@@ -28,6 +28,11 @@ def configurations():
             assert app_image.startswith("codemortis/code-mortis:")
             assert all(service["image"] == app_image and "build" not in service
                        for name, service in services.items() if name not in {"postgres", "redis"})
+            assert services["migrate"]["restart"] == "no"
+            for name, service in services.items():
+                if name != "migrate":
+                    test = service.get("healthcheck", {}).get("test", [])
+                    assert test and test[0] in {"CMD", "CMD-SHELL"}, name
         stores = [(name, volume) for name, service in services.items() for volume in service.get("volumes", [])
                   if volume.get("source") == "code-graph-data"]
         assert {name for name, volume in stores if not volume.get("read_only")} == {"sync-worker"}

@@ -1,6 +1,12 @@
+x-worker-health: &worker-health
+  interval: 60s
+  timeout: 15s
+  retries: 3
+  start_period: 30s
+
 services:
   api:
-    image: &coolify-app codemortis/code-mortis:0.1.0
+    image: &coolify-app codemortis/code-mortis:0.1.1
     # Compose 5.1.3 needs the build reset on each service.
     build: !reset null
     ports: !reset []
@@ -19,21 +25,56 @@ services:
   review-worker:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test: [CMD-SHELL, 'CELERY_BROKER_URL="$$CM_REDIS_URL" celery inspect --timeout=5 --destination "reviews@$$HOSTNAME" ping']
   security-worker:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test: [CMD-SHELL, 'CELERY_BROKER_URL="$$CM_REDIS_URL" celery inspect --timeout=5 --destination "security@$$HOSTNAME" ping']
   verification-worker:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test: [CMD-SHELL, 'CELERY_BROKER_URL="$$CM_REDIS_URL" celery inspect --timeout=5 --destination "verification@$$HOSTNAME" ping']
   summary-worker:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test: [CMD-SHELL, 'CELERY_BROKER_URL="$$CM_REDIS_URL" celery inspect --timeout=5 --destination "summaries@$$HOSTNAME" ping']
   sync-worker:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test:
+        - CMD-SHELL
+        - >-
+          export CELERY_BROKER_URL="$$CM_REDIS_URL";
+          celery inspect --timeout=5 --destination "sync@$$HOSTNAME" ping &&
+          celery inspect --timeout=5 --destination "graph@$$HOSTNAME" ping
   scheduler:
     image: *coolify-app
     build: !reset null
+    healthcheck:
+      <<: *worker-health
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os
+          import time
+          from redis import Redis
+
+          # Celery Beat normally flushes the schedule every three minutes.
+          if time.time() - os.stat("/tmp/celerybeat-schedule").st_mtime >= 360:
+              raise SystemExit("Celery Beat schedule is stale")
+          Redis.from_url(os.environ["CM_REDIS_URL"], socket_timeout=3, socket_connect_timeout=3).ping()
 
 networks:
   default:
