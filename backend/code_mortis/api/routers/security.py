@@ -7,8 +7,8 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import Field
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import String, any_, func, literal, select
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from code_mortis.api.dependencies import DB, USER, repo_access
 from code_mortis.api.presenters import repo_out
@@ -324,9 +324,15 @@ def report_findings(scan_id: str, db: DB, user: USER,
 
 def finding_page(db, repository_id, page, state, severity, kind, search, ordering="-severity"):
     query = select(SecurityFinding).where(SecurityFinding.repository_id == repository_id)
-    registered_total = db.scalar(select(func.count()).select_from(query.subquery()))
-    counts = {key: dict(db.execute(query.with_only_columns(column, func.count()).group_by(column)).all())
-              for key, column in (("state", SecurityFinding.state), ("severity", SecurityFinding.severity), ("kind", SecurityFinding.kind))}
+    dimensions = (SecurityFinding.state, SecurityFinding.severity, SecurityFinding.kind)
+    state_counts, severity_counts, kind_counts = Counter(), Counter(), Counter()
+    for finding_state, finding_severity, finding_kind, count in db.execute(
+        query.with_only_columns(*dimensions, func.count()).group_by(*dimensions)
+    ):
+        state_counts[finding_state] += count
+        severity_counts[finding_severity] += count
+        kind_counts[finding_kind] += count
+    registered_total = sum(state_counts.values())
     if state:
         query = query.where(SecurityFinding.state.in_(state))
     if severity:
@@ -335,13 +341,14 @@ def finding_page(db, repository_id, page, state, severity, kind, search, orderin
         query = query.where(SecurityFinding.kind.in_(kind))
     if search:
         query = query.where(SecurityFinding.title.icontains(search, autoescape=True) | SecurityFinding.path.icontains(search, autoescape=True))
-    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    total = (db.scalar(select(func.count()).select_from(query.subquery()))
+             if state or severity or kind or search else registered_total)
     rows = db.scalars(query.order_by(*list_order(ordering, {"created_at": SecurityFinding.created_at, "updated_at": SecurityFinding.updated_at,
         "severity": SecurityFinding.severity, "path": SecurityFinding.path}, SecurityFinding.id))
                       .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE))
     return SecurityFindingPage(items=[SecurityFindingOut.model_validate(row) for row in rows], total=total,
                                page=page, page_size=PAGE_SIZE, registered_total=registered_total,
-                               state_counts=counts["state"], severity_counts=counts["severity"], kind_counts=counts["kind"])
+                               state_counts=state_counts, severity_counts=severity_counts, kind_counts=kind_counts)
 
 
 @router.get("/repositories/{repository_id}/findings", response_model=SecurityFindingPage)
@@ -368,15 +375,21 @@ def scan_findings(scan_id: str, db: DB, user: USER,
 ):
     scan, _, _ = scan_access(db, user, scan_id)
     rows = scan_finding_snapshots(db, scan)
-    first_scans = dict(db.execute(select(SecurityFinding.id, SecurityFinding.first_scan_id)
-        .where(SecurityFinding.repository_id == scan.repository_id)).all())
+    if resolved is not None:
+        rows = [row for row in rows if (row.get("outcome") == "fixed") == resolved]
+    finding_ids = {identity for row in rows if isinstance(identity := row.get("finding_id"), str) and "\x00" not in identity}
+    first_scans = {}
+    if finding_ids:
+        # One array parameter also works for snapshots with more IDs than PostgreSQL's bind limit.
+        ids = literal(list(finding_ids), ARRAY(String))
+        first_scans = dict(db.execute(select(SecurityFinding.id, SecurityFinding.first_scan_id).where(
+            SecurityFinding.repository_id == scan.repository_id, SecurityFinding.id == any_(ids),
+        )).all())
     for row in rows:
         saved_outcome = row.get("outcome")
         row["result"] = saved_outcome if saved_outcome in {"fixed", "not_observed", "uncertain"} else (
             "recorded" if saved_outcome != "present" else "new" if first_scans.get(row.get("finding_id")) == scan.id
             else f'{row["state"]}_repeat' if row["state"] != "unknown" else "repeated")
-    if resolved is not None:
-        rows = [row for row in rows if (row.get("outcome") == "fixed") == resolved]
     counts = {key: dict(Counter(row.get(key) or "unknown" for row in rows)) for key in ("state", "severity", "kind", "result")}
     term = search.strip().casefold()
     items = [row for row in rows if (not state or row["state"] in state)

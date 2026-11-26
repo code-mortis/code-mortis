@@ -3,12 +3,21 @@ from datetime import timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, func, select, text
+from sqlalchemy import event, func, select, text, update
 
 from code_mortis import jobs
+from code_mortis.api.presenters import repos_out
 from code_mortis.core.db import engine, now, transaction
 from code_mortis.integrations import github
-from code_mortis.models import Finding, Installation, Job, PullRequest, Repository, ReviewRun
+from code_mortis.models import (
+    CodeGraphRepository,
+    Finding,
+    Installation,
+    Job,
+    PullRequest,
+    Repository,
+    ReviewRun,
+)
 
 
 @pytest.fixture
@@ -78,6 +87,41 @@ def test_repository_activity_has_no_invented_history(visible, client):
     repository = response.json()[0]
     assert repository["last_pr_sync_check_at"] is None
     assert repository["latest_completed_review"] is None
+
+
+def test_directory_batches_repository_stats_for_loaded_settings(seed):
+    with transaction() as db:
+        repo = db.get(Repository, 22)
+        other = Repository(id=23, installation_id=10, full_name="team/other")
+        db.add(other)
+        db.flush()
+        db.add(CodeGraphRepository(repository_id=repo.id, enabled=True))
+        pr = db.get(PullRequest, "pr")
+        run(db, pr, "running", "older")
+        run(db, pr, "running", "newer")
+        ignored = pull(db, "ignored", repo=23)
+        ignored.ignored = True
+        run(db, ignored, "running")
+        # Simulate a change committed after the directory loaded its repository objects.
+        db.execute(update(Repository).where(Repository.id == repo.id).values(connection_id=None)
+                   .execution_options(synchronize_session=False))
+        statements = []
+        connection = db.connection()
+
+        def record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(connection, "before_cursor_execute", record)
+        try:
+            rows = repos_out(db, [other, repo])
+        finally:
+            event.remove(connection, "before_cursor_execute", record)
+        assert len(statements) == 2
+        assert [(row.id, row.open_prs, row.has_running_review, row.code_graph_enabled) for row in rows] == [
+            (23, 0, False, False), (22, 1, True, True),
+        ]
+        assert rows[1].connection_id == "connection"
+        assert rows[1].connection_requires_setup is False
 
 
 @pytest.mark.parametrize("state", ["open", "merged", "closed"])
@@ -213,6 +257,26 @@ def test_permissions_cover_rows_counts_options_and_paused_repositories(visible, 
     assert client.get("/api/v1/pulls").status_code == 502
 
 
+def test_repository_filter_scopes_inbox_totals_and_preserves_registered_facets(visible, client, monkeypatch):
+    with transaction() as db:
+        db.add_all(Repository(id=identity, installation_id=10, full_name=f"team/repo-{identity}")
+                   for identity in (23, 24, 25))
+        db.flush()
+        pull(db, "other-open", repo=23)
+        run(db, pull(db, "other-merged", "merged", repo=23, author="runner"), "running")
+        pull(db, "ignored", repo=23, author="ignored").ignored = True
+        run(db, pull(db, "hidden", repo=24, author="hidden"), "running")
+        pull(db, "closed", "closed", repo=25)
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": repo} for repo in (22, 23, 25)])
+
+    result = get(client, "?repo=23&repo=24&repo=25")
+    assert result["state_counts"] == {"open": 1, "merged": 1, "closed": 1}
+    assert result["total"] == 2 and result["repository_count"] == 1
+    assert result["authors"] == ["owner", "runner"]
+    assert result["registered_total"] == 4
+    assert [item["id"] for item in result["groups"][0]["items"]] == ["other-merged", "other-open"]
+
+
 def test_filters_facets_pagination_and_batched_queries(visible, client):
     with transaction() as db:
         for i in range(42):
@@ -231,6 +295,7 @@ def test_filters_facets_pagination_and_batched_queries(visible, client):
     assert first["page_size"] == 10
     assert reviewed["total"] == 42 and len(reviewed["items"]) == 10 and reviewed["has_more"]
     assert len(statements) < 20
+    assert sum("inbox_runs AS" in statement for statement in statements) == 2
     second = get(client, "?review=completed&group=active&page=2")["groups"][0]
     assert len(second["items"]) == 10
     assert not ({p["id"] for p in second["items"]} & {p["id"] for p in reviewed["items"]})

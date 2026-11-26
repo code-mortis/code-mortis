@@ -1,10 +1,12 @@
 import json
 
-from sqlalchemy import func, select
+from sqlalchemy import BigInteger, String, any_, func, literal, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
 from code_mortis.core.security import unseal
 from code_mortis.models import (
+    CodeGraphRepository,
     Connection,
     Finding,
     PullRequest,
@@ -18,7 +20,6 @@ from code_mortis.schemas.common import (
     RepositoryOut,
     RepositoryReviewSummary,
     RunOut,
-    StoredReviewRule,
 )
 
 
@@ -42,28 +43,49 @@ def latest_repository_reviews(db: Session, repository_ids: list[int]) -> dict[in
     }
 
 
-def repo_out(db: Session, repo: Repository, *, review_rules: list[StoredReviewRule] | None = None) -> RepositoryOut:
-    from code_mortis.models import CodeGraphRepository
+def repos_out(db: Session, repos: list[Repository]) -> list[RepositoryOut]:
+    if not repos:
+        return []
+    ids = [repo.id for repo in repos]
+    repo_ids = literal(ids, type_=ARRAY(BigInteger))
+    connection_ids = literal([repo.connection_id for repo in repos], type_=ARRAY(String))
+    # Match the connection ID returned to the caller even if repository settings change mid-request.
+    listed = func.unnest(repo_ids, connection_ids).table_valued("id", "connection_id").render_derived(name="listed")
+    selected = any_(repo_ids)
+    open_pulls = select(PullRequest.repository_id, func.count().label("total")).where(
+        PullRequest.repository_id == selected, PullRequest.ignored.is_(False), PullRequest.state == "open",
+    ).group_by(PullRequest.repository_id).subquery()
+    running = select(PullRequest.repository_id).join(ReviewRun, ReviewRun.pr_id == PullRequest.id).where(
+        PullRequest.repository_id == selected, PullRequest.ignored.is_(False), ReviewRun.status == "running",
+    ).distinct().subquery()
+    stats = (
+        select(listed.c.id, CodeGraphRepository.enabled, Connection.kind,
+               func.coalesce(open_pulls.c.total, 0).label("open_prs"),
+               running.c.repository_id.is_not(None).label("has_running_review"))
+        .select_from(listed)
+        .outerjoin(CodeGraphRepository, CodeGraphRepository.repository_id == listed.c.id)
+        .outerjoin(Connection, Connection.id == listed.c.connection_id)
+        .outerjoin(open_pulls, open_pulls.c.repository_id == listed.c.id)
+        .outerjoin(running, running.c.repository_id == listed.c.id)
+    )
 
-    result = RepositoryOut.model_validate(repo)
-    result.review_rules = rules.by_repository(db, [repo.id])[repo.id] if review_rules is None else review_rules
-    graph = db.get(CodeGraphRepository, repo.id)
-    result.code_graph_enabled = bool(graph and graph.enabled)
-    result.open_prs, result.has_running_review, connection_kind = db.execute(
-        select(
-            select(func.count())
-            .select_from(PullRequest)
-            .where(PullRequest.repository_id == repo.id, PullRequest.state == "open", PullRequest.ignored.is_(False))
-            .scalar_subquery(),
-            select(ReviewRun.id)
-            .join(PullRequest, ReviewRun.pr_id == PullRequest.id)
-            .where(PullRequest.repository_id == repo.id, PullRequest.ignored.is_(False), ReviewRun.status == "running")
-            .exists(),
-            select(Connection.kind).where(Connection.id == repo.connection_id).scalar_subquery(),
-        )
-    ).one()
-    result.connection_requires_setup = bool(repo.connection_id and connection_kind != "api")
+    by_id = {row.id: row for row in db.execute(stats)}
+    configured_rules = rules.by_repository(db, ids)
+    result = []
+    for repo in repos:
+        row = by_id[repo.id]
+        item = RepositoryOut.model_validate(repo)
+        item.review_rules = configured_rules[repo.id]
+        item.code_graph_enabled = bool(row.enabled)
+        item.open_prs = row.open_prs
+        item.has_running_review = row.has_running_review
+        item.connection_requires_setup = bool(repo.connection_id and row.kind != "api")
+        result.append(item)
     return result
+
+
+def repo_out(db: Session, repo: Repository) -> RepositoryOut:
+    return repos_out(db, [repo])[0]
 
 
 def pr_out(db: Session, pr: PullRequest) -> PullRequestOut:

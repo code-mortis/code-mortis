@@ -1,4 +1,4 @@
-from sqlalchemy import String, and_, case, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from code_mortis.models import Finding, PullRequest, Repository, ReviewRun
@@ -14,6 +14,8 @@ from code_mortis.schemas.common import (
 
 def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilters, *, strict_state: bool = False) -> InboxOut:
     permitted = [repo.id for repo in repositories]
+    requested = set(filters.repo)
+    selected = [repo_id for repo_id in permitted if not requested or repo_id in requested]
     visibility = [] if filters.visibility == "all" else [PullRequest.ignored.is_(filters.visibility == "ignored")]
     current = and_(ReviewRun.head_sha == PullRequest.head_sha, ReviewRun.base_sha == PullRequest.base_sha)
     runs = select(
@@ -31,11 +33,11 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
             ),
         ).label("rank"),
     ).join(PullRequest, PullRequest.id == ReviewRun.pr_id).where(
-        PullRequest.repository_id.in_(permitted)
+        PullRequest.repository_id.in_(selected)
     ).cte("inbox_runs")
     findings = select(Finding.pr_id, func.count().label("open_findings")).join(
         PullRequest, PullRequest.id == Finding.pr_id
-    ).where(PullRequest.repository_id.in_(permitted), Finding.status == "open").group_by(
+    ).where(PullRequest.repository_id.in_(selected), Finding.status == "open").group_by(
         Finding.pr_id
     ).cte("inbox_findings")
     review_status = case(
@@ -60,11 +62,9 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
     ).join(Repository, Repository.id == PullRequest.repository_id).outerjoin(
         runs, and_(runs.c.pr_id == PullRequest.id, runs.c.rank == 1)
     ).outerjoin(findings, findings.c.pr_id == PullRequest.id).where(
-        PullRequest.repository_id.in_(permitted), *visibility,
+        PullRequest.repository_id.in_(selected), *visibility,
     ).cte("inbox_base")
     conditions = []
-    if filters.repo:
-        conditions.append(base.c.repository_id.in_(filters.repo))
     if filters.review:
         conditions.append(or_(base.c.review_status.in_(filters.review),
                               and_("running" in filters.review, base.c.has_running_review)))
@@ -83,16 +83,27 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
         if number_query := query.lstrip("#"):
             predicates.append(cast(base.c.number, String) == number_query)
         conditions.append(or_(*predicates))
+    # State facets describe the list before state filtering. Group totals and repository counts describe the filtered list.
     state_counts = {state: 0 for state in ["open", "merged", "closed"]}
-    state_counts.update(dict(db.execute(
-        select(base.c.state, func.count()).where(*conditions).group_by(base.c.state)
-    ).all()))
-    if "all" not in filters.state:
+    state_matches = true()
+    count = matched_count = func.count()
+    all_states = "all" in filters.state
+    if not all_states:
         state_matches = base.c.state.in_(filters.state)
-        conditions.append(state_matches if strict_state else or_(state_matches, base.c.has_running_review))
-    filtered = select(base).where(*conditions).cte("inbox_filtered")
-    totals = dict(db.execute(select(filtered.c.group, func.count()).group_by(filtered.c.group)).all())
-    states = {"open", "merged", "closed"} if "all" in filters.state else set(filters.state)
+        if not strict_state:
+            state_matches = or_(state_matches, base.c.has_running_review)
+        matched_count = count.filter(state_matches)
+    facets = (base.c.repository_id, base.c.state, base.c.group)
+    totals, matched_repositories = {}, set()
+    for repo_id, state, name, total, matched in db.execute(
+        select(*facets, count, matched_count).where(*conditions).group_by(*facets)
+    ):
+        state_counts[state] = state_counts.get(state, 0) + total
+        if matched:
+            totals[name] = totals.get(name, 0) + matched
+            matched_repositories.add(repo_id)
+    filtered = select(base).where(*conditions, state_matches).cte("inbox_filtered")
+    states = {"open", "merged", "closed"} if all_states else set(filters.state)
     enabled = [name for name, state in [
         ("active", "open"), ("merged", "merged"), ("closed", "closed")
     ] if state in states or (name == "active" and totals.get(name, 0))]
@@ -119,12 +130,14 @@ def list_pulls(db: Session, repositories: list[Repository], filters: InboxFilter
             group=name, items=[InboxPullOut.model_validate(row) for row in items],
             total=total, page=page, has_more=page * LIST_PAGE_SIZE < total,
         ))
-    registered = select(PullRequest).where(PullRequest.repository_id.in_(permitted), *visibility).subquery()
+    author_counts = db.execute(select(PullRequest.author, func.count())
+        .where(PullRequest.repository_id.in_(permitted), *visibility)
+        .group_by(PullRequest.author).order_by(PullRequest.author)).all()
     return InboxOut(
         groups=pages, total=sum(totals.values()),
-        repository_count=db.scalar(select(func.count(func.distinct(filtered.c.repository_id)))),
-        registered_total=db.scalar(select(func.count()).select_from(registered)),
+        repository_count=len(matched_repositories),
+        registered_total=sum(count for _, count in author_counts),
         repositories=[InboxRepository(id=repo.id, full_name=repo.full_name) for repo in repositories],
-        authors=list(db.scalars(select(registered.c.author).distinct().order_by(registered.c.author))),
+        authors=[author for author, _ in author_counts],
         state_counts=state_counts,
     )

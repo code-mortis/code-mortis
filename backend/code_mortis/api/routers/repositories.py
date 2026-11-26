@@ -8,7 +8,7 @@ from sqlalchemy import Date, cast, func, select
 from sqlalchemy.orm import Session
 
 from code_mortis.api.dependencies import ADMIN, DB, SESSION_ADMIN, SESSION_USER, USER, repo_access
-from code_mortis.api.presenters import latest_repository_reviews, repo_out
+from code_mortis.api.presenters import latest_repository_reviews, repo_out, repos_out
 from code_mortis.api_tokens import provenance as pat
 from code_mortis.code_graph import repository as repository_graph
 from code_mortis.code_graph import retrieval, store
@@ -76,8 +76,7 @@ def repositories(db: DB, user: USER):
     repository_ids = [repo.id for repo in repos]
     security = summaries(db, repository_ids)
     reviews = latest_repository_reviews(db, repository_ids)
-    configured_rules = rules.by_repository(db, repository_ids)
-    result = [repo_out(db, repo, review_rules=configured_rules[repo.id]) for repo in repos]
+    result = repos_out(db, repos)
     for repo in result:
         repo.security = security[repo.id]
         repo.latest_completed_review = reviews.get(repo.id)

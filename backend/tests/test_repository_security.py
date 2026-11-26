@@ -4392,6 +4392,88 @@ def test_security_finding_multiselect_uses_union_within_filters_and_intersection
     assert client.get(repository_path, params=filters).status_code == 403
 
 
+def test_repository_finding_facets_share_one_query_and_keep_unfiltered_counts(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        saved_finding(db, seed, scan)
+        target = saved_finding(db, seed, scan, kind="dependency", state="open", path="target.py").id
+        saved_finding(db, seed, scan, kind="dependency", severity="low", state="resolved")
+
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "FROM security_findings" in statement:
+            statements.append(statement)
+
+    path = "/api/v1/security/repositories/22/findings"
+    event.listen(engine(), "after_cursor_execute", record)
+    try:
+        unfiltered = client.get(path).json()
+        assert len(statements) == 2
+        statements.clear()
+        filtered = client.get(path, params={"state": "open", "search": "TARGET"}).json()
+        assert len(statements) == 3
+    finally:
+        event.remove(engine(), "after_cursor_execute", record)
+    assert unfiltered["total"] == unfiltered["registered_total"] == filtered["registered_total"] == 3
+    assert filtered["total"] == 1 and [row["id"] for row in filtered["items"]] == [target]
+    for key, expected in {
+        "state_counts": {"open": 2, "resolved": 1},
+        "severity_counts": {"high": 2, "low": 1},
+        "kind_counts": {"code": 1, "dependency": 2},
+    }.items():
+        assert unfiltered[key] == filtered[key] == expected
+
+
+def test_scan_findings_lookup_only_snapshot_ids_and_preserve_history(seed, security_github, client):
+    with transaction() as db:
+        scan = saved_scan(db, seed, status="completed")
+        earlier = saved_scan(db, seed, status="completed")
+        new = saved_finding(db, seed, scan)
+        repeat = saved_finding(db, seed, earlier)
+        fixed = saved_finding(db, seed, earlier, state="resolved")
+        saved_finding(db, seed, earlier)
+        foreign_repo = Repository(id=23, installation_id=10, full_name="team/other")
+        db.add(foreign_repo)
+        db.flush()
+        foreign_seed = {**seed, "repo": foreign_repo}
+        foreign_scan = saved_scan(db, foreign_seed, status="completed")
+        foreign = saved_finding(db, foreign_seed, foreign_scan)
+        missing_id = uid()
+        scan.report = {"findings": [
+            {**security.finding_snapshot(row), "finding_id": row.id, "outcome": "present"}
+            for row in (new, repeat, foreign)
+        ] + [
+            {**security.finding_snapshot(repeat), "finding_id": missing_id, "outcome": "present"},
+            {**security.finding_snapshot(fixed), "finding_id": fixed.id, "outcome": "fixed"},
+        ]}
+        scan_id, earlier_id = scan.id, earlier.id
+        new_id, repeat_id, fixed_id, foreign_id = new.id, repeat.id, fixed.id, foreign.id
+
+    returned_rows = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "SELECT security_findings.id, security_findings.first_scan_id" in statement:
+            returned_rows.append(cursor.rowcount)
+
+    path = f"/api/v1/security/scans/{scan_id}/findings"
+    event.listen(engine(), "after_cursor_execute", record)
+    try:
+        present = client.get(path, params={"ordering": "position", "resolved": "false"}).json()
+        resolved = client.get(path, params={"resolved": "true"}).json()
+    finally:
+        event.remove(engine(), "after_cursor_execute", record)
+
+    assert returned_rows == [2, 1]
+    assert present["registered_total"] == present["total"] == 4
+    assert present["result_counts"] == {"new": 1, "open_repeat": 3}
+    assert [(row["id"], row["first_scan_id"]) for row in present["items"]] == [
+        (new_id, scan_id), (repeat_id, earlier_id), (foreign_id, scan_id), (missing_id, scan_id),
+    ]
+    assert resolved["result_counts"] == {"fixed": 1}
+    assert [(row["id"], row["first_scan_id"]) for row in resolved["items"]] == [(fixed_id, earlier_id)]
+
+
 def test_scan_activity_filters_findings_before_counts_and_pagination_preserving_finding_history(seed, security_github, client):
     with transaction() as db:
         scan = saved_scan(db, seed, status="completed")
