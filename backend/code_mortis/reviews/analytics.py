@@ -6,7 +6,7 @@ from statistics import mean, median
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import JSON, case, column, func, select, true, union_all
+from sqlalchemy import ARRAY, JSON, String, any_, case, column, func, literal, select, true, union_all
 
 from code_mortis.core.db import now
 from code_mortis.core.review_results import report_tokens
@@ -108,15 +108,13 @@ class Scope:
                 day += timedelta(days=7 if self.bucket == "week" else 1)
         return points
 
-    def grouped_findings(self, filtered=False):
+    def grouped_findings(self, *conditions, by_repository=False):
         bucket = func.date_trunc(self.bucket, func.timezone(self.filters.timezone, Finding.created_at))
-        fields = (PullRequest.repository_id, bucket.label("date"), Finding.severity, Finding.category, Finding.status)
-        query = self.query(Finding, *fields, func.count().label("count"))
-        if filtered:
-            for name in ("severity", "category", "status"):
-                if value := getattr(self.filters, name):
-                    query = query.where(getattr(Finding, name).in_(value))
-        return list(self.db.execute(query.group_by(*fields)).mappings())
+        fields = (bucket.label("date"), Finding.severity, Finding.category, Finding.status)
+        if by_repository:
+            fields = (PullRequest.repository_id, *fields)
+        query = self.query(Finding, *fields, func.count().label("count")).where(*conditions).group_by(*fields)
+        return list(self.db.execute(query).mappings())
 
     def runs(self):
         # Project only analytics fields; report bodies, configuration secrets and evidence stay server-side.
@@ -160,6 +158,8 @@ def recorded_usage(usage, status, has_result, legacy):
 
 def usage_records(db, runs):
     by_id = {row["id"]: row for row in runs}
+    # Bind the IDs once, including when both branches of the candidate query use them.
+    run_ids = any_(literal(list(by_id), ARRAY(String(36))))
     records = []
 
     def add(run, stage, tokens, model=None, effort=None):
@@ -174,18 +174,18 @@ def usage_records(db, runs):
     candidates = select(
         ReviewCandidate.run_id, ReviewCandidate.usage, ReviewCandidate.status,
         ReviewCandidate.result["verdict"].as_string().is_not(None).label("has_result"),
-    ).where(ReviewCandidate.run_id.in_(by_id))
+    ).where(ReviewCandidate.run_id == run_ids)
     attempt = func.json_array_elements(ReviewCandidate.attempts).table_valued(column("value", JSON)).lateral()
     attempts = select(
         ReviewCandidate.run_id, attempt.c.value["usage"], attempt.c.value["status"].as_string(),
         attempt.c.value["result"]["verdict"].as_string().is_not(None),
-    ).select_from(ReviewCandidate).join(attempt, true()).where(ReviewCandidate.run_id.in_(by_id))
+    ).select_from(ReviewCandidate).join(attempt, true()).where(ReviewCandidate.run_id == run_ids)
     for run_id, usage, status, has_result in db.execute(union_all(candidates, attempts)):
         run = by_id[run_id]
         add(run, "assessment", recorded_usage(usage, status, has_result, run["pipeline"] != 2))
     for run_id, usage, status, verdict in db.execute(select(
         FindingVerification.run_id, FindingVerification.usage, FindingVerification.status, FindingVerification.verdict,
-    ).where(FindingVerification.run_id.in_(by_id))):
+    ).where(FindingVerification.run_id == run_ids)):
         run = by_id[run_id]
         add(run, "verification", recorded_usage(usage, status, verdict is not None, run["pipeline"] != 2))
 
@@ -197,7 +197,7 @@ def usage_records(db, runs):
         Job.payload["previous_summary"]["inference_started_at"].as_string().label("started_at"),
         Job.payload["config"]["connection"]["model"].as_string().label("model"),
         Job.payload["config"]["settings"]["effort"].as_string().label("effort"),
-    ).where(Job.kind == "generate_summary", Job.payload["run_id"].as_string().in_(by_id))).mappings():
+    ).where(Job.kind == "generate_summary", Job.payload["run_id"].as_string() == run_ids)).mappings():
         retries[job["run_id"]].append(job)
     for run in runs:
         jobs = retries[run["id"]]
@@ -262,7 +262,7 @@ def usage_totals(records):
 
 
 def overview(scope):
-    runs, rows = scope.runs(), scope.grouped_findings()
+    runs, rows = scope.runs(), scope.grouped_findings(by_repository=True)
     severity, category, status = finding_totals(rows)
     points = scope.trend()
     repositories = {repo.id: AnalyticsRepository(id=repo.id, name=repo.full_name) for repo in scope.repositories}
@@ -289,15 +289,25 @@ def overview(scope):
 
 
 def findings(scope):
-    unfiltered = scope.grouped_findings()
-    rows = scope.grouped_findings(filtered=True)
+    conditions = [
+        column.in_(values) for column, values in (
+            (Finding.severity, scope.filters.severity),
+            (Finding.category, scope.filters.category),
+            (Finding.status, scope.filters.status),
+        ) if values
+    ]
+    rows = scope.grouped_findings(*conditions)
     severity, category, status = finding_totals(rows)
+    unfiltered_categories = category
+    if conditions:
+        category_counts = scope.query(Finding, Finding.category, func.count()).group_by(Finding.category)
+        unfiltered_categories = dict(scope.db.execute(category_counts).all())
     points = scope.trend()
     for row in rows:
         points[row["date"].date().isoformat()].findings += row["count"]
     return AnalyticsFindings(
-        scope=scope.meta, total=sum(status.values()), unfiltered_total=sum(row["count"] for row in unfiltered),
-        category_options=sorted({row["category"] for row in unfiltered}), severities=scope.counts(severity, SEVERITIES),
+        scope=scope.meta, total=sum(status.values()), unfiltered_total=sum(unfiltered_categories.values()),
+        category_options=sorted(unfiltered_categories), severities=scope.counts(severity, SEVERITIES),
         categories=scope.counts(category), statuses=scope.counts(status, STATUSES), trend=list(points.values()),
     )
 
@@ -331,14 +341,15 @@ def reviews(scope):
             continue
         for key in keys:
             coverage[key] += len(manifest[key])
-    ids = [run["id"] for run in runs]
+    run_ids = any_(literal([run["id"] for run in runs], ARRAY(String(36))))
     outcome = case(
         (ReviewCandidate.finding_id.is_not(None) & ReviewCandidate.is_new, "new"),
         (ReviewCandidate.finding_id.is_not(None), "repeated"),
         (ReviewCandidate.result["verdict"].as_string() == "rejected", "rejected"),
         (ReviewCandidate.status.in_(["queued", "running"]), "pending"), else_="withheld",
     )
-    assessments = scope.db.execute(select(outcome, func.count()).where(ReviewCandidate.run_id.in_(ids)).group_by(outcome)).all()
+    assessments = scope.db.execute(select(outcome, func.count())
+        .where(ReviewCandidate.run_id == run_ids).group_by(outcome)).all()
     return AnalyticsReviews(
         scope=scope.meta, runs=len(runs), reviewed_prs=len(reviewed),
         mean_duration_seconds=mean(durations) if durations else None,

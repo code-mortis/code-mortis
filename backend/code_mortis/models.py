@@ -366,7 +366,11 @@ class ReviewRuleUse(Base):
 
 class Finding(Base):
     __tablename__ = "findings"
-    __table_args__ = (UniqueConstraint("pr_id", "fingerprint"),)
+    __table_args__ = (
+        UniqueConstraint("pr_id", "fingerprint"),
+        Index("ix_findings_publication_batch", "publication_run_id", "publication_batch",
+              postgresql_where=text("publication_run_id IS NOT NULL")),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     pr_id: Mapped[str] = mapped_column(ForeignKey("pull_requests.id"), index=True)
     fingerprint: Mapped[str] = mapped_column(String(64))

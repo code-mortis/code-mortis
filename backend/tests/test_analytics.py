@@ -14,7 +14,7 @@ from code_mortis.models import (
     ReviewCandidate,
     ReviewRun,
 )
-from code_mortis.reviews.analytics import amount, ordered, recorded_usage
+from code_mortis.reviews.analytics import amount, ordered, recorded_usage, usage_records, usage_totals
 
 AT = datetime(2026, 10, 10, 12, tzinfo=UTC)
 QUERY = "?from_at=2026-10-01T00:00:00Z&to_at=2026-11-01T00:00:00Z&timezone=UTC"
@@ -128,17 +128,38 @@ def test_every_aggregate_excludes_other_repositories(client):
     assert get(client, "usage")["total"]["tokens"] == 117
 
 
-def test_finding_filters_apply_to_every_breakdown(client):
+def test_finding_filters_apply_to_every_breakdown(client, monkeypatch):
+    monkeypatch.setattr(github, "pages", lambda *args, **kwargs: [{"id": 22}, {"id": 23}])
     with transaction() as db:
         run(db)
         finding(db, category="custom", severity="critical", status="resolved")
-        finding(db, "other", category="performance")
+        finding(db, "other", category="performance", created_at=AT + timedelta(days=1))
+        db.add(Repository(id=23, installation_id=10, full_name="team/second"))
+        db.flush()
+        db.add(PullRequest(id="second-pr", repository_id=23, number=1, title="Another PR", author="owner",
+                           url="https://github.com/team/second/pull/1", head_sha="a" * 40, base_sha="b" * 40))
+        db.flush()
+        run(db, "second-run", "second-pr")
+        finding(db, "second-finding", pr_id="second-pr", last_seen_run_id="second-run",
+                category="custom", severity="critical", status="resolved")
+
+    unfiltered = get(client, "findings")
+    assert (unfiltered["total"], unfiltered["unfiltered_total"]) == (3, 3)
+    assert {row["date"]: row["findings"] for row in unfiltered["trend"] if row["findings"]} == {
+        "2026-10-10": 2, "2026-10-11": 1,
+    }
     result = get(client, "findings", QUERY + "&category=custom&severity=critical&status=resolved")
-    assert (result["total"], result["unfiltered_total"]) == (1, 2)
+    assert (result["total"], result["unfiltered_total"]) == (2, 3)
     assert result["category_options"] == ["custom", "performance"]
-    assert result["categories"] == [{"key": "custom", "count": 1}]
-    assert sum(row["count"] for row in result["severities"]) == 1
-    assert sum(row["findings"] for row in result["trend"]) == 1
+    assert result["categories"] == [{"key": "custom", "count": 2}]
+    assert sum(row["count"] for row in result["severities"]) == 2
+    assert {row["key"]: row["count"] for row in result["statuses"]} == {"open": 0, "resolved": 2, "dismissed": 0}
+    assert {row["date"]: row["findings"] for row in result["trend"] if row["findings"]} == {"2026-10-10": 2}
+    scoped = get(client, "findings", QUERY + "&repo=23&category=performance")
+    assert (scoped["total"], scoped["unfiltered_total"], scoped["category_options"]) == (0, 1, ["custom"])
+    assert {row["id"]: (row["findings"], row["resolved"]) for row in get(client)["repositories"]} == {
+        22: (2, 1), 23: (1, 1),
+    }
 
 
 def test_timezone_dst_and_exclusive_end(client):
@@ -192,6 +213,28 @@ def test_usage_retries_models_and_no_stage_double_count(client, github_stub):
     assert sum(point["tokens"] or 0 for point in result["trend"]) == 145
     assert get(client)["usage"]["tokens"] == 145
     assert run_total(client) == 145
+
+
+def test_usage_records_for_large_run_scope():
+    template = {
+        "pr_id": "pr", "status": "completed", "started_at": AT, "pipeline": 2,
+        "model": "model-a", "effort": "high", "tokens": 0, "summary_status": None, "summary_retry": None,
+    }
+    # Simulate all-time results without needing to persist thousands of irrelevant runs.
+    runs = [dict(template, id=f"historical-{index}") for index in range(32_767)]
+    runs.append(dict(template, id="run", tokens=100))
+    with transaction() as db:
+        run(db)
+        run(db, "outside")
+        db.add(ReviewCandidate(
+            run_id="run", position=0, snapshot={}, status="completed", usage={"tokens": 20},
+            attempts=[{"status": "failed", "usage": {"tokens": 3}}],
+        ))
+        db.add(ReviewCandidate(run_id="outside", position=0, snapshot={}, usage={"tokens": 500}))
+        db.flush()
+        totals = usage_totals(usage_records(db, runs))
+
+    assert (totals.total_runs, totals.known_reports, totals.tokens) == (32_768, 32_770, 123)
 
 
 def test_partial_usage_excludes_incomplete_samples_and_reservations(client, github_stub):
