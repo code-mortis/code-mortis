@@ -290,7 +290,7 @@ def test_one_schema_repair_is_bounded_and_never_counts_invalid_result(monkeypatc
     ("trigger", "empty_explanation", ["findings", 0, "trigger"]),
     ("consequence", "empty_explanation", ["findings", 0, "consequence"]),
     ("source", "unavailable_citation", ["findings", 0, "evidence", 0]),
-    ("source_range", "unavailable_citation", ["findings", 0, "evidence", 0]),
+    ("source_range", "citation_range_out_of_bounds", ["findings", 0, "evidence", 0]),
     ("blank_source", "empty_citation", ["findings", 0, "evidence", 0]),
     ("local_source", "missing_local_citation", ["findings", 0, "evidence"]),
     ("code", "unexpected_code_quote", ["findings", 0, "existing_code"]),

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Bundle [Mortis Engine 0.1.7](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.7). The first automatic incremental review after upgrading establishes a new baseline.
+
 ## 0.1.1
 
 - Configure browser Sentry reporting with `CM_SENTRY_FRONTEND_DSN` in the running App. Recreate the API container after changing it. The same image can be used across deployments with different Sentry settings.

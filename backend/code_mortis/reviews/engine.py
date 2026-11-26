@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, replace
 
 from mortis_engine.review import engine as native
+from mortis_engine.review import source_lines
 
 from code_mortis.core import analysis, inference_admission
 from code_mortis.core import source as git_source
@@ -56,6 +57,8 @@ def _source(revision, path, start, end, text):
             "start_line": start, "end_line": end, "text": text}
 
 
+# Keep native excerpts and validation in the same coordinates as app plans and source reads.
+@source_lines.use(None)
 def prepare_batches(plan, connection, options, credentials, *, graph_by_path=None, stopped=lambda: False,
                     output_token_policy=analysis.OUTPUT_TOKEN_POLICY, source_code_policy=SOURCE_CODE_POLICY,
                     prompt_version=PROMPT_VERSION, source_tool_policy=SOURCE_TOOL_POLICY):
@@ -84,9 +87,10 @@ def prepare_batches(plan, connection, options, credentials, *, graph_by_path=Non
     return result
 
 
-_diff_lines = native._diff_lines
+_diff_lines = source_lines.use(None)(native._diff_lines)
 
 
+@source_lines.use(None)
 def validate_result(data, batch, sources, credentials, stopped=lambda: False):
     safe_credentials = {key: value for key, value in credentials.items() if key != "redaction_rules"}
     result = native.validate_result(data, batch, sources, safe_credentials, lambda: engine_stopped(stopped))

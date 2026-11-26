@@ -310,7 +310,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mcp", specifier = "==2.3.0" },
-    { name = "mortis-engine", specifier = "==0.1.6" },
+    { name = "mortis-engine", specifier = "==0.1.7" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pydantic-settings", specifier = ">=2.8,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
@@ -840,7 +840,7 @@ wheels = [
 
 [[package]]
 name = "mortis-engine"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
@@ -851,9 +851,9 @@ dependencies = [
     { name = "rich" },
     { name = "tomli-w" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5a/a4/19f288d56012015674595653766998e6181fb0d04fa400845bcbf3757fa1/mortis_engine-0.1.6.tar.gz", hash = "sha256:ab4d7d6ffe663793dcec52c8ff5c4160e310be0d665e1dd2b2465d45eb640b11", size = 394702, upload-time = "2026-11-26T00:21:32.453Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/68/516e319b875626273707dd4f738d72e82d36e2968beb6bad63d9069eb816/mortis_engine-0.1.7.tar.gz", hash = "sha256:50b8a20aea753a205e139f2c458d05628c3ea44dbfe555e15b64c3338cfee11e", size = 408309, upload-time = "2026-11-26T18:33:49.666Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/41/a8/3edb95159879be4e2b20ab59b24ac41ab2c033846a435cb1e06d4addda67/mortis_engine-0.1.6-py3-none-any.whl", hash = "sha256:0ff8b508396e639a1c070bc8767100a84cd89da7f785f59ae659b9d1c65bb331", size = 243142, upload-time = "2026-11-26T00:21:30.892Z" },
+    { url = "https://files.pythonhosted.org/packages/42/8e/aedd799b7d8a478bf2a9419755a0afe454aad62574aac198cca39a2d63d1/mortis_engine-0.1.7-py3-none-any.whl", hash = "sha256:76ae635304aabd768c1e0ba11a75993895d63025527204058bf090393e11fc4d", size = 249822, upload-time = "2026-11-26T18:33:48.123Z" },
 ]
 
 [[package]]

@@ -121,7 +121,7 @@ def test_package_transport_uses_trusted_hosts_from_app_config(seed, monkeypatch)
 @pytest.mark.parametrize(("failure", "code", "message"), [
     ("public_http", "endpoint_policy", "require HTTPS"),
     ("trusted_dns", "endpoint_policy", "could not be found"),
-    ("engine_dns", "request_validation", "could not be found"),
+    ("engine_dns", "endpoint_dns", "could not be found"),
 ])
 def test_endpoint_policy_failures_settle_without_provider_usage(seed, monkeypatch, failure, code, message):
     host = "provider.example"
