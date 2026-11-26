@@ -158,6 +158,52 @@ def test_get_preserves_transport_cause_after_retry(monkeypatch):
     assert "private-provider-key" not in str(caught.value)
 
 
+@pytest.mark.parametrize("scoped,status", [(False, 500), (True, 502)])
+def test_installation_token_retries_server_failure_with_identical_scope(monkeypatch, scoped, status):
+    request = Mock(side_effect=[httpx.Response(status), httpx.Response(201, json={"token": "issued"})])
+    monkeypatch.setattr(github.http_client(), "request", request)
+    monkeypatch.setattr(github.time, "sleep", Mock())
+    monkeypatch.setattr(github, "app_token", lambda db: "app-jwt")
+
+    if scoped:
+        assert github.repository_read_token(None, 10, 22) == "issued"
+        assert request.call_args.kwargs["json"] == {
+            "repository_ids": [22], "permissions": {"contents": "read", "metadata": "read"},
+        }
+    else:
+        assert github.installation_token_from_jwt("app-jwt", 10) == "issued"
+    assert len(request.call_args_list) == 2
+    assert request.call_args_list[0] == request.call_args_list[1]
+
+
+@pytest.mark.parametrize("failure,status,delay", [
+    (httpx.Response(503, headers={"Retry-After": "120"}), 503, 120),
+    (httpx.Response(403), 403, 0),
+    (httpx.ReadTimeout("response lost"), 503, 0),
+])
+def test_installation_token_defers_or_fails_without_replay(monkeypatch, failure, status, delay):
+    request = Mock(side_effect=[failure])
+    monkeypatch.setattr(github.http_client(), "request", request)
+    with pytest.raises(github.GitHubError) as caught:
+        github.installation_token_from_jwt("app-jwt", 10)
+    assert (caught.value.status, caught.value.retry_after) == (status, delay)
+    request.assert_called_once()
+
+
+def test_thread_query_retries_server_failure_but_mutation_is_sent_once(monkeypatch):
+    connection = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+    data = {"repository": {"pullRequest": {"reviewThreads": connection}}}
+    request = Mock(side_effect=[httpx.Response(503), httpx.Response(200, json={"data": data}), httpx.Response(503)])
+    monkeypatch.setattr(github.http_client(), "request", request)
+    monkeypatch.setattr(github.time, "sleep", Mock())
+
+    assert github.threads("token", "team/project", 3) == []
+    assert request.call_count == 2 and request.call_args_list[0] == request.call_args_list[1]
+    with pytest.raises(github.GitHubError) as caught:
+        github.set_thread("token", "thread", True)
+    assert caught.value.status == 503 and request.call_count == 3
+
+
 def test_get_preserves_last_http_failure_after_retry(monkeypatch):
     request = Mock(side_effect=[
         httpx.Response(503), httpx.Response(502, json={"message": "private-provider-key"}),

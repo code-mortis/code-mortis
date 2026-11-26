@@ -184,11 +184,41 @@ def test_reenable_explicitly_resumes_cancelled_revision(graph, client):
     assert run(identity)[0].status == "ready"
 
 
-def test_failed_refresh_cools_down_and_transient_failure_can_recover(graph, monkeypatch):
+@pytest.mark.parametrize("status,delay,code", [
+    (502, 0, "github_unavailable"), (403, 180, "github_rate_limited"), (429, 180, "github_rate_limited"),
+])
+def test_refresh_retries_transient_github_errors_without_losing_scope(graph, monkeypatch, status, delay, code):
+    with transaction() as db:
+        identity = service.schedule_refresh(db, 22, commit_sha=graph["second"])
+    started = now()
+    with monkeypatch.context() as outage:
+        def reject(*args, **kwargs):
+            raise github.GitHubError(status, "secret outage", delay)
+        outage.setattr(github, "authorize_repo", reject)
+        jobs.execute_job(identity)
+    with transaction() as db:
+        config, job = db.get(CodeGraphRepository, 22), db.get(Job, identity)
+        assert config.failure["code"] == code
+        assert config.failure["measurements"]["github_status"] == status
+        assert "secret" not in config.error and "secret" not in job.error
+        assert job.status == "queued" and job.attempts == 1
+        assert job.available_at >= started + timedelta(seconds=max(delay, 60))
+        assert db.scalar(select(CodeGraphSnapshot)) is None
+        job.available_at = now()
+    jobs.execute_job(identity)
+    with transaction() as db:
+        job = db.get(Job, identity)
+        assert job.status == "done" and job.attempts == 2
+        assert db.scalar(select(CodeGraphSnapshot)).commit_sha == graph["second"]
+        assert db.get(CodeGraphRepository, 22).failure is None
+
+
+def test_exhausted_refresh_cools_down_and_can_recover(graph, monkeypatch):
     authorize = github.authorize_repo
     monkeypatch.setattr(github, "authorize_repo", lambda *a, **k: (_ for _ in ()).throw(github.GitHubError(503, "secret outage")))
     with transaction() as db:
         identity = service.schedule_refresh(db, 22)
+        db.get(Job, identity).attempts = 2
     jobs.execute_job(identity)
     with transaction() as db:
         config = db.get(CodeGraphRepository, 22)
@@ -209,6 +239,23 @@ def test_failed_refresh_cools_down_and_transient_failure_can_recover(graph, monk
         assert db.get(CodeGraphRepository, 22).failure is None
         assert db.get(CodeGraphRepository, 22).error is None
         assert service.schedule_refresh(db, 22) is not None
+
+
+def test_unexpected_refresh_failure_preserves_cause_for_sentry(graph, monkeypatch):
+    error = RuntimeError("upstream secret")
+    def fail(*args, **kwargs):
+        raise error
+    reported = []
+    monkeypatch.setattr(service, "default_head", fail)
+    monkeypatch.setattr(jobs.sentry_sdk, "capture_exception", lambda exc, **kwargs: reported.append(exc))
+    with transaction() as db:
+        identity = service.schedule_refresh(db, 22)
+    jobs.execute_job(identity)
+    assert len(reported) == 1 and reported[0].__cause__ is error
+    with transaction() as db:
+        job, config = db.get(Job, identity), db.get(CodeGraphRepository, 22)
+        assert job.status == "failed" and config.failure["code"] == "unexpected"
+        assert "upstream secret" not in job.error and "upstream secret" not in config.error
 
 
 def test_explicit_retry_bypasses_failed_refresh_cooldown(graph):

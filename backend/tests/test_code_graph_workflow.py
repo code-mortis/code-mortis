@@ -355,6 +355,7 @@ def test_graph_token_is_scoped_to_one_repository_and_read_permissions(seed, monk
     if pulls:
         permissions["pull_requests"] = "read"
     assert calls == [(("POST", "/app/installations/10/access_tokens", "fixture-jwt"), {
+        "retry_server_errors": True,
         "json": {"repository_ids": [22], "permissions": permissions},
     })]
 

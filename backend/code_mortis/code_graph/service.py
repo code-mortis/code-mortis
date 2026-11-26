@@ -74,8 +74,8 @@ def authorize(repository_id, actor_id, *, enabled=True, initiator=True):
         try:
             remote = github.authorize_repo(db, actor, repo.full_name, fresh=True)
         except github.GitHubError as exc:
-            if exc.status in {401, 403, 404}:
-                raise AccessLost("Graph repository access was revoked.") from None
+            if exc.status in {401, 403, 404} and not exc.rate_limited:
+                raise AccessLost("Graph repository access was revoked.") from exc
             raise
         if type(remote.get("id")) is not int or remote["id"] != repo.id:
             raise AccessLost("GitHub repository identity changed.")
@@ -251,7 +251,10 @@ def refresh(repository_id, job_id, attempt, actor_id, *, retry=False, commit_sha
             if config and config.enabled and not config.paused and config.actor_id == actor_id:
                 config.checked_at, config.error = now(), diagnostic.message + " " + diagnostic.recovery
                 config.failure = diagnostic.model_dump()
-        raise ValueError("Code graph refresh failed; retry from repository settings.") from None
+        if isinstance(exc, github.GitHubError) and (exc.rate_limited or exc.status in github.TRANSIENT_SERVER_ERRORS):
+            # Preserve the worker's bounded backoff without persisting upstream exception text.
+            raise github.GitHubError(exc.status, diagnostic.message, exc.retry_after) from exc
+        raise ValueError("Code graph refresh failed; retry from repository settings.") from exc
 
 
 def cancel_repository(db, repo):
@@ -369,7 +372,11 @@ def settle(db, job, *, expired=False):
 
 
 def diagnostic_for(exc, stage, reference):
-    if isinstance(exc, AccessLost) or isinstance(exc, github.GitHubError) and exc.status in {401, 403, 404}:
+    if isinstance(exc, github.GitHubError) and exc.rate_limited:
+        exc = errors.failure("github_rate_limited", stage, github_status=exc.status)
+    elif isinstance(exc, github.GitHubError) and exc.status in github.TRANSIENT_SERVER_ERRORS:
+        exc = errors.failure("github_unavailable", stage, github_status=exc.status)
+    elif isinstance(exc, AccessLost) or isinstance(exc, github.GitHubError) and exc.status in {401, 403, 404}:
         exc = errors.failure("git_access_denied", stage)
     elif isinstance(exc, (client.ExtractionCancelled, ReviewStopped)):
         exc = errors.failure("cancelled", stage)

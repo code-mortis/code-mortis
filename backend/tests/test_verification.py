@@ -1475,7 +1475,7 @@ def test_graphql_bot_identity_links_only_app_owned_threads(scenario, monkeypatch
     author = {"__typename": actor_type, "login": "mortis-test", "databaseId": 338898914}
     thread["comments"]["nodes"][0]["author"] = author
     thread["resolvedBy"] = {"login": "mortis-test" if resolver_id == 338898914 else "owner", "databaseId": resolver_id}
-    def response(*args):
+    def response(*args, retry_server_errors):
         return {"repository": {"pullRequest": {"reviewThreads": {
             "nodes": [thread], "pageInfo": {"hasNextPage": False}
         }}}}

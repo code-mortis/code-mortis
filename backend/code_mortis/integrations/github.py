@@ -26,6 +26,7 @@ from code_mortis.core.security import clean_text, seal, unseal
 from code_mortis.models import AppConfig, Installation, Repository, User
 
 API = "https://api.github.com"
+TRANSIENT_SERVER_ERRORS = {500, 502, 503, 504}
 logger = logging.getLogger(__name__)
 _get_cache: OrderedDict[tuple[bytes, str], tuple[str, bytes]] = OrderedDict()
 _get_cache_lock = Lock()
@@ -92,8 +93,12 @@ class GitHubError(Exception):
         self.status = status
         self.retry_after = retry_after
 
+    @property
+    def rate_limited(self):
+        return self.status == 429 or (self.status == 403 and self.retry_after > 0)
 
-def request(method: str, path: str, token: str, **kwargs):
+
+def request(method: str, path: str, token: str, *, retry_server_errors: bool = False, **kwargs):
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2026-03-10",
@@ -103,7 +108,8 @@ def request(method: str, path: str, token: str, **kwargs):
     custom_headers = kwargs.pop("headers", {})
     max_response_bytes = kwargs.pop("max_response_bytes", None)
     headers.update(custom_headers)
-    cache_key = (sha256(token.encode()).digest(), path) if method.upper() == "GET" and token and not kwargs and not custom_headers and not max_response_bytes else None
+    is_get = method.upper() == "GET"
+    cache_key = (sha256(token.encode()).digest(), path) if is_get and token and not kwargs and not custom_headers and not max_response_bytes else None
     cached = None
     if cache_key:
         with _get_cache_lock:
@@ -113,7 +119,6 @@ def request(method: str, path: str, token: str, **kwargs):
         if cached:
             headers["If-None-Match"] = cached[0]
     for attempt in range(2):
-        retry_get = method.upper() == "GET" and attempt == 0
         try:
             if max_response_bytes:
                 # Bound decoded bytes before JSON parsing, including compressed responses.
@@ -134,12 +139,14 @@ def request(method: str, path: str, token: str, **kwargs):
                     method, API + path, headers=headers, timeout=25, follow_redirects=False, **kwargs
                 )
         except httpx.HTTPError as exc:
-            if not retry_get or not isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)):
+            if attempt or not is_get or not isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)):
                 raise GitHubError(503, "GitHub could not be reached. Try again shortly.") from exc
         else:
+            # Token exchanges and read-only GraphQL calls also tolerate an explicit
+            # server failure. Only GETs are replayed after an ambiguous disconnect.
             if (
-                not retry_get
-                or response.status_code not in {500, 502, 503, 504}
+                attempt or not (is_get or retry_server_errors)
+                or response.status_code not in TRANSIENT_SERVER_ERRORS
                 or "retry-after" in response.headers
             ):
                 break
@@ -280,7 +287,7 @@ def repository_read_token(db: Session, installation_id: int, repository_id: int,
     permissions = {"contents": "read", "metadata": "read"}
     if pulls:
         permissions["pull_requests"] = "read"
-    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db), json={
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", app_token(db), retry_server_errors=True, json={
         "repository_ids": [repository_id], "permissions": permissions,
     })
     return data["token"]
@@ -295,7 +302,7 @@ def installation_token(db: Session, installation_id: int, *, checks: bool = Fals
 
 def installation_token_from_jwt(token: str, installation_id: int, *, checks: bool = False, resolve: bool = False, issues: bool = False) -> str:
     """Exchange a snapshotted App JWT without keeping a database transaction open."""
-    data = request("POST", f"/app/installations/{installation_id}/access_tokens", token)
+    data = request("POST", f"/app/installations/{installation_id}/access_tokens", token, retry_server_errors=True)
     if issues and data.get("permissions", {}).get("issues") != "write":
         raise GitHubError(403, "Enable Issues: Read and write on the existing GitHub App and approve the installation permission update. Security scans and reports remain available.")
     if resolve and data.get("permissions", {}).get("contents") != "write":
@@ -411,8 +418,9 @@ def login_url(db: Session, state: str, verifier: str) -> str:
         )[0]
 
 
-def graphql(token: str, query: str, variables: dict):
-    data = request("POST", "/graphql", token, json={"query": query, "variables": variables})
+def graphql(token: str, query: str, variables: dict, *, retry_server_errors: bool = False):
+    data = request("POST", "/graphql", token, json={"query": query, "variables": variables},
+                   retry_server_errors=retry_server_errors)
     if data.get("errors"):
         errors = data["errors"]
         forbidden = any(error.get("type") == "FORBIDDEN" for error in errors)
@@ -435,7 +443,8 @@ def threads(token: str, full_name: str, number: int) -> list[dict]:
     }"""
     result, cursor = [], None
     for _ in range(100):
-        data = graphql(token, query, {"owner": owner, "repo": repo, "number": number, "after": cursor})
+        data = graphql(token, query, {"owner": owner, "repo": repo, "number": number, "after": cursor},
+                       retry_server_errors=True)
         connection = data["repository"]["pullRequest"]["reviewThreads"]
         for thread in connection["nodes"]:
             for comment in thread.get("comments", {}).get("nodes", []):

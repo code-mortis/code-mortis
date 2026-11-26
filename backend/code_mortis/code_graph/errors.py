@@ -39,6 +39,8 @@ PARSER_ERRORS = {
     "transport_limit": ("The indexing payload exceeds the transport safety limit.", "Reduce the source scope, then retry."),
     "cancelled": ("Graph indexing was cancelled or its configuration changed.", "Retry from Code graph settings to resume indexing."),
     "git_access_denied": ("GitHub denied access to the repository or revision.", "Check the GitHub App installation and Contents read permission, then retry."),
+    "github_rate_limited": ("GitHub rate-limited the request.", "Wait for the rate limit to reset before trying again."),
+    "github_unavailable": ("GitHub could not complete the request.", "Try again when GitHub is available."),
     "git_objects_unavailable": ("Git could not fetch the requested revision.", "Check that the revision exists and GitHub is reachable, then retry."),
 }
 
