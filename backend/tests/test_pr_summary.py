@@ -379,6 +379,51 @@ def test_sync_errors_and_retry_only_send_saved_content(seed, overview_api, monke
         assert not db.get(PullRequest, "pr").summary_error
 
 
+@pytest.mark.parametrize("recovers", [True, False])
+def test_summary_retries_github_outage_before_reporting_failure(seed, overview_api, monkeypatch, recovers):
+    _, writes, _ = overview_api
+    completed_run()
+    with transaction() as db:
+        job_id = db.scalar(select(Job.id).where(Job.kind == "sync_summary"))
+    request = github.request
+    reported = []
+    monkeypatch.setattr(jobs.sentry_sdk, "capture_exception", lambda exc, *, tags: reported.append(tags))
+
+    def unavailable(method, path, *args, **kwargs):
+        if method == "GET" and "/pulls/" in path:
+            raise github.GitHubError(503, "GitHub temporarily unavailable", retry_after=600)
+        return request(method, path, *args, **kwargs)
+
+    monkeypatch.setattr(github, "request", unavailable)
+    for attempt in range(1, 5):
+        started = now()
+        jobs.execute_job(job_id)
+        with transaction() as db:
+            job = db.get(Job, job_id)
+            pr = db.get(PullRequest, "pr")
+            assert job.status == "queued" and job.attempts == attempt
+            assert job.lease_until is None and job.dispatched_at is None
+            assert job.available_at >= started + timedelta(seconds=600)
+            assert pr.summary_pending and pr.summary_error is None
+            job.available_at = now()
+        assert not reported and not writes
+
+    if recovers:
+        monkeypatch.setattr(github, "request", request)
+    jobs.execute_job(job_id)
+    with transaction() as db:
+        job = db.get(Job, job_id)
+        pr = db.get(PullRequest, "pr")
+        if recovers:
+            assert job.status == "done" and pr.summary_synced_at and not pr.summary_pending
+            assert pr.summary_error is None and not reported
+            assert [method for method, _ in writes] == ["POST"]
+        else:
+            assert job.status == "failed" and pr.summary_error == job.error == "GitHub temporarily unavailable"
+            assert reported == [{"job_id": job_id, "job_kind": "sync_summary", "job_attempt": 5, "github_status": 503}]
+            assert not writes
+
+
 def test_published_summary_survives_reconciliation_and_sync_failure(seed, overview_api, monkeypatch):
     _, writes, _ = overview_api
     identity = completed_run()

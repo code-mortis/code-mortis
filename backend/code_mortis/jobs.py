@@ -55,6 +55,7 @@ def init_worker_sentry(**kwargs):
 
 log = logging.getLogger("code_mortis.jobs")
 CODE_GRAPH_KINDS = {"code_graph", "code_graph_cleanup", "code_graph_refresh"}
+SUMMARY_SYNC_OUTAGE_ATTEMPTS = 5
 celery = Celery("code_mortis")
 celery.conf.update(
     broker_url=settings().redis_url,
@@ -527,10 +528,13 @@ def execute_job(job_id: str):
                     pipeline.fail_stage(db, run, pipeline.KINDS[kind], str(exc))
         return
     except Exception as exc:
-        tags = {"job_id": job_id, "job_kind": kind, "job_attempt": attempt}
-        if isinstance(exc, github.GitHubError):
-            tags["github_status"] = exc.status
-        sentry_sdk.capture_exception(exc, tags=tags)
+        retry_summary = (kind == "sync_summary" and isinstance(exc, github.GitHubError)
+                         and exc.status in github.TRANSIENT_SERVER_ERRORS and attempt < SUMMARY_SYNC_OUTAGE_ATTEMPTS)
+        if not retry_summary:
+            tags = {"job_id": job_id, "job_kind": kind, "job_attempt": attempt}
+            if isinstance(exc, github.GitHubError):
+                tags["github_status"] = exc.status
+            sentry_sdk.capture_exception(exc, tags=tags)
         # Provider exception bodies may contain credentials. Only explicitly safe messages are persisted.
         message = (
             str(exc)
@@ -538,7 +542,7 @@ def execute_job(job_id: str):
             else "The server could not finish this operation. Ask the administrator to check the worker logs, then retry."
         )
         retryable = isinstance(exc, github.GitHubError) and exc.status in {403, 429, 500, 502, 503, 504}
-        retry = retryable and attempt < 3 and kind not in {"code_graph", "generate_summary", *pipeline.KINDS}
+        retry = retry_summary or (retryable and attempt < 3 and kind not in {"code_graph", "generate_summary", *pipeline.KINDS})
         with transaction() as db:
             job = db.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job.attempts != attempt or job.status != "running":
@@ -574,7 +578,7 @@ def execute_job(job_id: str):
             elif kind == "sync_summary":
                 pr = db.get(PullRequest, payload["pr_id"])
                 if pr:
-                    pr.summary_error = message[:2000]
+                    pr.summary_error = None if retry_summary else message[:2000]
             elif kind == "generate_summary":
                 pr_summary.fail_retry(db, job, message[:2000])
             elif kind in pipeline.KINDS:
@@ -591,6 +595,9 @@ def execute_job(job_id: str):
                 connection = db.scalar(select(Connection).where(Connection.id == payload["connection_id"]).with_for_update())
                 if connection_test_matches(job, connection):
                     connection.last_test, connection.tested_at = message[:2000], now()
+        if retry_summary:
+            log.info("summary_sync_retry id=%s attempt=%s github_status=%s delay_seconds=%s", job_id, attempt, exc.status, delay)
+            return
         log.warning(
             "job_failed id=%s kind=%s run_id=%s error_type=%s retry=%s",
             job_id, kind, payload.get("run_id"), type(exc).__name__, retry
