@@ -10,6 +10,7 @@ from threading import Event
 
 import httpx
 import pytest
+from mortis_engine.review import source_lines
 from sqlalchemy import select
 from test_code_graph_workflow import fixture_git
 from test_llm_http import result as wire_result
@@ -57,7 +58,7 @@ def test_failed_analysis_names_selected_engine(scenario, selected, label):
 
 
 @pytest.fixture
-def scenario(seed, tmp_path, monkeypatch):
+def scenario(seed, tmp_path, monkeypatch, request):
     root = tmp_path / "fixture"
     root.mkdir()
     fixture_git(root, "init", "-q")
@@ -69,7 +70,7 @@ def scenario(seed, tmp_path, monkeypatch):
     fixture_git(root, "add", ".")
     fixture_git(root, "commit", "-qm", "base")
     base = fixture_git(root, "rev-parse", "HEAD")
-    (root / "app.py").write_text("def limit():\n    return 0\n")
+    (root / "app.py").write_text(getattr(request, "param", "def limit():\n    return 0\n"))
     (root / "guide.md").write_text("# Guide\nNew behavior.\n")
     (root / ".env").write_text("TOKEN=synthetic-unreviewable-value\n")
     fixture_git(root, "add", ".")
@@ -414,6 +415,24 @@ def test_legacy_source_code_plan_replays_without_rewriting_contract(scenario, mo
     with transaction() as db:
         frozen = copy.deepcopy(db.scalar(select(AnalysisPlan)).snapshot)
         assert "source_code" not in frozen["versions"]
+    assert review(scenario) == original
+    assert len(scenario["wire"]) == 1
+    with transaction() as db:
+        assert db.scalar(select(AnalysisPlan)).snapshot == frozen
+
+
+@pytest.mark.parametrize("scenario", [
+    pytest.param("def limit():\n    return 0  # first\u2028continued comment\n", id="unicode-line-separator"),
+], indirect=True)
+def test_saved_plan_replays_with_original_source_line_coordinates(scenario):
+    with source_lines.use(None):
+        original = review(scenario)
+    assert original[0] == "completed"
+    assert original[2][0]["existing_code"] == "    return 0  # first"
+    with transaction() as db:
+        frozen = copy.deepcopy(db.scalar(select(AnalysisPlan)).snapshot)
+        selected = next(item for item in frozen["selected"] if item["path"] == "app.py")
+        assert selected["units"][0]["end_line"] == 3
     assert review(scenario) == original
     assert len(scenario["wire"]) == 1
     with transaction() as db:

@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from typing import ClassVar
 
 from mortis_engine.review import planning as native
+from mortis_engine.review import source_lines
 
 from code_mortis.core import file_policy, source
 from code_mortis.core.errors import ReviewStopped
@@ -388,10 +389,12 @@ def _binary_paths(repo, env, merge_base, head_sha, stopped):
     return result
 
 
-_patch_rows = native._patch_rows
+_patch_rows = source_lines.use(None)(native._patch_rows)
 _range_patch = native._range_patch
 
 
+# Saved app plans hash source ranges using Python's historical line splitting.
+@source_lines.use(None)
 def split_units(path, old_path, status, sha, text, patch, rule, maximum):
     units = native.split_units(path, old_path, status, sha, text, patch, rule, maximum)
     return [ReviewUnit(**{key: value for key, value in vars(unit).items()
