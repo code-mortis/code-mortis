@@ -1,9 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
-- Configure browser Sentry reporting through `CM_SENTRY_FRONTEND_DSN` at runtime. The same image can serve deployments with different Sentry settings.
-- Bundle Mortis Engine 0.1.6. The first automatic incremental review after upgrading builds a new baseline.
+- Configure browser Sentry reporting with `CM_SENTRY_FRONTEND_DSN` in the running App. Recreate the API container after changing it. The same image can be used across deployments with different Sentry settings.
+- Code Graph refreshes back off and retry when GitHub rate-limits requests or returns a temporary server error. The graph status now distinguishes those failures from revoked repository access. GitHub App token exchanges and PR review-thread lookups also retry temporary server errors.
+- Bundle [Mortis Engine 0.1.6](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.6). The first automatic incremental review after upgrading analyzes all eligible files within the configured limits to establish a new baseline.
+- Coolify deployments use the published App image for the API, migrations, workers, and scheduler.
+
+### Upgrade
+
+Download `compose.yaml` and `manage.py` from the v0.1.1 GitHub Release. Back up PostgreSQL and `CM_ENCRYPTION_KEY`, replace both files in your existing Compose project, and keep its `.env` and volumes. Run `docker compose pull` and `docker compose up -d --wait --remove-orphans`. The release image is `docker.io/codemortis/code-mortis:0.1.1` for Linux `amd64` and `arm64`.
+
+For Coolify, use the [README instructions](https://github.com/code-mortis/code-mortis#deploy-with-coolify) and select the v0.1.1 image in your deployment overlay after it is published.
 
 ## 0.1.0
 

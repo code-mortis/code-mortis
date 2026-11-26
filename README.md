@@ -44,7 +44,9 @@ docker compose up -d --wait
 
 Open the configured URL and enter `CM_BOOTSTRAP_TOKEN` from `.env`. Register and install your GitHub App, then add a shared AI connection. Code Graph ships in the image. Enable it in repository settings to start indexing. See the [deployment guide](https://codemortis.dev/docs/app/deployment/) for the full setup.
 
-To move an existing source deployment to the release image, back up PostgreSQL and `CM_ENCRYPTION_KEY`. Replace `compose.yaml` and `manage.py` in the existing project directory, keeping its `.env` and volumes. Run `docker compose pull` followed by `docker compose up -d --wait --remove-orphans`. The migration service applies database upgrades, and `--remove-orphans` removes the retired graph containers.
+To upgrade an existing deployment or move from source builds to the release image, back up PostgreSQL and `CM_ENCRYPTION_KEY`. Replace `compose.yaml` and `manage.py` in the existing project directory, keeping its `.env` and volumes. Run `docker compose pull` followed by `docker compose up -d --wait --remove-orphans`. The migration service applies any database upgrades, and `--remove-orphans` removes the retired graph containers from older source deployments.
+
+For optional Sentry reporting in App v0.1.1 or later, set the public `CM_SENTRY_FRONTEND_DSN` in `.env` and recreate the API container. Set `CM_SENTRY_DSN` separately for backend reporting. `CM_SENTRY_ENVIRONMENT` and `CM_SENTRY_RELEASE` apply to both.
 
 ## Deploy with Coolify
 
@@ -73,13 +75,13 @@ docker compose -f compose.yaml -f compose.coolify.yaml up -d --no-build --wait -
 
 For an existing deployment, keep the same Coolify resource, environment variables, and mounted volumes. The API and workers wait for database migrations on startup. For a new deployment, open your HTTPS URL, enter `CM_BOOTSTRAP_TOKEN`, register and install your GitHub App, add a model connection, and enable reviews in repository settings.
 
-For releases with runtime browser Sentry support, set the public `CM_SENTRY_FRONTEND_DSN` in Coolify's runtime environment and redeploy with the same image. The `0.1.0` image predates runtime browser reporting. `CM_SENTRY_DSN` configures backend reporting independently.
+To upgrade the App in Coolify, set the shared image anchor in `compose.coolify.yaml` to the published version you want to deploy, then redeploy the existing resource. With App v0.1.1 or later, set `CM_SENTRY_FRONTEND_DSN` in Coolify's runtime environment and redeploy to change browser reporting.
 
 ## Publish a Docker image
 
 The public image repository is `codemortis/code-mortis`. Set the GitHub Actions variable `DOCKERHUB_NAMESPACE` to `codemortis`, and configure `DOCKERHUB_USERNAME` and the `DOCKERHUB_TOKEN` secret with write access to the repository.
 
-Add release notes under the matching version heading in `CHANGELOG.md`, such as `## 0.1.0`, then push a stable tag from `main`, such as `v0.1.0`. The workflow tests both Linux architectures, publishes the versioned Docker Hub image, and checks a fresh install. It then creates the GitHub Release with those notes and attaches `compose.yaml` and `manage.py`.
+Add release notes under the matching `## X.Y.Z` heading in `CHANGELOG.md`, then push the stable tag `vX.Y.Z` from `main`. The workflow tests both Linux architectures, publishes the versioned Docker Hub image, and checks a fresh install. It then creates the GitHub Release with those notes and attaches `compose.yaml` and `manage.py`.
 
 Licensed under [Apache 2.0](LICENSE).
 
