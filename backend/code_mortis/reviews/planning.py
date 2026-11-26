@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
+from typing import ClassVar
 
 from mortis_engine.review import planning as native
 
@@ -298,6 +299,9 @@ def rule_for(path, rules, review_rules=()):
 
 @dataclass
 class ReviewUnit:
+    caller_only: ClassVar[bool] = False
+    affected_triggers: ClassVar[tuple] = ()
+
     key: str
     path: str
     old_path: str | None
@@ -328,6 +332,9 @@ class SelectedFile:
 
 @dataclass
 class ReviewPlan:
+    # Engine batching reads this attribute. The app persists its own PR scope.
+    affected_callers: ClassVar[None] = None
+
     base_sha: str
     head_sha: str
     merge_base: str
@@ -387,7 +394,8 @@ _range_patch = native._range_patch
 
 def split_units(path, old_path, status, sha, text, patch, rule, maximum):
     units = native.split_units(path, old_path, status, sha, text, patch, rule, maximum)
-    return [ReviewUnit(**{key: value for key, value in vars(unit).items() if key != "source_only"})
+    return [ReviewUnit(**{key: value for key, value in vars(unit).items()
+                          if key not in {"source_only", "caller_only", "affected_triggers"}})
             for unit in units]
 
 

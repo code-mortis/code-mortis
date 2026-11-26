@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Configure browser Sentry reporting through `CM_SENTRY_FRONTEND_DSN` at runtime. The same image can serve deployments with different Sentry settings.
+- Bundle Mortis Engine 0.1.6. The first automatic incremental review after upgrading builds a new baseline.
 
 ## 0.1.0
 
