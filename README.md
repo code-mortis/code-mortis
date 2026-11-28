@@ -15,9 +15,9 @@ Self-hosted GitHub pull request reviews and repository security scans powered by
 
 ## Connect an MCP client
 
-In **Settings → MCP access**, enable MCP and the tool groups your client needs. Copy the single server URL (`https://your-host/mcp`) into a Streamable HTTP client and complete OAuth in the browser. Select scopes and repositories separately for each group. Code tools require an enabled repository graph. Management requires separate consent and the appropriate role.
+In **Settings → MCP access**, enable MCP and the tool groups your client needs. Copy the server URL (`https://your-host/mcp`) into a Streamable HTTP client and complete OAuth in the browser. Choose each group's permissions and repositories on the consent screen. Code tools require an enabled repository graph. Only administrators can grant instance management, which applies across the instance.
 
-Upgrading from separate MCP endpoints turns MCP off, retires their grants, and cancels unfinished work authorized by those grants. Remove the old client entries and authorize one connection when ready.
+Upgrading from v0.1.2 or earlier turns MCP off, revokes the old grants, and cancels unfinished work authorized by those grants. If you need the results of pending MCP jobs, wait for them to finish before upgrading. Afterwards, re-enable MCP and the desired tool groups, then replace the old client entries with one connection to `/mcp` and authorize it.
 
 Each API process allows two concurrent MCP transport or OAuth setup requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). When busy it returns HTTP 429 with `Retry-After: 2`. Its separate database pool defaults to six connections (`CM_MCP_DB_POOL_SIZE`), zero overflow, and a one-second checkout timeout. Include this limit for each API process when sizing PostgreSQL alongside web and worker pools. Browser administration remains available during MCP overload.
 
