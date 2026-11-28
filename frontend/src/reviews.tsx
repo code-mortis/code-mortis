@@ -841,7 +841,7 @@ function RunMetrics({ run, tokens }: { run: Run; tokens?: number | null }) {
   const failed = coverage.hasScope ? coverage.items.filter((file) => file.outcome === "failed").length : run.progress.failed;
   const hasMetrics = [selected, completed, reused, failed, tokens].some(knownCount);
   const awaitingResults = active(run.status) || run.status === "blocked";
-  return <p aria-label="Run statistics" className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+  return <p aria-label="Run statistics" className="flex flex-wrap gap-x-3">
     <span>Duration: <strong className="font-semibold text-foreground"><ExecutionDuration run={run} /></strong></span>
     <span>{hasMetrics
       ? <>{count(reused)} reused · {count(failed)} failed · {tokenUsage(tokens, run.status)}</>
@@ -863,6 +863,25 @@ const checkDescriptions: Record<string, string> = {
 };
 
 const statusTriggerClass = `inline-flex cursor-pointer ${badgeRadius} outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring`;
+
+function RunCheckBadge({ run }: { run: Run }) {
+  if (!run.check_enabled) return null;
+  const value = run.check_conclusion || run.check_status;
+  if (!value && !run.check_url) {
+    if (run.check_error) return <Status value="failed" label="Check Error" />;
+    return run.check_pending ? <Status value="pending" label="Check Pending" /> : null;
+  }
+  const checkLabel = value ? `Check ${label(value)}` : "Check";
+  const badge = <Status value={value || "check"} label={checkLabel}
+    icon={run.check_url && <ArrowUpRight aria-hidden="true" className="size-3" />} />;
+  return <Tooltip>
+    <TooltipTrigger asChild>
+      {run.check_url ? <a className={statusTriggerClass} href={run.check_url} target="_blank" rel="noreferrer" aria-label={`${checkLabel} on GitHub`}>{badge}</a>
+        : <span tabIndex={0} className={statusTriggerClass}>{badge}</span>}
+    </TooltipTrigger>
+    <TooltipContent className="max-w-xs" sideOffset={6}>{value && Object.hasOwn(checkDescriptions, value) ? checkDescriptions[value] : "The saved GitHub check status is unavailable."}</TooltipContent>
+  </Tooltip>;
+}
 
 function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail"]; user: Schema["UserOut"]; error: ApiError | null; tick: number }) {
   const { run, pull_request: pr, occurrences, finding_state_counts = {}, findings_revision = "", assessment_revision = 0, assessment, can_write } = detail;
@@ -907,7 +926,6 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   const resolvedTab = useRef<HTMLButtonElement>(null);
   const assessmentTab = useRef<HTMLButtonElement>(null);
   const connection = run.config.connection as Record<string, unknown> | undefined;
-  const checkValue = run.check_conclusion || run.check_status;
   const feedback = runFeedback(run);
   const savedAssessmentStatus = run.stages?.assessment?.status;
   const assessmentStatus = run.status === "running" && (assessment?.pending ?? 0) > 0
@@ -951,64 +969,62 @@ function RunWorkspace({ detail, user, error, tick }: { detail: Schema["RunDetail
   </PopoverContent>;
   const verification = run.progress?.verification;
   const failedFixVerifications = verification && typeof verification === "object" && "failed" in verification ? verification.failed : null;
+  const showAssessment = !run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0);
+  const showVerification = !run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0;
+  const titleBadges = <>
+    <Status value={run.status} />
+    <section aria-label="GitHub publication" className="flex flex-wrap items-center gap-2">
+      {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip>
+        <TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass}><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
+        <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
+      </Tooltip>}
+      <RunCheckBadge run={run} />
+    </section>
+  </>;
   const engine = run.engine === "chatgpt" ? "Codex (ChatGPT)" : run.engine === "claude_code" ? "Claude Code" : run.engine === "mortis" ? "Mortis" : "Retired engine";
   return <>
     {run.engine !== "mortis" && <p role="status" className="mb-6 text-sm text-muted-foreground">This historical review used a retired engine. Its saved results remain available. Start a new Mortis review from the pull request to run analysis again.</p>}
     {pr.ignored && <p className="mb-6 rounded-lg border bg-muted/50 p-4 text-sm"><span role="status">This pull request is ignored.</span> <Link to={`/pulls/${pr.id}`} state={returnState} className="underline underline-offset-4">Open the pull request</Link> to restore reviews.</p>}
     <div className="mb-6 min-w-0">
       {summaryJob && <PullSummaryActivity runId={run.id} jobId={summaryJob} />}
-      <PageTitle className="mb-0" title="Review run" titleMeta={<Status value={run.status} />} actions={can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
+      <PageTitle className="mb-0" title="Review run" titleMeta={titleBadges} actions={can_write && !pr.ignored && (active(run.status) || run.status === "blocked" || ["failed", "partially_published"].includes(run.publication)) && <div className="flex flex-wrap gap-2">
             {run.engine === "mortis" && run.status === "blocked" && (run.owner_id == null || run.owner_id === user.id) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/retry` })}>Resume review</Button>}
             {(active(run.status) || run.status === "blocked") && <Button size="sm" variant="outline" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/cancel` })}>Cancel review</Button>}
             {["failed", "partially_published"].includes(run.publication) && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate({ path: `/runs/${run.id}/publish` })}>Retry GitHub publication</Button>}
           </div>} footer={<>
             <ErrorNotice error={action.error || error} />
             <ErrorNotice error={run.error} />
-            <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}>{stageDetails}</RunStages>
-            <RunMetrics run={run} tokens={detail.total_tokens} />
+            <RunStages run={run} assessment={assessment} assessmentStatus={assessmentStatus} summaryStage={summaryStage} summaryPublicationPending={summaryPublicationPending} summarySyncFailed={summarySyncFailed}
+              statistics={<RunMetrics run={run} tokens={detail.total_tokens} />}>{stageDetails}</RunStages>
           </>}>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
           <span>{date(run.created_at)}</span>
           <span>{label(run.trigger)}</span>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
-            <Badge asChild variant="secondary" className="px-1.5 py-0 font-normal"><code title={run.head_sha}>{run.head_sha.slice(0, 7)}</code></Badge>
+            <span title={run.head_sha}>{run.head_sha.slice(0, 7)}</span>
             <span>· {run.head_sha === pr.head_sha ? "Current commit" : "Earlier commit"}</span>
           </span>
         </div>
       </PageTitle>
-      <section aria-label="GitHub publication" className="mt-2 space-y-3 text-xs">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <div className="flex flex-wrap items-center gap-2"><span className="text-muted-foreground">GitHub comments</span>
-            {run.publication === "not_applicable" ? <Status value={run.publication} label={feedback.publicationLabel} /> : <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass}><Status value={run.publication} label={feedback.publicationLabel} /></span></TooltipTrigger>
-              <TooltipContent className="max-w-xs" sideOffset={6}>{feedback.publicationDetail || "Saved review results are waiting to be sent to GitHub."}</TooltipContent>
-            </Tooltip>}
-          </div>
-          {!run.stages?.assessment && assessment && (assessment.incomplete > 0 || assessment.pending > 0) && <div className="flex flex-wrap items-center gap-2">
+      <div className="mt-2 space-y-3 text-xs empty:hidden">
+        {(showAssessment || showVerification) && <section aria-label="Review stage updates" className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          {showAssessment && <div className="flex flex-wrap items-center gap-2">
             <span className="text-muted-foreground">Assessment</span>
             <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={assessmentStatus === "partial" ? `Partial assessment: ${assessment.incomplete} candidates have incomplete assessments` : `${assessment.pending} candidates awaiting assessment`}><Status value={assessmentStatus} label={label(assessmentStatus)} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>{assessmentStatus === "partial" ? "Some candidates could not be fully assessed." : assessmentStatus === "running" ? "Candidates are being assessed." : "Candidates are waiting for assessment."}</TooltipContent>
             </Tooltip>
           </div>}
-          {!run.stages?.verification && typeof failedFixVerifications === "number" && Number.isSafeInteger(failedFixVerifications) && failedFixVerifications > 0 && <div className="flex items-center gap-2">
+          {showVerification && <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Fix verification</span>
             <Tooltip><TooltipTrigger asChild><span tabIndex={0} className={statusTriggerClass} role="status" aria-label={`Failed fix verifications: ${failedFixVerifications}`}><Status value="failed" label={`Failed ${failedFixVerifications}`} /></span></TooltipTrigger>
               <TooltipContent className="max-w-xs" sideOffset={6}>Automatic checks could not verify whether earlier findings were fixed. See Activity → Fix verification for the saved error.</TooltipContent>
             </Tooltip>
           </div>}
-          {run.check_enabled && (checkValue || run.check_url || run.check_pending || run.check_error) && <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">GitHub check</span>
-            {(run.check_url || checkValue) ? <Tooltip><TooltipTrigger asChild>
-              {run.check_url ? <a className={`${statusTriggerClass} underline-offset-4`} href={run.check_url} target="_blank" rel="noreferrer" aria-label={`View check on GitHub: ${label(checkValue || "check")}`}>
-                <Status value={checkValue || "check"} icon={<ArrowUpRight aria-hidden="true" className="size-3" />} />
-              </a> : <span tabIndex={0} className={statusTriggerClass}><Status value={checkValue || "check"} /></span>}
-            </TooltipTrigger><TooltipContent className="max-w-xs" sideOffset={6}>{checkValue && Object.hasOwn(checkDescriptions, checkValue) ? checkDescriptions[checkValue] : "The saved GitHub check status is unavailable."}</TooltipContent></Tooltip>
-              : <Status value={run.check_error ? "failed" : "pending"} label={run.check_error ? "Error" : "Pending"} />}
-          </div>}
-        </div>
+        </section>}
         <ErrorNotice error={run.publication_error} />
         {run.check_enabled && <ErrorNotice error={run.check_error} />}
-      </section>
+      </div>
     </div>
     <Tabs value={tab} onValueChange={setTab}>
       <TabsList variant="page" aria-label="Review run views" className="mb-4">

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { Popover, PopoverTrigger } from "./ui/popover";
 
-export function StageCard({ label, status, title, progress, progressLabel, explanation, detailsLabel, children }: {
+export function StageCard({ label, status, title, progress, progressLabel, explanation, statistics, detailsLabel, children }: {
   label: string; status: string; title: ReactNode; progress: string | null; progressLabel: string;
-  explanation: string; detailsLabel?: string; children?: ReactNode;
+  explanation: string; statistics?: ReactNode; detailsLabel?: string; children?: ReactNode;
 }) {
   const card = useRef<HTMLElement>(null);
   const [motionActive, setMotionActive] = useState(false);
@@ -27,6 +27,11 @@ export function StageCard({ label, status, title, progress, progressLabel, expla
       className="group flex w-full cursor-pointer items-start gap-3 rounded-sm text-left outline-offset-4 hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
       {header}<ChevronDown aria-hidden="true" className="mt-1 size-4 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" />
     </button></PopoverTrigger> : header}
-    <div className="stage-divider relative mt-3 overflow-hidden border-t pt-3"><p className="h-9 leading-4.5 text-muted-foreground @min-[500px]:h-5">{explanation}</p></div>
+    <div className="stage-divider relative mt-3 overflow-hidden border-t pt-3">
+      {statistics ? <div className="flex min-h-19 flex-wrap content-start items-baseline justify-between gap-x-4 gap-y-1 leading-4.5 text-muted-foreground @min-[500px]:min-h-10 @min-[760px]:min-h-5">
+        {statistics}
+        {explanation && <p>{explanation}</p>}
+      </div> : <p className="h-9 leading-4.5 text-muted-foreground @min-[500px]:h-5">{explanation}</p>}
+    </div>
   </section>{children}</Popover>;
 }

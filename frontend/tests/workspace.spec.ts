@@ -1831,10 +1831,7 @@ test("review stage animation follows execution, visibility and reduced motion", 
   await page.goto("/runs/run");
   const card = page.getByRole("region", { name: "Review stages", exact: true });
   const divider = card.locator(".stage-divider");
-  const [outcome, statistics] = await Promise.all([
-    card.boundingBox(), page.getByLabel("Run statistics").boundingBox(),
-  ]);
-  expect(statistics!.y).toBeGreaterThan(outcome!.y + outcome!.height);
+  await expect(divider.getByLabel("Run statistics")).toBeVisible();
   const animation = () => divider.evaluate((element) => {
     const style = getComputedStyle(element, "::before");
     return { name: style.animationName, state: style.animationPlayState, transform: style.transform };
@@ -1943,7 +1940,7 @@ test("review stage title follows parallel work and summary publication without c
   await check("Review complete with warnings");
   await expect(card).toHaveAttribute("data-status", "partial");
   await expect(card.locator(".lucide-pause")).toHaveCount(0);
-  await expect(card.locator(".stage-divider")).toHaveText("Waiting to publish the summary to GitHub.");
+  await expect(card.locator(".stage-divider")).toContainText("Waiting to publish the summary to GitHub.");
   state.status = "running";
   await page.clock.fastForward(5000);
   await check("Finalizing review");
@@ -1959,13 +1956,13 @@ test("review stage title follows parallel work and summary publication without c
     await expect(card.locator(".lucide-circle-check")).toBeVisible();
     await expect(card.locator(".lucide-pause")).toHaveCount(0);
     await expect(count).toHaveText("3 / 8 files");
-    await expect(card.locator(".stage-divider")).toHaveText("Review findings and coverage below.");
+    await expect(card.locator(".stage-divider")).toHaveText(/^Duration: .*Token usage unavailable$/);
   }
   await page.screenshot({ path: info.outputPath("completed-review-summary-sync-pending.png") });
   state.status = "partial";
   await page.reload();
   await check("Review complete with warnings");
-  await expect(card.locator(".stage-divider")).toHaveText("Some review work could not be completed.");
+  await expect(card.locator(".stage-divider")).toContainText("Some review work could not be completed.");
   overview.summary_pending = false;
   overview.summary_error = "GitHub sync failed";
   await page.reload();
@@ -1984,7 +1981,7 @@ test("review stage title follows parallel work and summary publication without c
   state.status = "completed";
   await page.reload();
   await check("Review complete");
-  await expect(card.locator(".stage-divider")).toHaveText("Review findings and coverage below.");
+  await expect(card.locator(".stage-divider")).toHaveText(/^Duration: .*Token usage unavailable$/);
 });
 
 test("review stage card keeps a fixed layout through every stage and terminal state", async ({ page }, info) => {
@@ -2065,7 +2062,7 @@ test("assessment progress counts candidates while polling instead of completed r
   await page.clock.fastForward(5000);
   await expect(count).toHaveText("1 / 7 candidates");
   await expect(card.getByRole("status")).toContainText("1 failed · 1 skipped");
-  const caption = card.locator("p");
+  const caption = card.getByText("Assessment: 1 failed · 1 skipped.", { exact: true });
   await expect(caption).toHaveText("Assessment: 1 failed · 1 skipped.");
   expect(await caption.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
   await card.getByRole("button", { name: "Review stage details" }).click();
@@ -2240,7 +2237,7 @@ for (const withStages of [true, false]) {
     await page.goto("/runs/run");
     if (withStages) await page.getByRole("button", { name: "Review stage details", exact: true }).click();
     const scope = withStages ? page.getByRole("dialog", { name: "Review stage details", exact: true })
-      : page.getByRole("region", { name: "GitHub publication", exact: true });
+      : page.getByRole("region", { name: "Review stage updates", exact: true });
     const row = scope.getByText("Assessment", { exact: true }).locator("..");
     await expect(row.getByText(/^running$/i)).toBeVisible();
     await expect(row.getByText(/^partial$/i)).toHaveCount(0);
@@ -2376,11 +2373,7 @@ test("PR summary comes first inside review stages and retries synchronization wi
   await expect(trigger).toBeVisible();
   await expect(page.getByText("1,234 tokens", { exact: true })).not.toBeVisible();
   await expect(page.getByText(/The overview follows the latest review/)).toHaveCount(0);
-  const [comments, statistics] = await Promise.all([
-    publication.getByText("GitHub comments", { exact: true }).boundingBox(),
-    page.getByLabel("Run statistics").boundingBox(),
-  ]);
-  expect(comments!.y).toBeGreaterThan(statistics!.y + statistics!.height);
+  await expect(page.getByRole("heading", { name: "Review run" }).locator("..").getByRole("region", { name: "GitHub publication" })).toBeVisible();
   await noOverflow(page);
   await page.screenshot({ path: `/tmp/pr-summary-run-${info.project.name}.png`, fullPage: true });
   await trigger.focus();
@@ -2454,10 +2447,14 @@ test("run status tooltips stay concise and PR summary failure preserves read-onl
   } });
   await page.goto("/runs/run");
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
+  const titleRow = page.getByRole("heading", { name: "Review run", exact: true }).locator("..");
+  await expect(titleRow.locator("[data-slot=badge]")).toHaveText(["completed", "No new comments", "Check Success"]);
+  await expect(titleRow.getByText("GitHub comments", { exact: true })).toHaveCount(0);
+  await expect(titleRow.getByText("GitHub check", { exact: true })).toHaveCount(0);
   const stages = page.getByRole("region", { name: "Review stages", exact: true }).getByRole("button", { name: "Review stage details", exact: true });
   const tooltips = [
     [publication.getByText("No new comments", { exact: true }).locator(".."), "No additional GitHub comments were needed."],
-    [publication.getByRole("link", { name: "View check on GitHub: Success", exact: true }), "Findings are informational, not approval to merge."],
+    [publication.getByRole("link", { name: "Check Success on GitHub", exact: true }), "Findings are informational, not approval to merge."],
   ] as const;
   for (const [trigger, text] of tooltips) {
     if (info.project.name === "desktop") {
@@ -3675,7 +3672,9 @@ test("review run statistics show live duration and validated progress", async ({
   await page.goto("/runs/run");
   const header = page.locator('main [data-slot="page-title"]');
   await expect(header.getByText("Automatic", { exact: true })).toBeVisible();
-  await expect(header.locator('code[data-slot="badge"]')).toHaveText(run.head_sha.slice(0, 7));
+  const commit = header.getByTitle(run.head_sha, { exact: true });
+  await expect(commit).toHaveText(run.head_sha.slice(0, 7));
+  await expect(header.locator('[data-slot="badge"]').filter({ hasText: run.head_sha.slice(0, 7) })).toHaveCount(0);
   const stats = page.getByLabel("Run statistics");
   await expect(stats).toHaveText("Duration: 10s elapsed0 reused · 1 failed · 12,500 tokens");
   await expect(stats.locator("strong")).toHaveText("10s elapsed");
@@ -3935,8 +3934,8 @@ test("review run retains live progress and recovery actions while evidence is pe
   await expect(publication.locator(":scope > p")).toHaveCount(0);
   const heading = page.getByRole("heading", { name: "Review run", exact: true });
   await expect(heading).toBeVisible();
-  await expect(heading.locator("..").locator("[data-slot=badge]")).toHaveText("running");
-  await expect(heading.locator("..").locator("svg")).toHaveClass(/lucide-loader-circle/);
+  await expect(heading.locator("..").locator("[data-slot=badge]")).toHaveText(["running", "Waiting to publish"]);
+  await expect(heading.locator("..").locator("[data-slot=badge]").first().locator("svg")).toHaveClass(/lucide-loader-circle/);
   await expect(page.getByRole("region", { name: "Review stages", exact: true }).getByLabel("Review progress count", { exact: true })).toHaveText("3 / 8 files");
   await expect(page.getByRole("heading", { name: "Review in progress", exact: true })).toBeVisible();
   await page.screenshot({ path: `../.impeccable/review/run-status-cleanup-${info.project.name}.png`, fullPage: true, animations: "disabled" });
@@ -3984,7 +3983,7 @@ test("partial review and publication retry remain distinct", async ({
   await page.getByRole("button", { name: "Retry GitHub publication" }).click();
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].path).toBe("/runs/run/publish");
-  await expect(page.getByRole("link", { name: /^View check on GitHub:/ })).toHaveAttribute("href", run.check_url);
+  await expect(page.getByRole("link", { name: /^Check.* on GitHub$/ })).toHaveAttribute("href", run.check_url);
   await expect(page.getByText(run.check_error)).toBeVisible();
   await expect(page.getByText("Check update pending. Review results are saved separately.")).toHaveCount(0);
   await noOverflow(page);
@@ -4014,7 +4013,7 @@ test("GitHub check handles pending, errors, conclusion-only, and empty states", 
   await mock(page, { run: checkState });
   await page.goto("/runs/run");
   const check = page.getByRole("region", { name: "GitHub publication", exact: true });
-  await expect(check.getByText("Pending", { exact: true })).toBeVisible();
+  await expect(check.getByText("Check Pending", { exact: true })).toBeVisible();
   await expect(check.getByRole("status")).toHaveCount(0);
   await expect(check.locator(":scope > :empty")).toHaveCount(0);
   await noOverflow(page);
@@ -4024,10 +4023,10 @@ test("GitHub check handles pending, errors, conclusion-only, and empty states", 
     checkState.check_pending = pending;
     checkState.check_error = "GitHub check could not be updated.";
     await page.reload();
-    await expect(check.getByText("Error", { exact: true })).toBeVisible();
-    await expect(check.getByText("Pending", { exact: true })).toHaveCount(0);
-    await expect(check.getByRole("alert").filter({ hasText: checkState.check_error })).toBeVisible();
-    await expect(check.getByRole("link", { name: /^View check on GitHub:/ })).toHaveCount(0);
+    await expect(check.getByText("Check Error", { exact: true })).toBeVisible();
+    await expect(check.getByText("Check Pending", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("alert").filter({ hasText: checkState.check_error })).toBeVisible();
+    await expect(check.getByRole("link", { name: /^Check.* on GitHub$/ })).toHaveCount(0);
   }
   await noOverflow(page);
   await page.screenshot({ path: info.outputPath("check-error.png"), fullPage: true });
@@ -4036,7 +4035,7 @@ test("GitHub check handles pending, errors, conclusion-only, and empty states", 
   checkState.check_pending = false;
   checkState.check_error = null;
   await page.reload();
-  await expect(check.getByText("success", { exact: true })).toBeVisible();
+  await expect(check.getByText("Check Success", { exact: true })).toBeVisible();
   await expect(check.getByRole("status")).toHaveCount(0);
   await check.locator("[data-slot=tooltip-trigger]").filter({ hasText: "success" }).focus();
   await expect(page.getByRole("tooltip")).toContainText("Findings are informational, not approval to merge.");
@@ -4048,14 +4047,15 @@ test("GitHub check handles pending, errors, conclusion-only, and empty states", 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Review run", exact: true })).toBeVisible();
   await expect(page.getByText("GitHub check", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("GitHub comments", { exact: true })).toBeVisible();
+  await expect(page.getByText("GitHub comments", { exact: true })).toHaveCount(0);
+  await expect(check.locator("[data-slot=badge]")).toHaveCount(1);
   await noOverflow(page);
   await page.screenshot({ path: `../.impeccable/review/check-empty-${info.project.name}.png`, fullPage: true });
 
   checkState.check_url = run.check_url;
   await page.reload();
-  const checkLink = page.getByRole("link", { name: "View check on GitHub: Check", exact: true });
-  await expect(checkLink).toHaveText("check");
+  const checkLink = page.getByRole("link", { name: "Check on GitHub", exact: true });
+  await expect(checkLink).toHaveText("Check");
   await expect(checkLink).toHaveAttribute("href", run.check_url);
   await checkLink.focus();
   await expect(checkLink).toBeFocused();
@@ -5742,13 +5742,13 @@ test("candidate assessment separates withheld claims from repeated findings", as
   const totals = page.getByRole("region", { name: "Candidate assessment", exact: true }).locator("dl");
   await expect(totals.locator("dt")).toHaveText(["validated findings", "repeated", "not supported", "withheld", "comments published"]);
   await expect(totals.locator("dd")).toHaveText(["0", "1", "0", "1", "0"]);
-  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review stage updates" }).getByText("Partial", { exact: true })).toBeVisible();
   const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  await publication.getByRole("status").focus();
+  await page.getByRole("region", { name: "Review stage updates" }).getByRole("status").focus();
   await expect(page.getByRole("tooltip")).toHaveText("Some candidates could not be fully assessed.");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("tooltip")).toHaveCount(0);
-  const checkLink = publication.getByRole("link", { name: "View check on GitHub: Neutral", exact: true });
+  const checkLink = publication.getByRole("link", { name: "Check Neutral on GitHub", exact: true });
   await checkLink.focus();
   await expect(page.getByRole("tooltip")).toHaveText("The review completed, but assessment or fix verification is incomplete.");
   await expect(checkLink).toHaveAttribute("href", run.check_url);
@@ -6078,7 +6078,7 @@ test("candidate assessment exposes errors and complete highlighted evidence", as
   await page.goto("/runs/run");
   await page.getByRole("tab", { name: /Assessment/ }).click();
   const assessment = page.getByRole("region", { name: "Candidate assessment", exact: true });
-  await expect(page.getByRole("region", { name: "GitHub publication" }).getByText("Partial", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Review stage updates" }).getByText("Partial", { exact: true })).toBeVisible();
   await expect(assessment).not.toContainText("No new comments");
   await expect(assessment).not.toContainText("Assessment needs attention");
   await mkdir("../.impeccable/review", { recursive: true });
@@ -6667,7 +6667,7 @@ for (const status of ["partial", "skipped"]) {
     const before = reads;
     await page.clock.fastForward(10_000);
     await expect.poll(() => reads).toBeGreaterThan(before);
-    await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).getByText("success", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "GitHub publication", exact: true }).getByText("Check Success", { exact: true })).toBeVisible();
     await expect(page.getByText(/of 10 assigned files completed/)).toHaveCount(0);
     if (open === null) await expect(files).not.toHaveAttribute("open");
     else await expect(files).toHaveAttribute("open", "");
@@ -7091,7 +7091,7 @@ for (const value of ["__proto__", "constructor", "toString", "unknown-check"] as
     await mock(page, { run: { check_conclusion: value, check_status: "completed", check_pending: false } });
     await page.goto("/runs/run");
     await page.getByRole("region", { name: "GitHub publication", exact: true })
-      .getByRole("link", { name: /^View check on GitHub:/ }).focus();
+      .getByRole("link", { name: /^Check.* on GitHub$/ }).focus();
     await expect(page.getByRole("tooltip")).toHaveText("The saved GitHub check status is unavailable.");
     expect(errors).toEqual([]);
   });
@@ -7105,14 +7105,14 @@ test("run shows failed fix verification beside assessment with a keyboard toolti
   }, assessment: { candidates: 10, new_findings: 0, repeated_observations: 1, rejected_candidates: 0, withheld_candidates: 9,
     pending: 0, incomplete: 9, failed: 0, skipped: 0, published_comments: 0 } });
   await page.goto("/runs/run");
-  const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-  const failed = publication.getByRole("status", { name: "Failed fix verifications: 3", exact: true });
+  const warnings = page.getByRole("region", { name: "Review stage updates", exact: true });
+  const failed = warnings.getByRole("status", { name: "Failed fix verifications: 3", exact: true });
   await expect(failed).toHaveText("Failed 3");
   await expect(failed).toHaveCSS("cursor", "pointer");
-  await expect(publication.locator("div > span.text-muted-foreground")).toHaveText(["GitHub comments", "Assessment", "Fix verification", "GitHub check"]);
+  await expect(warnings.locator("div > span.text-muted-foreground")).toHaveText(["Assessment", "Fix verification"]);
   if (info.project.name === "desktop") {
-    const assessment = await publication.getByText("Assessment", { exact: true }).boundingBox();
-    const verification = await publication.getByText("Fix verification", { exact: true }).boundingBox();
+    const assessment = await warnings.getByText("Assessment", { exact: true }).boundingBox();
+    const verification = await warnings.getByText("Fix verification", { exact: true }).boundingBox();
     expect(verification!.y).toBe(assessment!.y);
   }
   await failed.focus();
@@ -7137,9 +7137,9 @@ for (const [name, verification] of [
       pending: 0, incomplete: 5, failed: 0, skipped: 0, published_comments: 0,
     } });
     await page.goto("/runs/run");
-    const publication = page.getByRole("region", { name: "GitHub publication", exact: true });
-    await expect(publication.getByText("Partial", { exact: true })).toBeVisible();
-    await expect(publication.getByText("Fix verification", { exact: true })).toHaveCount(0);
+    const warnings = page.getByRole("region", { name: "Review stage updates", exact: true });
+    await expect(warnings.getByText("Partial", { exact: true })).toBeVisible();
+    await expect(warnings.getByText("Fix verification", { exact: true })).toHaveCount(0);
   });
 }
 
@@ -9150,7 +9150,7 @@ test("live refresh catches final assessment statuses after parent completion",as
   const state:Partial<Run>={status:"running",finished_at:null};
   const writes=await mock(page,{candidates:[candidate],assessment,run:state});
   let reads=0;await page.route("**/api/v1/runs/run/candidates?**",r=>{reads++;return r.fallback();});
-  await page.goto("/runs/run");await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("running");
+  await page.goto("/runs/run");await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]").first()).toHaveText("running");
   await page.clock.fastForward(2000);
   await page.getByRole("tab",{name:/Assessment/}).click();
   const list=page.getByRole("region",{name:"Candidate assessment",exact:true});
@@ -9159,7 +9159,7 @@ test("live refresh catches final assessment statuses after parent completion",as
   finish(candidate);assessment.pending=0;assessment.rejected_candidates=1;state.status="completed";
   const response=page.waitForResponse(r=>r.url().endsWith("/api/v1/runs/run"));
   await page.clock.fastForward(3100);await (await response).finished();
-  await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("completed");
+  await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]").first()).toHaveText("completed");
   await ticks(page);
   expect(reads).toBe(before + 1);
   await expect(list.getByText("Not supported",{exact:true})).toHaveCount(1);
@@ -9234,16 +9234,16 @@ for(const tab of ["findings","coverage","details"]) {
     const state:Partial<Run>={status:"running",finished_at:null,report:structuredClone(run.report),publication:"pending",publication_error:null,check_error:null};
     const occurrences=[{finding_id:"finding",snapshot:finding,inline_line:46,is_new:false,current_status:"open"}];
     await mock(page,{run:state,occurrences});
-    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("running");
+    await page.goto(`/runs/run?tab=${tab}`);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]").first()).toHaveText("running");
     state.status="completed";state.finished_at="2026-10-05T13:21:30Z";state.publication="published";state.check_status="completed";state.check_conclusion="success";
     occurrences[0].current_status="resolved";
     (state.report as any).manifest.coverage.completed.push({path:"src/late.ts"});
-    await ticks(page,1);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]")).toHaveText("completed");
+    await ticks(page,1);await expect(page.locator("main h1").locator("..").locator("[data-slot=badge]").first()).toHaveText("completed");
     if(tab==="findings") await expect(page.getByRole("region",{name:"Findings at this run"}).getByText("Repeated finding",{exact:true})).toBeVisible();
     if(tab==="coverage") await expect(page.getByRole("region",{name:"Coverage",exact:true})).toContainText("src/late.ts");
     if(tab==="details") await expect(page.getByRole("region",{name:"Execution",exact:true})).not.toContainText("Not finished");
     await expect(page.getByRole("region",{name:"GitHub publication"})).toContainText("Published");
-    await expect(page.getByRole("link",{name:"View check on GitHub: Success"})).toBeVisible();
+    await expect(page.getByRole("link",{name:"Check Success on GitHub"})).toBeVisible();
   });
 }
 

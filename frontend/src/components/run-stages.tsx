@@ -18,11 +18,12 @@ export function assessmentExceptions(assessment?: Schema["AssessmentSummary"] | 
   }).join(" · ");
 }
 
-export function RunStages({ run, assessment, assessmentStatus, summaryStage, summaryPublicationPending, summarySyncFailed, children }: {
+export function RunStages({ run, assessment, assessmentStatus, summaryStage, summaryPublicationPending, summarySyncFailed, statistics, children }: {
   run: Run; assessmentStatus: string; summaryStage?: Schema["StageState"] | Schema["SummaryState"]; children: ReactNode;
   assessment?: Schema["AssessmentSummary"] | null;
   summaryPublicationPending?: boolean;
   summarySyncFailed?: boolean;
+  statistics: ReactNode;
 }) {
   const stages = (Object.keys(descriptions) as (keyof typeof descriptions)[]).flatMap((key) => {
     const stage = key === "summary" ? summaryStage
@@ -47,7 +48,7 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   };
   const explanations: Record<string, string> = {
     queued: "Waiting for a worker to start the review.", blocked: "Waiting to continue. Completed results are saved.",
-    completed: "Review findings and coverage below.", partial: "Some review work could not be completed.",
+    completed: "", partial: "Some review work could not be completed.",
     failed: "Review stopped after an error. Inspect stage details.", cancelled: "Review cancelled. Completed results remain available.",
     superseded: "The pull request changed. This run keeps its saved results.", skipped: "Review was skipped. See coverage for the saved reason.",
     pending: `Waiting to start ${stageName.toLowerCase()}.`, waiting: `Waiting to continue ${stageName.toLowerCase()}.`,
@@ -102,6 +103,7 @@ export function RunStages({ run, assessment, assessmentStatus, summaryStage, sum
   const title = <><Icon aria-hidden="true" className={`mt-1 size-4 shrink-0 ${color}`} /><span className="line-clamp-2 @min-[500px]:line-clamp-1">{titleText}</span></>;
   return <StageCard label="Review stages" status={status} progress={progress} detailsLabel="Review stage details"
     progressLabel={progress ? "Review progress count" : "Stage progress unavailable"}
+    statistics={statistics}
     explanation={exceptions ? `Assessment: ${exceptions}.` : explanations[status] ?? "Stage details are not available yet."}
     title={<span className="inline-flex max-w-full items-start gap-2 text-base font-medium leading-6">{title}
       {exceptions && <span className="sr-only">{exceptions}</span>}
