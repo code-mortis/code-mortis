@@ -36,7 +36,7 @@ export function CodeGraphSettings({ repositoryId, enabled, savedEnabled, visible
         <label htmlFor={id} className="text-sm font-medium">Code graph</label>
         <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">
           When the matching index is ready, eligible Mortis PR reviews can use related source.
-          Shared connections can use related-file hints during evidence checks. Security scans do not use graph enrichment. Indexing uses no AI tokens; added context does. Authorized Code MCP connections can read indexed code.
+          Shared connections can use related-file hints during evidence checks. Security scans do not use graph enrichment. Indexing uses no AI tokens; added context does. MCP clients with Code permission can read indexed code.
         </p>
       </div>
       <Switch id={id} aria-describedby={`${id}-hint`} checked={enabled} onCheckedChange={onChange} className="mt-1 shrink-0" />

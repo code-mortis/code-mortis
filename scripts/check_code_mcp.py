@@ -26,7 +26,7 @@ from mcp.types import Implementation
 
 async def navigate(origin, token, repository_id, path):
     async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}, timeout=60) as http:
-        async with streamable_http_client(origin + "/mcp/code", http_client=http) as streams:
+        async with streamable_http_client(origin + "/mcp", http_client=http) as streams:
             async with ClientSession(streams[0], streams[1], client_info=Implementation(name="code-graph-check", version="1")) as session:
                 await session.initialize()
                 catalog = await session.list_tools()
@@ -99,11 +99,11 @@ def main():
         redirect = f"http://127.0.0.1:{server.server_port}/callback"
         registration = http.post(origin + "/oauth/register", json={"client_name": "Code graph verification (MCP Python SDK)",
                                  "redirect_uris": [redirect], "scope": "code:read"})
-        assert registration.status_code == 201, "Enable Code MCP in Settings before starting this check"
+        assert registration.status_code == 201, "Enable MCP and its Code group in Settings before starting this check"
         client_id = registration.json()["client_id"]
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         url = origin + "/oauth/authorize?" + urlencode({"client_id": client_id, "redirect_uri": redirect,
-            "response_type": "code", "resource": origin + "/mcp/code", "scope": "code:read", "state": state,
+            "response_type": "code", "resource": origin + "/mcp", "scope": "code:read", "state": state,
             "code_challenge": challenge, "code_challenge_method": "S256"})
         print("Open this URL and approve only the intended repository in your browser:\n" + url, flush=True)
         server.timeout = 1
@@ -112,7 +112,7 @@ def main():
             server.handle_request()
         assert returned.get("code"), "Browser consent was denied or timed out"
         response = http.post(origin + "/oauth/token", data={"grant_type": "authorization_code", "client_id": client_id,
-            "code": returned["code"][0], "redirect_uri": redirect, "resource": origin + "/mcp/code", "code_verifier": verifier})
+            "code": returned["code"][0], "redirect_uri": redirect, "resource": origin + "/mcp", "code_verifier": verifier})
         assert response.status_code == 200, "OAuth code exchange failed"
         token = response.json()["access_token"]
         try:

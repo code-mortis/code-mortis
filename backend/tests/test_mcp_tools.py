@@ -80,41 +80,32 @@ def seed_security_finding(seed):
         return {"scan_id": scan.id, "finding_id": finding.id, "material": material}
 
 
-def test_catalog_covers_both_domains():
-
-    reviews = asyncio.run(_names("reviews"))
-    security = asyncio.run(_names("security"))
-    assert {"reviews_start_review", "reviews_cancel_run", "reviews_set_finding_status", "reviews_get_run_section"} <= set(reviews)
-    assert {"security_start_scan", "security_cancel_scan", "security_create_issue", "security_triage_finding"} <= set(security)
-    management_names = {entry[1] for entry in mcp_tools.MANAGEMENT_TOOLS}
-    assert set(reviews) & set(security) == management_names
-    for name in reviews:
-        assert name.startswith(("reviews_", "management_")), name
-    for name in reviews + security:
-        assert "proxy" not in name and "openapi" not in name
-
-
-async def _names(domain):
+def test_catalog_registers_each_group_once():
     from mcp.server import MCPServer
 
-    server = MCPServer(name=f"catalog-{domain}")
-    mcp_tools.register_tools(server, domain)
-    return [tool.name for tool in await server.list_tools()]
+    server = MCPServer(name="unified")
+    mcp_tools.register_tools(server)
+    tools = asyncio.run(server.list_tools())
+    entries = [entry for catalog in mcp_tools.TOOL_CATALOGS.values() for entry in catalog]
+    names = {tool.name for tool in tools}
+    assert len(names) == len(tools) == len(entries)
+    assert names == {entry[1] for entry in entries}
+    assert {"reviews_start_review", "security_start_scan", "code_get_source", "management_get_instance_settings"} <= names
+    assert not any("proxy" in name or "openapi" in name for name in names)
 
 
 def test_catalog_meta_scopes_match_prefixes():
     from mcp.server import MCPServer
 
     server = MCPServer(name="catalog-meta")
-    mcp_tools.register_tools(server, "reviews")
-    mcp_tools.register_tools(server, "security")
+    mcp_tools.register_tools(server)
     tools = asyncio.run(server.list_tools())
     by_name = {tool.name: tool for tool in tools}
     assert len(by_name) == len(tools)
     for tool in tools:
         scope = (tool.meta or {}).get("scope")
         assert scope, tool.name
-        assert scope.split(":")[0] in {"reviews", "security", "instance", "connections"}, tool.name
+        assert scope.split(":")[0] in {"reviews", "security", "instance", "connections", "code"}, tool.name
         if tool.name.startswith("reviews_"):
             assert scope.startswith("reviews:"), tool.name
         if tool.name.startswith("management_"):
@@ -126,11 +117,8 @@ def test_catalog_meta_scopes_match_prefixes():
         assert by_name[name].annotations and by_name[name].annotations.read_only_hint is True
 
 
-def test_reject_unknown_domain():
-    from mcp.server import MCPServer
-
-    with pytest.raises(ValueError):
-        mcp_tools.register_tools(MCPServer(name="catalog-bogus"), "bogus")
+def test_unregistered_tool_has_no_permissions():
+    assert mcp_tools.tool_group_and_scope("unregistered") is None
 
 
 def test_list_pull_requests_returns_seeded_pr(seed):
@@ -156,7 +144,7 @@ def test_update_connection_preserves_credentials_and_target(seed):
     assert result["model"] == "updated-model"
     with transaction() as db:
         assert json.loads(unseal(db.get(Connection, "connection").secret)) == secret
-    assert CALLS[-1] == {"domain": "reviews", "scope": "connections:manage",
+    assert CALLS[-1] == {"domain": "management", "scope": "connections:manage",
         "name": "management_update_connection", "request_key": "update-connection-key", "approval": True}
 
 
@@ -165,6 +153,56 @@ def test_run_and_finding_not_found(seed):
         mcp_tools.reviews_get_run(RunScopedInput(run_id="missing"))
     with pytest.raises(HTTPException):
         mcp_tools.reviews_get_finding(FindingScopedInput(finding_id="missing"))
+
+
+def test_review_repository_results_omit_other_groups_settings(seed):
+    repo_id = seed["repo"].id
+    listed = mcp_tools.reviews_list_repositories()
+    assert [item["id"] for item in listed] == [repo_id]
+    updated = mcp_tools.reviews_update_repository_config(UpdateRepositoryInput(
+        repository_id=repo_id, enabled=False, request_key="update-review-settings-key"))
+    for result in [listed[0], updated]:
+        assert "settings" in result
+        assert not {"security", "scan_settings", "code_graph_enabled", "code_graph_limits"} & result.keys()
+
+
+def test_management_personal_connection_grants_obey_repository_selection(seed, monkeypatch):
+    from code_mortis.core.db import transaction
+    from code_mortis.integrations import github
+    from code_mortis.models import Connection, ConnectionGrant, Repository
+
+    selected = seed["repo"].id
+    unselected = 23
+    with transaction() as db:
+        db.add(Repository(id=unselected, installation_id=10, full_name="team/other", enabled=True))
+        db.add(Connection(id="personal", name="Personal", provider="openai", kind="codex", owner_id=TEST_USER_ID,
+                          protocol="openai", model="test", base_url="", secret="sealed"))
+        db.flush()
+        db.add_all([ConnectionGrant(connection_id="personal", repository_id=repo_id)
+                    for repo_id in (selected, unselected)])
+
+    def scoped_invoke_tool(domain, scope, name, arguments, callback, **kwargs):
+        def restricted(db, user):
+            user.mcp_repository_ids = frozenset({selected})
+            return callback(db, user)
+
+        return fake_invoke_tool(domain, scope, name, arguments, restricted, **kwargs)
+
+    monkeypatch.setattr(mcp_tools, "invoke_tool", scoped_invoke_tool)
+    monkeypatch.setattr(github, "visible_repositories", lambda db, user: [
+        db.get(Repository, repository_id) for repository_id in user.mcp_repository_ids
+    ])
+    assert mcp_tools.management_list_connection_grants(mcp_tools.ConnectionRef(connection_id="personal")) == [
+        {"repository_id": selected, "automatic": False},
+    ]
+    with pytest.raises(HTTPException, match="not selected"):
+        mcp_tools.management_revoke_repository_access(mcp_tools.RevokeAccessInput(
+            connection_id="personal", repository_id=unselected, request_key="scope-check-denied"))
+    assert mcp_tools.management_revoke_repository_access(mcp_tools.RevokeAccessInput(
+        connection_id="personal", repository_id=selected, request_key="scope-check-allowed")) == {"ok": True}
+    with transaction() as db:
+        assert db.get(ConnectionGrant, ("personal", selected)) is None
+        assert db.get(ConnectionGrant, ("personal", unselected)) is not None
 
 
 def test_dismiss_requires_reason():

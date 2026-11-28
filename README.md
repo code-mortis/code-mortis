@@ -11,7 +11,15 @@ Self-hosted GitHub pull request reviews and repository security scans powered by
 - Findings triage, run history, coverage, and model usage in one workspace.
 - Shared model connections for OpenAI-compatible APIs, Anthropic, and Amazon Bedrock.
 - Built-in code graph indexing for PR context and code navigation, enabled per repository in Settings.
-- Scoped REST API tokens and MCP access for reviews, security, and indexed code. A [Noodle collection](collections/code-mortis/README.md) is included for the REST API.
+- Scoped REST API tokens and one MCP connection for reviews, security, indexed code, and optional management. A [Noodle collection](collections/code-mortis/README.md) is included for the REST API.
+
+## Connect an MCP client
+
+In **Settings → MCP access**, enable MCP and the tool groups your client needs. Copy the single server URL (`https://your-host/mcp`) into a Streamable HTTP client and complete OAuth in the browser. Select scopes and repositories separately for each group. Code tools require an enabled repository graph. Management requires separate consent and the appropriate role.
+
+Upgrading from separate MCP endpoints turns MCP off, retires their grants, and cancels unfinished work authorized by those grants. Remove the old client entries and authorize one connection when ready.
+
+Each API process allows two concurrent MCP transport or OAuth setup requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). When busy it returns HTTP 429 with `Retry-After: 2`. Its separate database pool defaults to six connections (`CM_MCP_DB_POOL_SIZE`), zero overflow, and a one-second checkout timeout. Include this limit for each API process when sizing PostgreSQL alongside web and worker pools. Browser administration remains available during MCP overload.
 
 ## Develop locally
 
