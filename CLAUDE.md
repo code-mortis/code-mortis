@@ -2,21 +2,21 @@
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Local checkouts can have a generated knowledge graph in `graphify-out/`.
 
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- After modifying code in a checkout with a graph, run `graphify update .` to keep it current (AST-only, no API cost).
 
 ## Subagent coordination
 
-Ported from `.codex/config.toml`. The agents below live in `.claude/agents/`.
+Maintainer checkouts can have local agent definitions in `.claude/agents/`. Use the roles below when configured.
 
-Follow AGENTS.md and use docs/README.md to locate current source-of-truth documents.
-Before engine work, read docs/plans/engine/plan.md and verify the owning source:
-Mortis/shared APIs are the current execution path; OCR/subscriptions are historical.
+Follow AGENTS.md. When the maintainer planning documents are available, use
+`docs/README.md` to find them and read `docs/plans/engine/plan.md` before engine work.
+Verify the owning source. Mortis Engine uses shared API connections. OCR and subscriptions are historical.
 Preserve saved results and distinguish personal adoption from experimental acceptance.
 
 In the primary chat, coordinate substantial development through the project agents.

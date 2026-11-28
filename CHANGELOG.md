@@ -1,8 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
+- Connect a Streamable HTTP client to `/mcp` for reviews, security, indexed code, and optional management. Choose permissions and repository access for each tool group during browser authorization. Clients can discover the available scopes automatically.
+- MCP and OAuth setup requests use a dedicated database pool and concurrency limit per API process. The defaults are six database connections (`CM_MCP_DB_POOL_SIZE`) and two concurrent requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). Requests over the concurrency limit receive HTTP 429 with `Retry-After: 2`.
 - The App bundles [Mortis Engine 0.1.8](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.8). The first automatic incremental review after upgrading rechecks eligible files within the configured limits to establish a new baseline.
+
+### Upgrade
+
+**If you need the results of pending MCP jobs, wait for them to finish before upgrading.** The migration turns MCP off, expires pending legacy authorizations, revokes the old grants, and cancels unfinished work authorized by those grants. After upgrading, enable MCP and the desired tool groups in **Settings → MCP access**. Replace the old client entries for `/mcp/reviews`, `/mcp/security`, and `/mcp/code` with one connection to `/mcp` and authorize it in the browser.
+
+Back up PostgreSQL and `CM_ENCRYPTION_KEY`. Download `compose.yaml` and `manage.py` from the v0.1.3 GitHub Release into your existing Compose project, keeping its `.env` and volumes. Run `docker compose pull` followed by `docker compose up -d --wait --remove-orphans`. The release image is `docker.io/codemortis/code-mortis:0.1.3` for Linux `amd64` and `arm64`.
+
+For Coolify, select the v0.1.3 image in `compose.coolify.yaml` after publication and redeploy the existing resource. [Coolify deployment instructions](https://github.com/code-mortis/code-mortis#deploy-with-coolify)
 
 ## 0.1.2
 
