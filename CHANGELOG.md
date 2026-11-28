@@ -1,8 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.1.4
 
-- Upgrade to [Mortis Engine 0.1.9](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.9). Security scans check dependency coverage by directory and package ecosystem. The first automatic incremental review after upgrading rechecks eligible files within the configured limits.
+- MCP clients can read three workflow guides, one each for PR reviews, security findings, and code graph change impact. Clients that support MCP Tasks can follow reviews, scans, and repository background drafts after reconnecting. Clients that support elicitation can prompt for a scan connection or a triage reason, or open the issue approval page.
+- Native MCP clients such as Claude Code can complete OAuth with a temporary loopback callback port. OAuth discovery stays available when all MCP request slots are busy.
+- Reviews and security scans redact GitHub App installation tokens from source context and findings. Redaction preserves empty lines in multiline credentials so line references stay accurate.
+- The App bundles [Mortis Engine 0.1.9](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.9). Security scans check dependency coverage by directory and package ecosystem. A dependency finding stays open if the affected package may have moved to another directory.
+- The review stage card shows elapsed time, reused and failed file counts, and token usage. The run header shows GitHub publication and check status.
+- The Coolify scheduler health check recognizes schedule updates in SQLite’s write-ahead log.
+
+### Upgrade
+
+If you use MCP on v0.1.2 or earlier, let pending MCP jobs finish before upgrading. The v0.1.3 migration cancels unfinished work authorized by old grants. After upgrading, enable MCP and its tool groups again and authorize each client at `/mcp`.
+
+Back up PostgreSQL and `CM_ENCRYPTION_KEY`. Download `compose.yaml` and `manage.py` from the v0.1.4 GitHub Release into your existing Compose project. Keep its `.env` and volumes. Run `docker compose pull` followed by `docker compose up -d --wait --remove-orphans`. The migration from v0.1.3 adds the `mcp_tasks` table and keeps existing MCP grants.
+
+The first automatic incremental review after upgrading rechecks eligible files within the configured limits. For Coolify, select `codemortis/code-mortis:0.1.4` after publication and redeploy the existing resource. [Coolify deployment instructions](https://github.com/code-mortis/code-mortis#deploy-with-coolify)
 
 ## 0.1.3
 

@@ -17,6 +17,8 @@ Self-hosted GitHub pull request reviews and repository security scans powered by
 
 In **Settings → MCP access**, enable MCP and the tool groups your client needs. Copy the server URL (`https://your-host/mcp`) into a Streamable HTTP client and complete OAuth in the browser. Choose each group's permissions and repositories on the consent screen. Code tools require an enabled repository graph. Only administrators can grant instance management, which applies across the instance.
 
+For automatic client registration with Claude Code or Codex CLI, leave **Allowed client domains** empty. If you list domains and use Claude Code, include `claude.ai`. Native clients can use a temporary local port for the OAuth callback.
+
 Code Mortis supports Skills, Tasks, and stateless elicitation on MCP revision `2026-07-28`. The server publishes three read-only guides for explaining a PR review, prioritizing saved security findings, and tracing change impact between indexed commits. Discover them through MCP Skills or call `get_workflow_guide` to list the guides available to your grant. Pass a guide name to read it.
 
 Clients that support MCP Tasks can follow manual reviews, repository scans, and repository background drafts after reconnecting. Grant both read and run access for the relevant group. Other clients receive the saved run, scan, or job ID. Use that ID with `reviews_get_run`, `security_get_scan`, or `reviews_get_background_status`, respectively. Background generation requires an administrator.

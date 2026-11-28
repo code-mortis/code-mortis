@@ -33,7 +33,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="Code Mortis", version="0.1.3", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json",
+    title="Code Mortis", version="0.1.4", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
 app.include_router(router)

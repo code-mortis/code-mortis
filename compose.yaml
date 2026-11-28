@@ -1,7 +1,7 @@
 name: code-mortis
 
 x-app: &app
-  image: code-mortis:0.1.3
+  image: code-mortis:0.1.4
   build:
     context: .
     dockerfile: docker/Dockerfile
