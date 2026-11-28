@@ -10,7 +10,7 @@ from test_mcp_auth import credentials, enabled, rpc  # noqa: F401
 
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import github
-from code_mortis.mcp import elicitation
+from code_mortis.mcp import elicitation, tasks
 from code_mortis.mcp.models import McpApproval, McpGrant, McpOperation, McpTask
 from code_mortis.mcp.server import install_mcp
 from code_mortis.mcp.skills import Skills
@@ -156,6 +156,83 @@ def test_scan_form_rejects_invalid_offered_connections(client, monkeypatch, stat
         "status": 422, "message": "Choose one of the offered shared API connections."}
     with transaction() as db:
         assert db.scalar(select(func.count()).select_from(SecurityScan)) == 0
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_task_io_leaves_grant_and_task_unlocked(client, github_pull, monkeypatch, completed):
+    token = credentials(client, scopes=["reviews:read", "reviews:run"])["access_token"]
+    args = {"pr_id": "pr", "connection_id": "connection", "request_key": "task-lock-boundaries"}
+    task_id = call(client, token, "reviews_start_review", args, TASKS)["result"]["taskId"]
+    with transaction() as db:
+        grant_id = db.get(McpOperation, task_id).grant_id
+        run_id = db.get(McpTask, task_id).target_id
+        if completed:
+            run = db.get(ReviewRun, run_id)
+            run.status, run.publication = "completed", "not_applicable"
+
+    def check_locks(fn):
+        def checked(*args, **kwargs):
+            with transaction() as db:
+                assert db.get(McpGrant, grant_id, with_for_update={"nowait": True})
+                assert db.get(McpTask, task_id, with_for_update={"nowait": True})
+            return fn(*args, **kwargs)
+        return checked
+
+    monkeypatch.setattr(tasks.auth, "rate_limit", check_locks(tasks.auth.rate_limit))
+    monkeypatch.setattr(github, "authorize_repo", check_locks(github.authorize_repo))
+    monkeypatch.setattr(tasks, "saved_credential_redactor", check_locks(tasks.saved_credential_redactor))
+    key = {"taskId": task_id}
+    assert "result" in wire(client, token, "tasks/cancel", key, TASKS)
+    expected = "completed" if completed else "cancelled"
+    assert wire(client, token, "tasks/get", key, TASKS)["result"]["status"] == expected
+    with transaction() as db:
+        assert db.get(ReviewRun, run_id).status == expected
+        assert db.get(McpTask, task_id).snapshot["status"] == expected
+
+
+def test_poll_preserves_concurrent_cancellation(client, github_pull, monkeypatch):
+    token = credentials(client, scopes=["reviews:read", "reviews:run"])["access_token"]
+    args = {"pr_id": "pr", "connection_id": "connection", "request_key": "poll-during-cancel"}
+    task_id = call(client, token, "reviews_start_review", args, TASKS)["result"]["taskId"]
+    observe = tasks.observe
+
+    def observe_then_cancel(db, name, task, user, cancel):
+        state = observe(db, name, task, user, cancel)
+        if not cancel:
+            with transaction() as other:
+                grant_id = other.get(McpOperation, task_id).grant_id
+                assert other.get(McpGrant, grant_id, with_for_update={"nowait": True})
+                assert other.get(McpTask, task_id, with_for_update={"nowait": True})
+            assert "result" in wire(client, token, "tasks/cancel", {"taskId": task_id}, TASKS)
+        return state
+
+    monkeypatch.setattr(tasks, "observe", observe_then_cancel)
+    assert wire(client, token, "tasks/get", {"taskId": task_id}, TASKS)["result"]["status"] == "cancelled"
+    with transaction() as db:
+        assert db.get(McpTask, task_id).snapshot == {"status": "cancelled"}
+
+
+@pytest.mark.parametrize("method", ["tasks/get", "tasks/cancel"])
+def test_task_rechecks_grant_after_github_access(client, github_pull, monkeypatch, method):
+    token = credentials(client, scopes=["reviews:read", "reviews:run"])["access_token"]
+    args = {"pr_id": "pr", "connection_id": "connection", "request_key": "grant-during-task-access"}
+    task_id = call(client, token, "reviews_start_review", args, TASKS)["result"]["taskId"]
+    authorize = github.authorize_repo
+
+    def remove_repository(*args, **kwargs):
+        remote = authorize(*args, **kwargs)
+        with transaction() as db:
+            grant_id = db.get(McpOperation, task_id).grant_id
+            db.get(McpGrant, grant_id, with_for_update={"nowait": True}).repository_ids_by_group = {"reviews": []}
+        return remote
+
+    monkeypatch.setattr(github, "authorize_repo", remove_repository)
+    assert wire(client, token, method, {"taskId": task_id}, TASKS)["error"]["message"] == (
+        "This repository was not selected for this MCP client.")
+    with transaction() as db:
+        task = db.get(McpTask, task_id)
+        assert task.snapshot == {"status": "working"}
+        assert db.get(ReviewRun, task.target_id).status == "queued"
 
 
 @pytest.mark.parametrize("outcome", ["cancel", "partial", "failed"])

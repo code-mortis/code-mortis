@@ -1,20 +1,22 @@
 """Map MCP task handles to existing durable Code Mortis operations."""
 
 import json
+from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import timedelta
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.extension import Extension, MethodBinding
 from mcp.server.mcpserver.server import require_client_extension
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, InputResponses, RequestParams
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 from code_mortis.api.dependencies import repo_access
 from code_mortis.api.routers import runs
-from code_mortis.core.db import now, transaction
+from code_mortis.core.db import get_db, now, transaction
 from code_mortis.core.security import saved_credential_redactor
 from code_mortis.integrations.github import GitHubError
 from code_mortis.mcp import auth
@@ -75,12 +77,10 @@ def observe(db, name, task, user, cancel):
         row = db.get(ReviewRun, task.target_id)
         if row and cancel and row.status in {"queued", "running", "blocked"}:
             try:
-                runs.cancel_run(row.id, db, user)
+                runs.cancel_repository_run(db, row, task.repository_id)
             except HTTPException as exc:
                 if exc.status_code != 409:
                     raise
-            db.flush()
-            db.refresh(row)
     elif name == "security_start_scan":
         row = db.get(SecurityScan, task.target_id, with_for_update=cancel)
         if row and cancel:
@@ -140,37 +140,61 @@ def safe_completed_snapshot(db, state, task, grant, domain):
                                "message": "Inspect the saved result in Code Mortis."}, is_error=True)
 
 
+def task_access(db, operation, repository_id, *, lock=False):
+    domain = DOMAINS[operation.tool]
+    user, grant = auth.tool_access(db, domain, domain + ":run", repository_id, lock=lock)
+    auth.tool_access(db, domain, domain + ":read", repository_id)
+    if operation.tool == "reviews_generate_background" and user.role != "admin":
+        raise HTTPException(403, "Administrator access is required.")
+    return user, grant
+
+
 def access_task(task_id, method):
     token = get_access_token()
+    cancel = method == "tasks/cancel"
     with transaction() as db:
         operation = db.scalar(select(McpOperation).where(McpOperation.id == task_id,
             McpOperation.grant_id == token.claims["grant_id"]))
         if not operation or operation.tool not in DOMAINS:
             raise HTTPException(404, "Unknown task.")
-        domain = DOMAINS[operation.tool]
-        _, grant = auth.tool_access(db, domain, domain + ":run")
-        user, grant = auth.ensure_grant(db, grant.id, domain, domain + ":run", lock=True)
-        auth.tool_access(db, domain, domain + ":read")
-        if operation.tool == "reviews_generate_background" and user.role != "admin":
-            raise HTTPException(403, "Administrator access is required.")
-        task = db.get(McpTask, task_id, with_for_update=True)
+        task = db.get(McpTask, task_id)
         if not task:
             raise HTTPException(404, "Unknown task.")
-        cancel = method == "tasks/cancel"
+        repository_id = task.repository_id
+        user, grant = task_access(db, operation, repository_id)
         auth.rate_limit("tasks", grant.id)
         background_job = operation.tool == "reviews_generate_background"
-        repo_access(db, user, task.repository_id, write=cancel or background_job)
-        if method == "tasks/update":
-            # All three workflows resolve their input before the job starts.
-            return {}
-        state = task.snapshot
-        if state["status"] == "working":
-            state = observe(db, operation.tool, task, user, cancel)
-        if state["status"] == "completed":
-            state = safe_completed_snapshot(db, state, task, grant, domain)
-        if state != task.snapshot:
-            task.snapshot, task.updated_at = state, now()
-        return {} if cancel else {**task_fields(operation, task, grant), **task.snapshot}
+        repo_access(db, user, repository_id, write=cancel or background_job)
+
+    cancel_work = cancel and task.snapshot["status"] == "working"
+    while True:
+        with contextmanager(get_db)() as db:
+            # Check the grant again after GitHub I/O. Serialize cancellation with revocation.
+            user, grant = task_access(db, operation, repository_id, lock=cancel_work)
+            if method == "tasks/update":
+                # All three workflows resolve their input before the job starts.
+                return {}
+            task = db.get(McpTask, task_id, with_for_update=cancel_work)
+            if not task:
+                raise HTTPException(404, "Unknown task.")
+            state = task.snapshot
+            if state["status"] == "working":
+                state = observe(db, operation.tool, task, user, cancel_work)
+            if state["status"] == "completed":
+                if cancel_work:
+                    db.commit()  # Release cancellation locks before scanning for saved credentials.
+                    cancel_work = False
+                state = safe_completed_snapshot(db, state, task, grant, DOMAINS[operation.tool])
+            if state != task.snapshot:
+                updated_at = max(now(), task.updated_at + timedelta(microseconds=1))
+                save = (update(McpTask)
+                        .where(McpTask.operation_id == task_id, McpTask.updated_at == task.updated_at)
+                        .values(snapshot=state, updated_at=updated_at)
+                        .returning(McpTask))
+                task = db.scalar(save, execution_options={"populate_existing": True})
+                if task is None:
+                    continue  # A concurrent poll or cancel won. Read its snapshot before replying.
+            return {} if cancel else {**task_fields(operation, task, grant), **task.snapshot}
 
 
 class TaskParams(RequestParams):

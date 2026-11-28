@@ -319,14 +319,14 @@ class McpTokenVerifier(TokenVerifier):
                 resource=resource_url(), claims={"iss": settings().public_url, "grant_id": grant.id})
 
 
-def tool_access(db, domain, scope, repository_id=None):
+def tool_access(db, domain, scope, repository_id=None, *, lock=False):
     token = get_access_token()
     if not token or scope not in token.scopes:
         raise HTTPException(403, "This MCP client was not granted the required permission.")
     record = db.get(McpToken, digest(token.token))
     if not record or record.expires_at <= now() or scope not in record.scopes:
         raise HTTPException(401, "The MCP access token expired. Refresh the authorization.")
-    return ensure_grant(db, record.grant_id, domain, scope, repository_id)
+    return ensure_grant(db, record.grant_id, domain, scope, repository_id, lock=lock)
 
 
 def public_result(value):
