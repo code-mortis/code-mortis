@@ -117,6 +117,15 @@ class McpOperation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class McpTask(Base):
+    __tablename__ = "mcp_tasks"
+    operation_id: Mapped[str] = mapped_column(ForeignKey("mcp_operations.id", ondelete="CASCADE"), primary_key=True)
+    repository_id: Mapped[int] = mapped_column(BigInteger)
+    target_id: Mapped[str] = mapped_column(String(36))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class McpApproval(Base):
     __tablename__ = "mcp_approvals"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

@@ -743,12 +743,14 @@ def security_list_report_findings(params: ReportFindingsInput) -> dict[str, Any]
 
 class TriageInput(FindingScopedInput, MutationInput):
     state: Literal["open", "false_positive", "accepted_risk"] = "open"
-    reason: str = Field(min_length=1, max_length=4000)
+    reason: str | None = Field(default=None, min_length=1, max_length=4000)
     version: int = Field(ge=0)
 
 
 def security_triage_finding(params: TriageInput) -> dict[str, Any]:
     """Mark a finding false positive, accept the risk, or reopen it. Version conflicts fail."""
+    if params.reason is None:
+        raise HTTPException(422, "Supply a reason for this finding decision.")
     body = SecurityTriage(state=params.state, reason=params.reason, version=params.version)
     return _run("security", "security:write", "security_triage_finding", params.model_dump(),
                 lambda db, user: security_routes.triage(params.finding_id, body, db, user),
@@ -769,7 +771,7 @@ def security_acknowledge_rotation(params: RotationInput) -> dict[str, Any]:
 
 
 class StartScanInput(RepositoryScopedInput, MutationInput):
-    connection_id: str = Field(min_length=1, max_length=36)
+    connection_id: str | None = Field(default=None, min_length=1, max_length=36)
     model: str = Field(default="", max_length=150)
     concurrency: int = Field(default=4, ge=1, le=8, strict=True)
     limits: RunLimits | None = None
@@ -786,6 +788,8 @@ def _scan_body(params: StartScanInput, user, operation: str) -> SecurityScanInpu
 
 def security_start_scan(params: StartScanInput) -> dict[str, Any]:
     """Start a security scan; returns the saved scan promptly."""
+    if params.connection_id is None:
+        raise HTTPException(422, "Supply connection_id for the shared API connection to use.")
     return _run("security", "security:run", "security_start_scan", params.model_dump(),
                 lambda db, user: security_routes.start_scan(params.repository_id,
                     _scan_body(params, user, "security_start_scan"), db, user),
@@ -804,6 +808,7 @@ def security_cancel_scan(params: CancelScanInput) -> dict[str, Any]:
 
 
 class RetryScanInput(StartScanInput):
+    connection_id: str = Field(min_length=1, max_length=36)
     scan_id: str = Field(min_length=1, max_length=36)
 
 

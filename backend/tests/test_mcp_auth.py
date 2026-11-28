@@ -658,7 +658,7 @@ def test_unified_grant_keeps_group_repository_selections_independent(enabled, cl
     assert client.put("/api/v1/mcp/settings", json=settings).status_code == 200
     assert client.put("/api/v1/mcp/settings", json={**settings, "security_enabled": True}).status_code == 200
     tools = rpc(client, token, method="tools/list").json()["result"]["tools"]
-    assert all(tool["name"].startswith("reviews_") for tool in tools)
+    assert all(tool["name"].startswith("reviews_") or tool["name"] == "get_workflow_guide" for tool in tools)
     assert tools
     assert client.put("/api/v1/mcp/settings", json={**settings, "enabled": False}).status_code == 200
     assert rpc(client, token).status_code == 401
