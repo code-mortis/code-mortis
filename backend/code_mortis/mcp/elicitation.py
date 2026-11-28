@@ -4,6 +4,7 @@ import json
 
 from fastapi import HTTPException
 from mcp.types import ElicitResult, InputRequiredResult
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
@@ -15,6 +16,8 @@ from code_mortis.mcp.auth import rate_limit, tool_access
 from code_mortis.mcp.skills import MODERN
 from code_mortis.mcp.tools import StartScanInput, TriageInput
 from code_mortis.models import Connection
+
+CONNECTION_IDS = TypeAdapter(list[str])
 
 
 def input_round(key, state, **params):
@@ -89,8 +92,13 @@ async def interactive_call(name, arguments, context, invoke):
         value = answer(context, field).get(field)
         if not isinstance(value, str) or not value.strip():
             raise HTTPException(422, "Provide the requested value.")
-        if field == "connection_id" and value not in json.loads(context.request_state):
-            raise HTTPException(422, "Choose one of the offered shared API connections.")
+        if field == "connection_id":
+            try:
+                offered = CONNECTION_IDS.validate_json(context.request_state, strict=True)
+            except ValidationError:
+                offered = []
+            if value not in offered:
+                raise HTTPException(422, "Choose one of the offered shared API connections.")
         arguments = {**arguments, "params": {**params, field: value}}
 
     if name == "security_create_issue" and supports(context, "url"):

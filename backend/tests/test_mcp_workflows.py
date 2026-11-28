@@ -10,6 +10,7 @@ from test_mcp_auth import credentials, enabled, rpc  # noqa: F401
 
 from code_mortis.core.db import now, transaction
 from code_mortis.integrations import github
+from code_mortis.mcp import elicitation
 from code_mortis.mcp.models import McpApproval, McpGrant, McpOperation, McpTask
 from code_mortis.mcp.server import install_mcp
 from code_mortis.mcp.skills import Skills
@@ -139,6 +140,22 @@ def github_pull(monkeypatch):
         "number": 3, "title": "A review", "user": {"login": "owner"},
         "html_url": "https://github.com/team/project/pull/3", "state": "open",
         "head": {"sha": "a"*40, "ref": "fix", "repo": {"id": 22}}, "base": {"sha": "b"*40}})
+
+
+@pytest.mark.parametrize("state", ['[', '42', 'null', '{"connection": true}', '"connection"', '["connection", 42]'])
+def test_scan_form_rejects_invalid_offered_connections(client, monkeypatch, state):
+    # The transport signs the state, so supply the invalid payload before signing.
+    input_round = elicitation.input_round
+    monkeypatch.setattr(elicitation, "input_round", lambda key, original, **kw: input_round(key, state, **kw))
+    token = credentials(client, scopes=["security:run"])["access_token"]
+    args = {"repository_id": 22, "request_key": "invalid-scan-form-state"}
+    prompt = call(client, token, "security_start_scan", args, FORM)["result"]
+    result = call(client, token, "security_start_scan", args, FORM, requestState=prompt["requestState"],
+                  inputResponses={"connection_id": {"action": "accept", "content": {"connection_id": "connection"}}})
+    assert result["result"]["structuredContent"]["error"] == {
+        "status": 422, "message": "Choose one of the offered shared API connections."}
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(SecurityScan)) == 0
 
 
 @pytest.mark.parametrize("outcome", ["cancel", "partial", "failed"])
