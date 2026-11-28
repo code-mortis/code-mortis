@@ -82,6 +82,7 @@ def test_reconnect_burst_preserves_webhook_dashboard_and_readiness(enabled, clie
                             yield b""
 
                         assert (await http.post("/oauth/token", content=unread_body())).status_code == 429
+                        assert (await http.get("/.well-known/oauth-authorization-server")).status_code == 429
                     assert not mcp and not web
 
                     body = b'{"action":"test"}'

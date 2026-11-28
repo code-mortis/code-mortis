@@ -657,13 +657,14 @@ def oauth_parameters(request, pairs):
 
 
 @router.get("/.well-known/oauth-authorization-server")
-def oauth_metadata():
+def oauth_metadata(db: DB):
     origin = settings().public_url
     return {"issuer": origin, "authorization_endpoint": origin + "/oauth/authorize",
         "token_endpoint": origin + "/oauth/token", "revocation_endpoint": origin + "/oauth/revoke",
         "registration_endpoint": origin + "/oauth/register", "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"], "token_endpoint_auth_methods_supported": ["none"],
-        "code_challenge_methods_supported": ["S256"], "client_id_metadata_document_supported": True,
+        "code_challenge_methods_supported": ["S256"],
+        "client_id_metadata_document_supported": bool(mcp_settings(db)["allowed_client_domains"]),
         "authorization_response_iss_parameter_supported": True,
         "scopes_supported": list(SCOPE_GROUP)}
 
@@ -799,11 +800,11 @@ def consent(body: McpConsentInput, request: Request, db: DB, user: USER):
         if (group in needs_repositories and not selected) or not selected <= {repo.id for repo in available[group]}:
             raise HTTPException(403, "Select repositories you can currently access for each requested tool group.")
     client = resolve_client(db, row.client_id)
-    if row.redirect_uri not in client.redirect_uris:
+    if not client.check_redirect_uri(row.redirect_uri):
         raise HTTPException(409, "The client callback changed. Connect the client again.")
     client = db.scalar(select(McpClient).where(McpClient.client_id == row.client_id)
         .execution_options(populate_existing=True).with_for_update())
-    if not client or client.revoked_at or row.redirect_uri not in client.redirect_uris:
+    if not client or client.revoked_at or not client.check_redirect_uri(row.redirect_uri):
         raise HTTPException(409, "The client registration changed. Connect the client again.")
 
     # Serialize grant creation with settings changes after outbound checks complete.
