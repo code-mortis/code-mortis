@@ -1,5 +1,6 @@
 """Unified authenticated MCP transport."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
@@ -104,6 +105,7 @@ def install_mcp(app):
     @asynccontextmanager
     async def lifespan(application):
         async with previous_lifespan(application):
+            application.state.oauth_discovery_lock = asyncio.Lock()
             # Initialize the pool once before serving concurrent first requests.
             # SQLAlchemy opens its first connection on checkout.
             pool = mcp_engine()

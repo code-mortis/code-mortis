@@ -11,7 +11,7 @@ from code_mortis.core.config import settings
 from code_mortis.core.db import mcp_request_path
 from code_mortis.mcp.request_body import buffer_mcp_request_body
 
-MCP_PATHS = frozenset({"/mcp", "/.well-known/oauth-authorization-server", "/oauth/register",
+MCP_PATHS = frozenset({"/mcp", "/oauth/register",
                        "/oauth/authorize", "/oauth/token", "/oauth/revoke", "/api/v1/mcp/authorize"})
 log = logging.getLogger(__name__)
 

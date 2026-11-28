@@ -656,15 +656,24 @@ def oauth_parameters(request, pairs):
     return data
 
 
+def client_metadata_supported():
+    with transaction() as db:
+        return bool(mcp_settings(db)["allowed_client_domains"])
+
+
 @router.get("/.well-known/oauth-authorization-server")
-def oauth_metadata(db: DB):
+async def oauth_metadata(request: Request):
+    # Discovery must survive MCP overload. Limit its web-pool usage to one
+    # settings read per process at a time, including during reconnect bursts.
+    async with request.app.state.oauth_discovery_lock:
+        supports_metadata = await run_in_threadpool(client_metadata_supported)
     origin = settings().public_url
     return {"issuer": origin, "authorization_endpoint": origin + "/oauth/authorize",
         "token_endpoint": origin + "/oauth/token", "revocation_endpoint": origin + "/oauth/revoke",
         "registration_endpoint": origin + "/oauth/register", "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"], "token_endpoint_auth_methods_supported": ["none"],
         "code_challenge_methods_supported": ["S256"],
-        "client_id_metadata_document_supported": bool(mcp_settings(db)["allowed_client_domains"]),
+        "client_id_metadata_document_supported": supports_metadata,
         "authorization_response_iss_parameter_supported": True,
         "scopes_supported": list(SCOPE_GROUP)}
 
