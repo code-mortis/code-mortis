@@ -359,7 +359,7 @@ test("compact grants open full access details at narrow widths", async ({ page }
   expect(writes).toEqual([]);
 });
 
-test("the single connection copies its endpoint and read-only setup instructions", async ({ page }, info) => {
+test("the setup prompt starts one Codex login with server-discovered permissions", async ({ page }, info) => {
   const origin = "https://code-mortis.my-company.example";
   const writes = await mockMcp(page, { settingsOverride: { public_url: `${origin}/` } });
   await page.goto("/settings?tab=mcp");
@@ -391,13 +391,9 @@ test("the single connection copies its endpoint and read-only setup instructions
   const prompt = await text.inputValue();
   expect(prompt).toContain(`Server URL: ${endpoint}`);
   expect(prompt).toContain(`claude mcp add --transport http codemortis '${endpoint}'`);
-  expect(prompt).toContain("codex mcp add codemortis");
-  expect(prompt).toContain(`--oauth-resource '${endpoint}'`);
-  expect(prompt).toContain("--oauth-client-registration dcr");
-  expect(prompt).toContain("Let me complete sign-in and choose which groups and repositories to authorize in my browser.");
-  expect(prompt).toContain("Request read permissions");
-  expect(prompt).toContain("--scopes reviews:read");
-  expect(prompt).not.toMatch(/\/(?:mcp)\/(?:reviews|security|code)|:(?:run|write|manage|issues)/);
+  expect(prompt).toContain(`[mcp_servers.codemortis]\nurl = "${endpoint}"\noauth_resource = "${endpoint}"`);
+  expect(prompt.match(/^codex mcp .*$/gm)).toEqual(["codex mcp login codemortis --oauth-client-registration dcr"]);
+  expect(prompt).not.toMatch(/^scopes\s*=|--scopes/m);
   const copyPrompt = dialog.getByRole("button", { name: "Copy MCP installation prompt", exact: true });
   await expect(copyPrompt).toHaveAttribute("data-variant", "ghost");
   if (info.project.name === "desktop") {

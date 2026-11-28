@@ -697,8 +697,7 @@ def authorize(request: Request, db: DB):
     groups = enabled_groups(mcp_settings(db))
     if data.get("resource") != resource_url() or not groups:
         raise HTTPException(400, "Choose an enabled Code Mortis MCP resource.")
-    defaults = [group + ":read" for group in DOMAIN_SCOPES if group in groups]
-    requested = data.get("scope", " ".join(defaults)).split()
+    requested = data["scope"].split() if "scope" in data else list(SCOPE_GROUP)
     if not set(requested) <= SCOPE_GROUP.keys():
         raise HTTPException(400, "The requested scopes do not belong to this MCP resource.")
     requested = list(dict.fromkeys(scope for scope in requested if SCOPE_GROUP[scope] in groups))

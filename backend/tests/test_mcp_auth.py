@@ -55,6 +55,8 @@ def authorization(client, *, domain="reviews", scopes=None, **overrides):
     values = {"client_id": "test-cli", "response_type": "code", "redirect_uri": CALLBACK,
         "resource": RESOURCE, "scope": scopes or domain + ":read",
         "state": "client-state", "code_challenge": CHALLENGE, "code_challenge_method": "S256", **overrides}
+    if values["scope"] is None:
+        del values["scope"]
     response = client.get("/oauth/authorize", params=values, follow_redirects=False)
     assert response.status_code == 303, response.text
     return parse_qs(urlsplit(response.headers["location"]).query)["request_id"][0]
@@ -81,6 +83,23 @@ def exchange(client, code, **overrides):
     return client.post("/oauth/token", data={"grant_type": "authorization_code", "client_id": "test-cli",
         "code": code, "redirect_uri": CALLBACK, "resource": RESOURCE,
         "code_verifier": VERIFIER, **overrides})
+
+
+@pytest.mark.parametrize("requested", [None, "reviews:read"])
+def test_setup_offers_enabled_scopes_and_issues_only_selected_access(enabled, client, requested):
+    request_id = authorization(client, scope=requested)
+    preview = client.get("/api/v1/mcp/authorize", params={"request_id": request_id})
+    assert preview.status_code == 200
+    offered = {option["name"] for option in preview.json()["scopes"]}
+    expected = set(mcp_auth.GROUP_SCOPES["reviews"]) | set(mcp_auth.GROUP_SCOPES["security"])
+    assert offered == (expected if requested is None else {"reviews:read"})
+    decision = client.post("/api/v1/mcp/authorize", json={
+        "request_id": request_id, "scopes": ["reviews:read"], "repository_ids_by_group": {"reviews": [22]}, "approve": True,
+    })
+    assert decision.status_code == 200
+    code = parse_qs(urlsplit(decision.json()["redirect_url"]).query)["code"][0]
+    token = exchange(client, code)
+    assert token.status_code == 200 and token.json()["scope"] == "reviews:read"
 
 
 def credentials(client, **kwargs):
