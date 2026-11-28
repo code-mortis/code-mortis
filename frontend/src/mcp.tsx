@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Bot, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { toast } from "sonner";
-import { api, useAction, useApi, type Repository } from "./api";
+import { api, useAction, useApi, type Repository, type Schema } from "./api";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
@@ -11,49 +11,21 @@ import { Badge } from "./components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./components/ui/dialog";
 import { date, Empty, ErrorNotice, Field, Loading, PageTitle, Status } from "./components/common";
 
-const domainLabels = { reviews: "Reviews", security: "Security", code: "Code" } as const;
-type McpDomain = keyof typeof domainLabels;
+const groupLabels = { reviews: "Reviews", security: "Security", code: "Code", management: "Management" } as const;
+type McpGroup = keyof typeof groupLabels;
+type GroupSelections = Partial<Record<McpGroup, number[]>>;
 
-export type McpSettings = {
-  reviews_enabled: boolean;
-  security_enabled: boolean;
-  code_enabled: boolean;
-  management_enabled: boolean;
-  allowed_client_domains: string[];
-  public_url: string;
-  can_manage: boolean;
-};
+const groups: McpGroup[] = ["reviews", "security", "code", "management"];
 
-export type McpClient = {
-  client_id: string;
-  client_name: string;
-  redirect_uris: string[];
-};
+function groupForScope(scope: string): McpGroup | undefined {
+  if (scope === "instance:manage" || scope === "connections:manage") return "management";
+  return groups.find((group) => scope.startsWith(group + ":"));
+}
 
-export type McpGrant = {
-  id: string;
-  client_id: string;
-  client_name: string;
-  domain: McpDomain;
-  scopes: string[];
-  repository_ids: number[];
-  created_at: string;
-  expires_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
-};
-
-type McpAuthorizePreview = {
-  request_id: string;
-  client_name: string;
-  client_id: string;
-  redirect_uri: string;
-  redirect_host?: string;
-  domain: McpDomain;
-  scopes: { name: string; label: string; description: string }[];
-  repositories: { id: number; full_name: string }[];
-  expires_at: string;
-};
+export type McpSettings = Schema["McpSettingsView"];
+export type McpClient = Schema["McpClientInput"];
+export type McpGrant = Schema["McpGrantSummary"];
+type McpAuthorizePreview = Schema["McpConsentPreview"];
 
 type McpApproval = {
   id: string;
@@ -68,10 +40,9 @@ type McpApproval = {
 };
 
 function ToggleRow({
-  id, label, hint, checked, disabled, onChange, children,
+  id, label, hint, checked, onChange,
 }: {
-  id: string; label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void;
-  children?: ReactNode;
+  id: string; label: string; hint?: string; checked: boolean; onChange: (value: boolean) => void;
 }) {
   return (
     <div className="p-5">
@@ -80,46 +51,41 @@ function ToggleRow({
           <label htmlFor={id} className="text-sm font-medium">{label}</label>
           {hint && <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">{hint}</p>}
         </div>
-        <Switch id={id} aria-describedby={`${id}-hint`} checked={checked} disabled={disabled} onCheckedChange={onChange} className="mt-0.5 shrink-0" />
+        <Switch id={id} aria-describedby={hint ? `${id}-hint` : undefined} checked={checked} onCheckedChange={onChange} className="mt-0.5 shrink-0" />
       </div>
-      {children && <div className="mt-2">{children}</div>}
     </div>
   );
 }
 
-function ConnectionInstructions({ domain, publicUrl, enabled }: {
-  domain: McpDomain; publicUrl: string; enabled: boolean;
-}) {
+function ConnectionInstructions({ settings }: { settings: McpSettings }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState<"endpoint" | "prompt" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const label = domainLabels[domain];
-  const description = domain === "reviews"
-    ? "Read findings, resolve or reopen them, and start or stop reviews."
-    : domain === "security" ? "Read and triage findings, manage GitHub issues, and run or stop scans."
-    : "Read indexed definitions, file dependencies, and source at exact commits. Enable code graphs per repository in Code graph settings first. Agents cannot index, run models, or write through this connection.";
-  const scopes = domain === "code" ? ["code:read"]
-    : [`${domain}:read`, `${domain}:write`, `${domain}:run`, ...(domain === "security" ? ["security:issues"] : [])];
-  const endpoint = `${publicUrl.replace(/\/+$/, "")}/mcp/${domain}`;
-  const name = `codemortis-${domain}`;
-  const quotedEndpoint = `'${endpoint.replaceAll("'", "'\\''")}'`;
-  const prompt = `Connect this AI client to the Code Mortis ${label} MCP server.
+  const endpoint = `${settings.public_url.replace(/\/+$/, "")}/mcp`;
+  const hasEnabledGroup = groups.some((group) => settings[`${group}_enabled`]);
+  const quotedEndpoint = "'" + endpoint.replaceAll("'", "'\\''") + "'";
+  const prompt = `Connect this client to Code Mortis over Streamable HTTP.
 
 Server URL: ${endpoint}
-Connection name: ${name}
-OAuth scopes: ${scopes.join(", ")}
+Connection name: codemortis
 
-Detect which client you are running in and configure this remote Streamable HTTP MCP server in its user settings. Preserve existing MCP servers and unrelated settings. Use OAuth with PKCE and dynamic client registration (DCR). If this client cannot use that setup, explain what it supports instead of claiming it is connected.
+Use OAuth with PKCE and dynamic client registration. Use the permissions advertised by the server. Let me choose permissions and repositories in the browser. Only read permissions should be preselected.
 
-For Codex CLI, use:
-codex mcp add ${name} --url ${quotedEndpoint} --oauth-resource ${quotedEndpoint} --oauth-client-registration dcr
+Use the instructions for the current client.
 
-If that Codex connection already exists, check its URL and use:
-codex mcp login ${name} --oauth-client-registration dcr --scopes ${scopes.join(",")}
+For Claude Code, add the HTTP server with
+claude mcp add --transport http codemortis ${quotedEndpoint}
 
-Let me complete sign-in and choose repositories and permissions in the browser. Do not enter credentials or grant management permissions on my behalf. The ${label} MCP must be enabled in Code Mortis before authorization; local Codex using the command above does not need allowed client domains or manual client registration.
+For Codex CLI, use the following entry in the active config.toml. Reuse the entry if it already points to this URL. Leave its optional scopes setting unset for OAuth discovery.
 
-Verify the connection by listing tools or reading visible repositories. Do not start reviews, scans or GitHub writes during setup. Report configuration and completed authorization separately, and tell me if this client needs a new session to load the server.`;
+[mcp_servers.codemortis]
+url = ${JSON.stringify(endpoint)}
+oauth_resource = ${JSON.stringify(endpoint)}
+
+If authorization is needed, run this command once and wait for the browser callback:
+codex mcp login codemortis --oauth-client-registration dcr
+
+Verify the connection by listing the available tools.`;
   async function copy(value: string, kind: "endpoint" | "prompt") {
     setError(null);
     setCopied(null);
@@ -130,56 +96,54 @@ Verify the connection by listing tools or reading visible repositories. Do not s
       setError(`Could not copy. Select the ${kind} and copy it manually.`);
     }
   }
-  if (!publicUrl) return <p className="text-sm text-muted-foreground">Ask an administrator to configure the public URL before connecting an agent.</p>;
+  if (!settings.public_url) return <p className="text-sm text-muted-foreground">Ask an administrator to configure the public URL before connecting an agent.</p>;
   return (
-    <div className="space-y-3">
-      <p id={`mcp-${domain}-hint`} className="text-xs leading-relaxed text-muted-foreground">
-        {description}{" "}
-        <Dialog open={expanded} onOpenChange={(open) => { setExpanded(open); setError(null); setCopied(null); }}>
-          <DialogTrigger asChild>
-            <Button type="button" variant="link" className="h-auto p-0 align-baseline text-xs font-normal underline" aria-label={`${label} installation instructions`}>Installation instructions</Button>
-          </DialogTrigger>
-          <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{label} installation instructions</DialogTitle>
-              <DialogDescription>Use this URL in your client or paste the prompt into your coding agent. Complete authorization in your browser.</DialogDescription>
-            </DialogHeader>
-            {!enabled && <p className="text-xs text-muted-foreground">{label} MCP is off. An administrator must enable it and save before you connect.</p>}
-            <div className="min-w-0 space-y-2">
-              <p className="text-sm font-medium">Server URL</p>
-              <div className="flex items-start gap-2">
-                <code aria-label={`${label} MCP endpoint`} className="min-w-0 flex-1 select-text break-all font-mono text-xs leading-relaxed">{endpoint}</code>
-                <Button type="button" variant="ghost" size="icon" className="-my-1.5 size-8 shrink-0 text-muted-foreground" aria-label={`Copy ${label} endpoint`} title={copied === "endpoint" ? "Copied" : "Copy endpoint"} onClick={() => void copy(endpoint, "endpoint")}>
-                  {copied === "endpoint" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
-                </Button>
-              </div>
-            </div>
-            <div className="group/installation relative min-w-0">
-              <Textarea aria-label={`${label} installation prompt text`} readOnly value={prompt} className="h-64 resize-y pr-14 font-mono text-xs leading-relaxed sm:pr-12 md:text-xs" />
-              <Button type="button" variant="ghost" size="icon" aria-label={`Copy ${label} installation prompt`} title={copied === "prompt" ? "Copied" : "Copy prompt"} className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/installation:opacity-100 group-focus-within/installation:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" onClick={() => void copy(prompt, "prompt")}>
-                {copied === "prompt" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
-              </Button>
-            </div>
-            {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-            {copied && <p role="status" className="sr-only">{label} {copied === "endpoint" ? "endpoint" : "installation prompt"} copied.</p>}
-          </DialogContent>
-        </Dialog>
-      </p>
-    </div>
+    <Dialog open={expanded} onOpenChange={(open) => { setExpanded(open); setError(null); setCopied(null); }}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="link" className="h-auto p-0 align-baseline text-xs font-normal underline" aria-label="MCP installation instructions">Installation instructions</Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>MCP installation instructions</DialogTitle>
+          <DialogDescription>Use this URL in your client or paste the prompt into your coding agent. Complete authorization in your browser.</DialogDescription>
+        </DialogHeader>
+        {!settings.enabled && <p className="text-xs text-muted-foreground">MCP is off. An administrator must enable it and save before you connect.</p>}
+        {settings.enabled && !hasEnabledGroup && <p className="text-xs text-muted-foreground">An administrator must enable a tool group before you can connect.</p>}
+        <div className="min-w-0 space-y-2">
+          <p className="text-sm font-medium">Server URL</p>
+          <div className="flex items-start gap-2">
+            <code aria-label="MCP endpoint" className="min-w-0 flex-1 select-text break-all font-mono text-xs leading-relaxed">{endpoint}</code>
+            <Button type="button" variant="ghost" size="icon" className="-my-1.5 size-8 shrink-0 text-muted-foreground" aria-label="Copy MCP endpoint" title={copied === "endpoint" ? "Copied" : "Copy endpoint"} onClick={() => void copy(endpoint, "endpoint")}>
+              {copied === "endpoint" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
+            </Button>
+          </div>
+        </div>
+        <div className="group/installation relative min-w-0">
+          <Textarea aria-label="MCP installation prompt text" readOnly value={prompt} className="h-64 resize-y pr-14 font-mono text-xs leading-relaxed sm:pr-12 md:text-xs" />
+          <Button type="button" variant="ghost" size="icon" aria-label="Copy MCP installation prompt" title={copied === "prompt" ? "Copied" : "Copy prompt"} className="absolute right-1 top-1 size-11 text-muted-foreground opacity-0 transition-opacity group-hover/installation:opacity-100 group-focus-within/installation:opacity-100 sm:size-8 [@media(hover:none)]:opacity-100" onClick={() => void copy(prompt, "prompt")}>
+            {copied === "prompt" ? <Check aria-hidden="true" className="size-3.5" /> : <Copy aria-hidden="true" className="size-3.5" />}
+          </Button>
+        </div>
+        {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+        {copied && <p role="status" className="sr-only">MCP {copied === "endpoint" ? "endpoint" : "installation prompt"} copied.</p>}
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: () => void }) {
   const action = useAction<McpSettings>();
+  const [enabled, setEnabled] = useState(settings.enabled);
   const [reviews, setReviews] = useState(settings.reviews_enabled);
   const [security, setSecurity] = useState(settings.security_enabled);
   const [code, setCode] = useState(settings.code_enabled);
   const [management, setManagement] = useState(settings.management_enabled);
-  const [domains, setDomains] = useState(settings.allowed_client_domains.join("\n"));
+  const savedDomains = (settings.allowed_client_domains ?? []).join("\n");
+  const [domains, setDomains] = useState(savedDomains);
   const [error, setError] = useState<unknown>();
-  const dirty = reviews !== settings.reviews_enabled || security !== settings.security_enabled
+  const dirty = enabled !== settings.enabled || reviews !== settings.reviews_enabled || security !== settings.security_enabled
     || code !== settings.code_enabled
-    || management !== settings.management_enabled || domains !== settings.allowed_client_domains.join("\n");
+    || management !== settings.management_enabled || domains !== savedDomains;
   return (
     <form
       aria-label="MCP instance settings"
@@ -192,6 +156,7 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
             path: "/mcp/settings",
             method: "PUT",
             body: {
+              enabled,
               reviews_enabled: reviews,
               security_enabled: security,
               code_enabled: code,
@@ -207,16 +172,11 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
       }}
     >
       <div className="divide-y rounded-lg border bg-card">
-        <ToggleRow id="mcp-reviews" label="Reviews MCP" checked={reviews} onChange={setReviews}>
-          <ConnectionInstructions domain="reviews" publicUrl={settings.public_url} enabled={settings.reviews_enabled} />
-        </ToggleRow>
-        <ToggleRow id="mcp-security" label="Security MCP" checked={security} onChange={setSecurity}>
-          <ConnectionInstructions domain="security" publicUrl={settings.public_url} enabled={settings.security_enabled} />
-        </ToggleRow>
-        <ToggleRow id="mcp-code" label="Code MCP" checked={code} onChange={setCode}>
-          <ConnectionInstructions domain="code" publicUrl={settings.public_url} enabled={settings.code_enabled} />
-        </ToggleRow>
-        <ToggleRow id="mcp-management" label="Allow management through MCP" hint="Adds administration tools to Reviews and Security, using the same two endpoints. Agents need separate permission to manage AI connections, members or GitHub installations." checked={management} onChange={setManagement} />
+        <ToggleRow id="mcp-enabled" label="Enable MCP" hint="Turning MCP off revokes every grant and cancels outstanding MCP work." checked={enabled} onChange={setEnabled} />
+        <ToggleRow id="mcp-reviews" label="Reviews" hint="Read and triage findings or start and stop reviews." checked={reviews} onChange={setReviews} />
+        <ToggleRow id="mcp-security" label="Security" hint="Read and triage findings, manage GitHub issues, or run scans." checked={security} onChange={setSecurity} />
+        <ToggleRow id="mcp-code" label="Code" hint="Read source and relationships from code graphs that a repository has enabled." checked={code} onChange={setCode} />
+        <ToggleRow id="mcp-management" label="Allow management through MCP" hint="Authorize management of permitted AI connections, members, or GitHub installations separately." checked={management} onChange={setManagement} />
       </div>
       <Field
         label="Allowed client domains"
@@ -343,6 +303,15 @@ function ClientRegistration() {
   );
 }
 
+function grantGroups(grant: McpGrant): McpGroup[] {
+  if (grant.domain !== "unified") return [grant.domain];
+  return groups.filter((group) => grant.scopes.some((scope) => groupForScope(scope) === group));
+}
+
+function repositoriesForGrant(grant: McpGrant, group: McpGroup): number[] {
+  return grant.domain === "unified" ? grant.repository_ids_by_group[group] ?? [] : grant.repository_ids;
+}
+
 function grantStatus(grant: McpGrant) {
   return grant.revoked_at ? "revoked" : new Date(grant.expires_at).getTime() <= Date.now() ? "expired" : "active";
 }
@@ -367,6 +336,8 @@ function Grants() {
       </div>
       {items.map((grant) => {
         const status = grantStatus(grant);
+        const toolGroups = grantGroups(grant);
+        const repositoryCount = new Set(toolGroups.flatMap((group) => repositoriesForGrant(grant, group))).size;
         return <article key={grant.id} aria-label={`${grant.client_name} ${grant.domain} grant`}
           className="settings-record settings-connection-row group relative border-b px-4 py-4 text-sm transition-colors last:border-b-0 hover:bg-muted/50 sm:px-5">
           <div className="settings-identity flex min-w-0 items-start gap-3">
@@ -379,12 +350,12 @@ function Grants() {
                   {grant.client_name}
                 </button>
               </h4>
-              <p className="mt-1 text-xs text-muted-foreground">{domainLabels[grant.domain]} MCP</p>
+              <p className="mt-1 text-xs text-muted-foreground">{toolGroups.map((group) => groupLabels[group]).join(", ") || "No tool groups"}</p>
             </div>
           </div>
           <div className="min-w-0 text-xs leading-relaxed">
             <span aria-hidden="true" className="settings-cell-label mb-1 text-muted-foreground">Access</span>
-            <p>{grant.repository_ids.length} {grant.repository_ids.length === 1 ? "repository" : "repositories"}</p>
+            <p>{repositoryCount} {repositoryCount === 1 ? "repository" : "repositories"}</p>
             <p className="mt-1 text-muted-foreground">Expires {date(grant.expires_at)}</p>
           </div>
           <div className="min-w-0 text-xs text-muted-foreground">
@@ -430,7 +401,7 @@ function Grants() {
           {selected && <>
             <DialogHeader className="min-w-0 pr-6 text-left">
               <DialogTitle ref={detailsHeading} tabIndex={-1} className="break-words leading-snug">{selected.client_name}</DialogTitle>
-              <DialogDescription>{domainLabels[selected.domain]} MCP access</DialogDescription>
+              <DialogDescription>{selected.domain === "unified" ? "MCP permissions by tool group" : `Legacy ${groupLabels[selected.domain]} MCP grant`}</DialogDescription>
             </DialogHeader>
             {selected.revoked_at && <div><Status value="revoked" label="Revoked" /></div>}
             <dl className="space-y-4 text-sm">
@@ -438,20 +409,26 @@ function Grants() {
                 <dt className="text-muted-foreground">Client ID</dt>
                 <dd className="min-w-0 break-all font-mono text-xs leading-relaxed">{selected.client_id}</dd>
               </div>
-              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
-                <dt className="text-muted-foreground">Scopes</dt>
-                <dd className="min-w-0"><ul className="space-y-1 text-xs leading-relaxed">
-                  {selected.scopes.length ? selected.scopes.map((scope) => <li key={scope} className="break-words">{scope}</li>) : <li>None</li>}
-                </ul></dd>
-              </div>
-              <div className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
-                <dt className="text-muted-foreground">Repositories</dt>
-                <dd className="min-w-0 text-xs leading-relaxed">
-                  {repositories.isPending ? "Loading repositories…" : <ul className="space-y-1">
-                    {selected.repository_ids.length ? selected.repository_ids.map((id) => <li key={id} className="break-words">{names.get(id) ?? `#${id}`}</li>) : <li>None selected</li>}
-                  </ul>}
-                </dd>
-              </div>
+              {grantGroups(selected).map((group) => {
+                const scopes = selected.scopes.filter((scope) => selected.domain !== "unified" || groupForScope(scope) === group);
+                const repositoryIds = repositoriesForGrant(selected, group);
+                return (
+                  <div key={group} className="grid gap-1 border-t pt-3 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-4">
+                    <dt className="font-medium">{groupLabels[group]}</dt>
+                    <dd className="min-w-0 space-y-2 text-xs leading-relaxed">
+                      {scopes.length > 0 && <ul aria-label="Permissions" className="space-y-1">
+                        {scopes.map((scope) => (
+                          <li key={scope} className="break-words">{scope}{scope === "instance:manage" && " (instance-wide)"}</li>
+                        ))}
+                      </ul>}
+                      {repositories.isPending ? "Loading repositories…" : <ul aria-label="Repositories" className="space-y-1 text-muted-foreground">
+                        {repositoryIds.length ? repositoryIds.map((id) => <li key={id} className="break-words">{names.get(id) ?? `#${id}`}</li>)
+                          : <li>None selected</li>}
+                      </ul>}
+                    </dd>
+                  </div>
+                );
+              })}
               {[
                 ["Granted", date(selected.created_at)],
                 ["Expires", date(selected.expires_at)],
@@ -490,32 +467,21 @@ export function McpSettingsSection({ canAdminister }: { canAdminister: boolean }
       <div>
         <h2 id="mcp-heading" className="text-xl font-semibold tracking-tight">MCP access</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect an agent to reviews, security, or indexed code. Authorize each connection separately in your browser.
+          Connect once and choose which tool groups and repositories your agent may access.
         </p>
       </div>
       <ErrorNotice error={settings.error} />
       {settings.isPending ? <Loading /> : settings.data ? (
         <>
+          <ConnectionInstructions settings={settings.data} />
           {canAdminister && settings.data.can_manage ? (
-            <>
-              <AdminSettings settings={settings.data} onSaved={() => void settings.refetch()} />
-            </>
+            <AdminSettings settings={settings.data} onSaved={() => void settings.refetch()} />
           ) : (
-            <>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Reviews MCP {settings.data.reviews_enabled ? "is on" : "is off"}, security MCP {settings.data.security_enabled ? "is on" : "is off"}
-              {", code MCP "}{settings.data.code_enabled ? "is on" : "is off"}
-              {settings.data.management_enabled ? ", management through MCP is on" : ""}. Only administrators change instance switches.
+              {settings.data.enabled
+                ? `Available tool groups are ${groups.filter((group) => settings.data?.[`${group}_enabled`]).map((group) => groupLabels[group]).join(", ") || "none"}.`
+                : "MCP is off. An administrator can enable it."}
             </p>
-            <div className="divide-y rounded-lg border bg-card">
-              {(["reviews", "security", "code"] as const).map((domain) => (
-                <div key={domain} className="space-y-4 p-5">
-                  <h3 className="text-sm font-medium">{domainLabels[domain]} MCP</h3>
-                  <ConnectionInstructions domain={domain} publicUrl={settings.data.public_url} enabled={settings.data[`${domain}_enabled`]} />
-                </div>
-              ))}
-            </div>
-            </>
           )}
           <Grants />
           {canAdminister && settings.data.can_manage && <ClientRegistration />}
@@ -540,7 +506,7 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
     return () => { active.current = false; };
   }, []);
   const preview = useApi<McpAuthorizePreview>(`/mcp/authorize?request_id=${encodeURIComponent(requestId)}`, false, !!requestId);
-  const [repos, setRepos] = useState<number[] | null>(null);
+  const [repos, setRepos] = useState<GroupSelections>({});
   const [scopeNames, setScopeNames] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
@@ -553,10 +519,16 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
     );
   }
   const data = preview.data;
-  const selectedRepos = repos ?? data?.repositories.map((r) => r.id) ?? [];
-  const selectedScopes = scopeNames ?? data?.scopes.filter((s) => s.name.endsWith(":read")).map((s) => s.name) ?? [];
-  function toggle(list: number[] | string[], value: number | string): (number | string)[] {
-    return list.includes(value as never) ? list.filter((v) => v !== value) : [...list, value as never];
+  const allowedByGroup = data?.repositories_by_group ?? {};
+  const selectedScopes = scopeNames ?? data?.scopes.filter((scope) => (
+    scope.name.endsWith(":read") && allowedByGroup[scope.group]?.length
+  )).map((scope) => scope.name) ?? [];
+  const selectedGroups = groups.filter((group) => selectedScopes.some((scope) => groupForScope(scope) === group));
+  const requiresRepositories = (group: McpGroup) => group !== "management" || selectedScopes.includes("connections:manage");
+  const missingRepositories = selectedGroups.some((group) => requiresRepositories(group) && !repos[group]?.length);
+  const repositoryIdsByGroup: GroupSelections = {};
+  for (const group of selectedGroups) {
+    if (requiresRepositories(group)) repositoryIdsByGroup[group] = repos[group] ?? [];
   }
   async function decide(approve: boolean) {
     setBusy(true);
@@ -564,7 +536,7 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
     try {
       const result = await api<{ redirect_url: string }>("/mcp/authorize", "POST", {
         request_id: requestId,
-        repository_ids: approve ? selectedRepos : [],
+        repository_ids_by_group: approve ? repositoryIdsByGroup : {},
         scopes: approve ? selectedScopes : [],
         approve,
       });
@@ -590,59 +562,79 @@ function McpAuthorizeRequest({ requestId }: { requestId: string }) {
               <dd className="min-w-0 break-all font-mono text-xs">{data.redirect_uri}</dd>
             </div>
             <div className="grid gap-1 px-5 py-4 sm:grid-cols-[160px_minmax(0,1fr)]">
-              <dt className="text-muted-foreground">Domain</dt>
-              <dd><Badge variant="outline" className="font-normal">{data.domain}</Badge></dd>
-            </div>
-            <div className="grid gap-1 px-5 py-4 sm:grid-cols-[160px_minmax(0,1fr)]">
               <dt className="text-muted-foreground">Request expires</dt>
               <dd className="text-muted-foreground">{date(data.expires_at)}</dd>
             </div>
           </dl>
-          <fieldset className="space-y-3">
-            <legend className="text-base font-semibold">Repositories</legend>
-            {data.domain === "code" && <p className="text-xs leading-relaxed text-muted-foreground">Only repositories with code graphs enabled are offered. This grants the agent access to their indexed source, separately from reviews and security history.</p>}
-            {data.repositories.length ? data.repositories.map((repo) => (
-              <label key={repo.id} className="flex cursor-pointer items-center gap-3 rounded-lg border bg-card px-4 py-3 text-sm has-checked:border-primary">
-                <input
-                  type="checkbox"
-                  className="size-4 accent-primary"
-                  checked={selectedRepos.includes(repo.id)}
-                  onChange={() => setRepos(toggle(selectedRepos, repo.id) as number[])}
-                />
-                <span className="min-w-0 break-words">{repo.full_name}</span>
-              </label>
-            )) : <p className="text-sm text-muted-foreground">No repositories available for this request.</p>}
-          </fieldset>
-          <fieldset className="space-y-3">
-            <legend className="text-base font-semibold">Permissions</legend>
-            <p className="text-xs leading-relaxed text-muted-foreground">{data.domain === "code"
-              ? "Read code starts selected. This connection cannot change repositories, rebuild indexes, or run models."
-              : "Read permissions start selected. Select any write, run, or management permission explicitly."}</p>
-            {data.scopes.map((scope) => (
-              <label key={scope.name} className="flex cursor-pointer items-start gap-3 rounded-lg border bg-card px-4 py-3 text-sm has-checked:border-primary">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 size-4 accent-primary"
-                  checked={selectedScopes.includes(scope.name)}
-                  onChange={() => setScopeNames(toggle(selectedScopes, scope.name) as string[])}
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium">{scope.label} <span className="font-mono text-xs font-normal text-muted-foreground">({scope.name})</span></span>
-                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{scope.description}</span>
-                </span>
-              </label>
-            ))}
-          </fieldset>
+          <p className="text-sm text-muted-foreground">Choose permissions and repositories for each tool group.</p>
+          {groups.map((group) => {
+            const scopes = data.scopes.filter((scope) => scope.group === group);
+            if (!scopes.length) return null;
+            const available = allowedByGroup[group] ?? [];
+            const selected = repos[group] ?? [];
+            const otherSelections = selectedGroups.filter((source) => source !== group && repos[source]?.length);
+            return (
+              <fieldset key={group} aria-label={groupLabels[group]} disabled={busy} className="min-w-0 space-y-3 rounded-lg border bg-card p-4 sm:p-5">
+                <legend className="px-1 text-base font-semibold">{groupLabels[group]}</legend>
+                {group === "code" && <p className="text-xs leading-relaxed text-muted-foreground">Only repositories with code graphs enabled are offered.</p>}
+                {scopes.map((scope) => (
+                  <label key={scope.name} className="flex cursor-pointer items-start gap-3 py-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 shrink-0 accent-primary"
+                      checked={selectedScopes.includes(scope.name)}
+                      onChange={(event) => setScopeNames(event.target.checked
+                        ? [...selectedScopes, scope.name]
+                        : selectedScopes.filter((name) => name !== scope.name))}
+                    />
+                    <span className="min-w-0">
+                      <span className="block break-words font-medium">{scope.label} <span className="font-mono text-xs font-normal text-muted-foreground">({scope.name})</span></span>
+                      <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{scope.description}{scope.name === "instance:manage" && " Applies to the entire instance."}</span>
+                    </span>
+                  </label>
+                ))}
+                {selectedGroups.includes(group) && requiresRepositories(group) && (
+                  <div role="group" aria-label={`${groupLabels[group]} repositories`} className="space-y-2 border-t pt-3">
+                    <p className="text-sm font-medium">Repositories</p>
+                    {otherSelections.map((source) => {
+                      const shared = (repos[source] ?? []).filter((id) => available.some((repo) => repo.id === id));
+                      if (!shared.length) return null;
+                      return <Button key={source} type="button" variant="outline" size="sm"
+                        onClick={() => setRepos({ ...repos, [group]: shared })}>
+                        Use repositories from {groupLabels[source]}
+                      </Button>;
+                    })}
+                    {available.length ? available.map((repo) => (
+                      <label key={repo.id} className="flex cursor-pointer items-center gap-3 py-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          className="size-4 shrink-0 accent-primary"
+                          checked={selected.includes(repo.id)}
+                          onChange={(event) => setRepos({
+                            ...repos,
+                            [group]: event.target.checked ? [...selected, repo.id] : selected.filter((id) => id !== repo.id),
+                          })}
+                        />
+                        <span className="min-w-0 break-words">{repo.full_name}</span>
+                      </label>
+                    )) : <p className="text-sm text-muted-foreground">No repositories available for this group.</p>}
+                  </div>
+                )}
+              </fieldset>
+            );
+          })}
           <ErrorNotice error={error} />
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" disabled={busy} onClick={() => void decide(false)}>Deny</Button>
-            <Button disabled={busy || !selectedRepos.length || !selectedScopes.length} onClick={() => void decide(true)}>
+            <Button disabled={busy || missingRepositories || !selectedScopes.length} onClick={() => void decide(true)}>
               {busy ? "Working…" : "Approve selected access"}
             </Button>
           </div>
-          {!selectedRepos.length || !selectedScopes.length ? (
-            <p className="text-xs text-muted-foreground">Select at least one repository and one permission to approve.</p>
-          ) : null}
+          {(!selectedScopes.length || missingRepositories) && (
+            <p className="text-xs text-muted-foreground">
+              {selectedScopes.length ? "Select repositories for each group you want to authorize." : "Select at least one permission to approve."}
+            </p>
+          )}
         </div>
       ) : (
         <Button variant="outline" size="sm" className="mt-4" disabled={preview.isFetching} onClick={() => void preview.refetch()}>Retry authorization</Button>

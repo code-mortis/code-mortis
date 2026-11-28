@@ -445,7 +445,7 @@ def test_completed_mortis_scan_is_readable_through_browser_pat_and_security_mcp(
     monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository))))
     with transaction() as db:
         db.get(LoginSession, digest("session")).authenticated_at = now()
-        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": False, "security_enabled": True,
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "reviews_enabled": False, "security_enabled": True,
             "management_enabled": False, "allowed_client_domains": []}
         db.add(McpClient(client_id="test-cli", client_name="Test CLI", redirect_uris=[CALLBACK]))
     oauth_token = credentials(client, domain="security", scopes=["security:read"])["access_token"]

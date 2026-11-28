@@ -154,7 +154,7 @@ SESSION_ONLY_ROUTES: set[tuple[str, str]] = {
 PUBLIC_ROUTES: set[tuple[str, str]] = {
     ("GET", "/api/v1/setup/status"),
     ("GET", "/.well-known/oauth-authorization-server"),
-    ("GET", "/.well-known/oauth-protected-resource/mcp/{domain}"),
+    ("GET", "/.well-known/oauth-protected-resource/mcp"),
     ("GET", "/health/live"),
     ("GET", "/health/ready"),
 }

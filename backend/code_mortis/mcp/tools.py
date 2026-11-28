@@ -19,9 +19,7 @@ model discovery and credential-bearing connection fields (credentials
 are entered in the browser), and bearer-in-URL report downloads (use
 the bounded ``security_get_report`` instead).
 """
-import functools
 import json
-from contextvars import ContextVar
 from typing import Annotated, Any, Literal
 
 from fastapi import HTTPException
@@ -43,6 +41,8 @@ from code_mortis.api.routers import subscriptions as connection_routes
 from code_mortis.core.config import settings
 from code_mortis.core.ordering import FindingOrdering, RunFindingOrdering, SnapshotOrdering
 from code_mortis.core.security import digest
+from code_mortis.integrations import github
+from code_mortis.mcp import code_tools
 from code_mortis.mcp.auth import invoke_tool, tool_access
 from code_mortis.models import ReviewRun
 from code_mortis.reviews.analytics import Scope as AnalyticsScope
@@ -62,6 +62,7 @@ from code_mortis.schemas.common import (
     MemberInput,
     RepoSettings,
     RepositoryInput,
+    RepositoryOut,
     RepositoryPullFilters,
     ResolvedFilters,
     RunFindingFilters,
@@ -83,13 +84,13 @@ from code_mortis.schemas.security import (
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 REPORT_MAX_CHARS = 32000
 RUN_HISTORY_EXCLUDE = {"report", "progress", "config", "summary", "stages"}
+REVIEW_REPOSITORY_EXCLUDE = {"security", "scan_settings", "code_graph_enabled", "code_graph_limits"}
+SECURITY_REPOSITORY_EXCLUDE = {
+    "enabled", "connection_id", "connection_requires_setup", "settings", "review_rules",
+    "open_prs", "has_running_review", "last_pr_sync_check_at", "latest_completed_review",
+    "code_graph_enabled", "code_graph_limits",
+}
 LATEST_RUN_EXCLUDE = {"latest_run": RUN_HISTORY_EXCLUDE}
-
-# The endpoint a management tool is mounted on (reviews or security).
-# invoke_tool rejects a domain that does not match the grant, so management
-# handlers resolve through this instead of a literal domain name.
-_MOUNT: ContextVar[str] = ContextVar("mcp_mount_domain", default="reviews")
-
 
 def _require_admin(user) -> None:
     if user.role != "admin":
@@ -101,8 +102,6 @@ def _dump(value):
 
 
 def _run(domain, scope, name, arguments, callback, *, request_key=None, approval=False):
-    if domain == "management":
-        domain = _MOUNT.get()
     return invoke_tool(
         domain, scope, name, arguments, lambda db, user: _dump(callback(db, user)),
         request_key=request_key, approval=approval,
@@ -192,10 +191,14 @@ class ManagementConnectionInput(ApprovalInput):
 # Reviews domain.
 
 
+def _review_repository(repository: RepositoryOut) -> dict[str, Any]:
+    return repository.model_dump(mode="json", exclude=REVIEW_REPOSITORY_EXCLUDE)
+
+
 def reviews_list_repositories() -> dict[str, Any]:
     """List review repositories selected for this client."""
     def callback(db, user):
-        return [repo.model_copy(update={"security": None}) for repo in repositories_routes.repositories(db, user)]
+        return [_review_repository(repo) for repo in repositories_routes.repositories(db, user)]
 
     return _run("reviews", "reviews:read", "reviews_list_repositories", {},
                 callback)
@@ -218,7 +221,8 @@ def reviews_get_pull_request(params: PullScopedInput) -> dict[str, Any]:
     """Inspect a pull request, its latest review, counts, and write capability."""
     return _run("reviews", "reviews:read", "reviews_get_pull_request", params.model_dump(),
                 lambda db, user: pulls_routes.pull_detail(params.pr_id, db, user)
-                .model_dump(mode="json", exclude={"pull_request": LATEST_RUN_EXCLUDE}))
+                .model_dump(mode="json", exclude={"pull_request": LATEST_RUN_EXCLUDE,
+                    "repository": REVIEW_REPOSITORY_EXCLUDE}))
 
 
 def reviews_list_runs(params: PullScopedInput, page: int = 1) -> dict[str, Any]:
@@ -236,6 +240,7 @@ def reviews_get_run(params: RunScopedInput, ordering: RunFindingOrdering = "-sev
         detail = runs_routes.run_detail(params.run_id, db, user, ordering)
         result = detail.model_dump(mode="json", exclude={
             "occurrences": True,
+            "repository": REVIEW_REPOSITORY_EXCLUDE,
             "run": {"report": True, "progress": True, "config": True, "summary": {"result", "settings"}},
             "pull_request": LATEST_RUN_EXCLUDE,
         })
@@ -537,7 +542,7 @@ def reviews_update_repository_config(params: UpdateRepositoryInput) -> dict[str,
         _require_admin(user)
         if params.enabled:
             tool_access(db, "reviews", "reviews:run", params.repository_id)
-        return repositories_routes.update_repository(params.repository_id, body, db, user)
+        return _review_repository(repositories_routes.update_repository(params.repository_id, body, db, user))
 
     return _run("reviews", "reviews:manage", "reviews_update_repository_config", params.model_dump(), callback,
                 request_key=params.request_key)
@@ -560,13 +565,15 @@ def security_list_repositories(params: SecurityRepositoriesInput) -> dict[str, A
     args = params.model_dump()
     return _run("security", "security:read", "security_list_repositories", args,
                 lambda db, user: security_routes.repositories(
-                    db, user, params.page, params.search, params.grade, params.status, params.ordering))
+                    db, user, params.page, params.search, params.grade, params.status, params.ordering,
+                ).model_dump(mode="json", exclude={"items": {"__all__": {"repository": SECURITY_REPOSITORY_EXCLUDE}}}))
 
 
 def security_get_repository(params: RepositoryScopedInput) -> dict[str, Any]:
     """Inspect one security repository with finding and scan counts."""
     return _run("security", "security:read", "security_get_repository", params.model_dump(),
-                lambda db, user: security_routes.repository(params.repository_id, db, user))
+                lambda db, user: security_routes.repository(params.repository_id, db, user)
+                .model_dump(mode="json", exclude={"repository": SECURITY_REPOSITORY_EXCLUDE}))
 
 
 class RepositoryScansInput(RepositoryScopedInput):
@@ -582,7 +589,8 @@ def security_list_scans(params: RepositoryScansInput) -> dict[str, Any]:
 def security_get_scan(params: ScanScopedInput) -> dict[str, Any]:
     """Inspect a scan: state, stages, errors, usage, pinned commit, and bounded activity."""
     return _run("security", "security:read", "security_get_scan", params.model_dump(),
-                lambda db, user: security_routes.scan_detail(params.scan_id, db, user))
+                lambda db, user: security_routes.scan_detail(params.scan_id, db, user)
+                .model_dump(mode="json", exclude={"repository": SECURITY_REPOSITORY_EXCLUDE}))
 
 
 class ScanPageInput(ScanScopedInput):
@@ -673,7 +681,8 @@ def security_list_findings(params: SecurityFindingsInput) -> dict[str, Any]:
 def security_get_finding(params: FindingScopedInput) -> dict[str, Any]:
     """Discuss a finding: evidence, remediation, bounded observations and activity."""
     return _run("security", "security:read", "security_get_finding", params.model_dump(),
-                lambda db, user: security_routes.finding_detail(params.finding_id, db, user))
+                lambda db, user: security_routes.finding_detail(params.finding_id, db, user)
+                .model_dump(mode="json", exclude={"repository": SECURITY_REPOSITORY_EXCLUDE}))
 
 
 class FindingPageInput(FindingScopedInput):
@@ -1104,8 +1113,13 @@ def management_disconnect_connection(params: ConnectionRefInput) -> dict[str, An
 
 def management_list_connection_grants(params: ConnectionRef) -> dict[str, Any]:
     """List repository consents granted to a personal connection. Owner only."""
+    def callback(db, user):
+        grants = connection_routes.grants(params.connection_id, db, user)
+        visible_ids = {repository.id for repository in github.visible_repositories(db, user)}
+        return [grant for grant in grants if grant["repository_id"] in visible_ids]
+
     return _run("management", "connections:manage", "management_list_connection_grants", params.model_dump(),
-                lambda db, user: connection_routes.grants(params.connection_id, db, user))
+                callback)
 
 
 class GrantAccessInput(ConnectionRefInput):
@@ -1116,9 +1130,13 @@ class GrantAccessInput(ConnectionRefInput):
 def management_grant_repository_access(params: GrantAccessInput) -> dict[str, Any]:
     """Grant a personal connection repository consumption; needs approval. Owner only."""
     body = connection_routes.GrantInput(automatic=params.automatic)
+
+    def callback(db, user):
+        dependencies_api.repo_access(db, user, params.repository_id)
+        return connection_routes.grant(params.connection_id, params.repository_id, body, db, user)
+
     return _run("management", "connections:manage", "management_grant_repository_access", params.model_dump(),
-                lambda db, user: connection_routes.grant(params.connection_id, params.repository_id, body, db, user),
-                request_key=params.request_key, approval=True)
+                callback, request_key=params.request_key, approval=True)
 
 
 class RevokeAccessInput(ConnectionRefInput):
@@ -1127,14 +1145,17 @@ class RevokeAccessInput(ConnectionRefInput):
 
 def management_revoke_repository_access(params: RevokeAccessInput) -> dict[str, Any]:
     """Revoke a personal connection's repository consent and stop its work; needs approval. Owner only."""
+    def callback(db, user):
+        dependencies_api.repo_access(db, user, params.repository_id)
+        return connection_routes.revoke(params.connection_id, params.repository_id, db, user)
+
     return _run("management", "connections:manage", "management_revoke_repository_access", params.model_dump(),
-                lambda db, user: connection_routes.revoke(params.connection_id, params.repository_id, db, user),
-                request_key=params.request_key, approval=True)
+                callback, request_key=params.request_key, approval=True)
 
 
 REVIEW_TOOLS = [
     (reviews_list_repositories, "reviews_list_repositories", "reviews:read",
-     "List repositories visible to the MCP user with review and security summaries.", True),
+     "List repositories visible to the MCP user with review summaries.", True),
     (reviews_list_pull_requests, "reviews_list_pull_requests", "reviews:read",
      "Search the review inbox across visible repositories.", True),
     (reviews_list_repository_pulls, "reviews_list_repository_pulls", "reviews:read",
@@ -1290,50 +1311,24 @@ MANAGEMENT_TOOLS = [
 ]
 
 
-_TOOL_DOMAINS: dict[str, str] = {}
+TOOL_CATALOGS = {
+    "reviews": REVIEW_TOOLS,
+    "security": SECURITY_TOOLS,
+    "management": MANAGEMENT_TOOLS,
+    "code": [(fn, fn.__name__, "code:read", description, True) for fn, description in code_tools.TOOLS],
+}
+_TOOL_PERMISSIONS = {
+    name: (group, scope)
+    for group, catalog in TOOL_CATALOGS.items()
+    for _, name, scope, _, _ in catalog
+}
 
 
-def tool_domain(name: str) -> str | None:
-    """Return the domain a registered tool name belongs to, if known."""
-    return _TOOL_DOMAINS.get(name)
+def tool_group_and_scope(name: str) -> tuple[str, str] | None:
+    return _TOOL_PERMISSIONS.get(name)
 
 
-def _scoped(fn, domain: str):
-    """Bind a management handler to the endpoint it is registered on."""
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        token = _MOUNT.set(domain)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _MOUNT.reset(token)
-
-    return wrapper
-
-
-def register_tools(server: MCPServer, domain: str) -> None:
-    """Register the explicit tool catalog for ``domain`` plus management tools.
-
-    ``domain`` is ``"reviews"`` or ``"security"``; management tools are
-    reachable through either endpoint under their own scopes.
-    """
-    if domain == "code":
-        from code_mortis.mcp.code_tools import TOOLS
-
-        for fn, description in TOOLS:
-            _register(server, fn, fn.__name__, "code:read", description, read_only=True)
-            _TOOL_DOMAINS[fn.__name__] = domain
-        return
-    if domain == "reviews":
-        catalog = REVIEW_TOOLS
-    elif domain == "security":
-        catalog = SECURITY_TOOLS
-    else:
-        raise ValueError("Register the reviews or security tool catalog.")
-    for fn, name, scope, description, read_only in catalog:
-        _register(server, fn, name, scope, description, read_only=read_only)
-        _TOOL_DOMAINS[name] = domain
-    for fn, name, scope, description, read_only in MANAGEMENT_TOOLS:
-        _register(server, _scoped(fn, domain), name, scope, description, read_only=read_only)
-        _TOOL_DOMAINS.setdefault(name, "management")
+def register_tools(server: MCPServer) -> None:
+    for catalog in TOOL_CATALOGS.values():
+        for fn, name, scope, description, read_only in catalog:
+            _register(server, fn, name, scope, description, read_only=read_only)
