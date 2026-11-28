@@ -210,14 +210,22 @@ def cancel_run(run_id: str, db: DB, user: USER):
     run = db.get(ReviewRun, run_id)
     if not run:
         raise HTTPException(404, "Review run not found.")
-    pr_access(db, user, run.pr_id, write=True)
-    db.scalar(select(PullRequest).where(PullRequest.id == run.pr_id).with_for_update())
-    run = db.scalar(select(ReviewRun).where(ReviewRun.id == run_id).with_for_update()
-                    .execution_options(populate_existing=True))
+    pr, _, _ = pr_access(db, user, run.pr_id, write=True)
+    cancel_repository_run(db, run, pr.repository_id)
+    return RunOut.model_validate(run)
+
+
+def cancel_repository_run(db, run, repository_id):
+    """Cancel a run after the caller has checked write access to its repository."""
+    pr_id = db.scalar(select(PullRequest.id).where(
+        PullRequest.id == run.pr_id, PullRequest.repository_id == repository_id,
+    ).with_for_update())
+    if pr_id is None:
+        raise HTTPException(404, "Review run not found.")
+    db.refresh(run, with_for_update=True)
     if run.status not in {"queued", "running", "blocked"}:
         raise HTTPException(409, "This review is no longer running.")
     cancel_review(db, run)
-    return RunOut.model_validate(run)
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunOut, status_code=202)

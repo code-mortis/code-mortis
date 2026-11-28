@@ -17,6 +17,12 @@ Self-hosted GitHub pull request reviews and repository security scans powered by
 
 In **Settings → MCP access**, enable MCP and the tool groups your client needs. Copy the server URL (`https://your-host/mcp`) into a Streamable HTTP client and complete OAuth in the browser. Choose each group's permissions and repositories on the consent screen. Code tools require an enabled repository graph. Only administrators can grant instance management, which applies across the instance.
 
+Code Mortis supports Skills, Tasks, and stateless elicitation on MCP revision `2026-07-28`. The server publishes three read-only guides for explaining a PR review, prioritizing saved security findings, and tracing change impact between indexed commits. Discover them through MCP Skills or call `get_workflow_guide` to list the guides available to your grant. Pass a guide name to read it.
+
+Clients that support MCP Tasks can follow manual reviews, repository scans, and repository background drafts after reconnecting. Grant both read and run access for the relevant group. Other clients receive the saved run, scan, or job ID. Use that ID with `reviews_get_run`, `security_get_scan`, or `reviews_get_background_status`, respectively. Background generation requires an administrator.
+
+On clients supporting stateless elicitation, a scan can ask which shared connection to use, and a finding triage action can ask for a missing reason. An issue publication can open the existing Code Mortis approval page. You can also supply the fields directly and use the approval link returned by the tool.
+
 Upgrading from v0.1.2 or earlier turns MCP off, revokes the old grants, and cancels unfinished work authorized by those grants. If you need the results of pending MCP jobs, wait for them to finish before upgrading. Afterwards, re-enable MCP and the desired tool groups, then replace the old client entries with one connection to `/mcp` and authorize it.
 
 Each API process allows two concurrent MCP transport or OAuth setup requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). When busy it returns HTTP 429 with `Retry-After: 2`. Its separate database pool defaults to six connections (`CM_MCP_DB_POOL_SIZE`), zero overflow, and a one-second checkout timeout. Include this limit for each API process when sizing PostgreSQL alongside web and worker pools. Browser administration and OAuth endpoint discovery remain available during MCP overload.

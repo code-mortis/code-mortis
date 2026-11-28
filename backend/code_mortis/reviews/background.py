@@ -118,15 +118,21 @@ def cancel_request(db, repo, actor, generation_id):
         job = Job(id=request_job_id(repo, actor, generation_id), kind="generate_background", status="cancelled",
                   payload={"repository_id": repo.id, "actor_id": actor.id, "generation_id": str(generation_id)})
         db.add(job)
-    elif job.status in {"queued", "running"}:
+    else:
+        cancel_job(db, job)
+    db.flush()
+    return job
+
+
+def cancel_job(db, job):
+    """Cancel an already authorized, locked generation job."""
+    if job.status in {"queued", "running"}:
         if background_result_saved(job.payload):
             job.status = "done"
         else:
             cancel_tasks_in_transaction(db, job.id)
             job.status = "cancelled"
         job.error, job.lease_until, job.dispatched_at = None, None, None
-    db.flush()
-    return job
 
 
 def enqueue(db, repo, actor, connection, model, limits=None, *, mode=None, generation_id=None):

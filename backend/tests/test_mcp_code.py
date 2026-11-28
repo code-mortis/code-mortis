@@ -73,7 +73,9 @@ def test_transport_navigation_is_read_only_bounded_and_exact(indexed, client):
     with transaction() as db:
         jobs = db.scalar(select(func.count()).select_from(Job))
     catalog = rpc(client, token, method="tools/list", domain="code").json()["result"]["tools"]
-    assert len(catalog) == 7 and all(t["annotations"]["readOnlyHint"] for t in catalog)
+    assert all(t["annotations"]["readOnlyHint"] for t in catalog)
+    catalog = [t for t in catalog if t["name"] != "get_workflow_guide"]
+    assert len(catalog) == 7
     assert all(t["_meta"]["scope"] == "code:read" and t["name"].startswith("code_") for t in catalog)
     repos = result(call(client, token, "code_list_repositories"))
     assert [item["repository_id"] for item in repos["items"]] == [22]
@@ -121,7 +123,8 @@ def test_scopes_isolate_code_from_other_groups(indexed, client, domain):
     old = credentials(client, domain=domain)["access_token"]
     denied(call(client, old, "code_index_status", revision(indexed)))
     code = credentials(client, domain="code")["access_token"]
-    assert all(tool["name"].startswith("code_") for tool in rpc(client, code, method="tools/list").json()["result"]["tools"])
+    names = {tool["name"] for tool in rpc(client, code, method="tools/list").json()["result"]["tools"]}
+    assert all(name.startswith("code_") for name in names - {"get_workflow_guide"})
     denied(call(client, code, "reviews_list_repositories"))
     denied(call(client, code, "management_list_members"))
     # A bearer grant is not a browser/PAT credential, even alongside a valid browser cookie.

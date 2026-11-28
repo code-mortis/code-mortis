@@ -245,6 +245,8 @@ def repo_access(db: Session, user: User, repository_id: int, write=False):
     if not repo or not repo.active or not db.get(Installation, repo.installation_id).active:
         raise HTTPException(404, "Repository not found or its installation is inactive.")
     remote = github.authorize_repo(db, user, repo.full_name, write)
+    if getattr(user, "mcp_grant_id", None) and (type(remote.get("id")) is not int or remote["id"] != repo.id):
+        raise HTTPException(403, "GitHub repository identity changed.")
     return repo, remote
 
 

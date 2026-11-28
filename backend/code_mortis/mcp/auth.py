@@ -319,14 +319,14 @@ class McpTokenVerifier(TokenVerifier):
                 resource=resource_url(), claims={"iss": settings().public_url, "grant_id": grant.id})
 
 
-def tool_access(db, domain, scope, repository_id=None):
+def tool_access(db, domain, scope, repository_id=None, *, lock=False):
     token = get_access_token()
     if not token or scope not in token.scopes:
         raise HTTPException(403, "This MCP client was not granted the required permission.")
     record = db.get(McpToken, digest(token.token))
     if not record or record.expires_at <= now() or scope not in record.scopes:
         raise HTTPException(401, "The MCP access token expired. Refresh the authorization.")
-    return ensure_grant(db, record.grant_id, domain, scope, repository_id)
+    return ensure_grant(db, record.grant_id, domain, scope, repository_id, lock=lock)
 
 
 def public_result(value):
@@ -382,6 +382,7 @@ def validate_public_arguments(db, grant, group, arguments):
 
 def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, approval=False):
     from code_mortis.mcp.provenance import execution_context
+    from code_mortis.mcp.tasks import DOMAINS, creation_result, task_requested
 
     started, grant_id = time.monotonic(), None
     try:
@@ -394,6 +395,9 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
             if request_key or approval:
                 user, grant = ensure_grant(db, grant.id, domain, scope, lock=True)
             payload = {key: value for key, value in arguments.items() if key not in {"approval_id", "request_key"}}
+            as_task = name in DOMAINS and task_requested.get()
+            if as_task:
+                tool_access(db, domain, domain + ":read")
             fingerprint = digest(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
             operation = None
             if request_key:
@@ -404,10 +408,12 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
                 if operation:
                     if operation.arguments_hash != fingerprint:
                         raise HTTPException(409, "This request key was already used with different arguments.")
+                    if name == "reviews_generate_background" and user.role != "admin":
+                        raise HTTPException(403, "Administrator access is required.")
                     check_cached_repository_access(db, user, domain, payload)
                     db.add(McpAudit(grant_id=grant.id, tool=name, outcome="replayed",
                         duration_ms=int((time.monotonic() - started) * 1000)))
-                    return operation.result
+                    return creation_result(db, operation, payload, grant) if as_task else operation.result
             if approval:
                 validate_public_arguments(db, grant, domain, payload)
                 approval_id = arguments.get("approval_id")
@@ -440,8 +446,12 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
             if len(serialized.encode("utf-8")) > 262144:
                 raise HTTPException(413, "The result is too large. Use pagination, narrower filters or a detail tool.")
             if request_key:
-                db.add(McpOperation(grant_id=grant.id, tool=name, request_key=request_key,
-                    arguments_hash=fingerprint, result=result))
+                operation = McpOperation(grant_id=grant.id, tool=name, request_key=request_key,
+                    arguments_hash=fingerprint, result=result)
+                db.add(operation)
+                if as_task:
+                    db.flush()
+                    result = creation_result(db, operation, payload, grant)
             db.add(McpAudit(grant_id=grant.id, tool=name, outcome="succeeded",
                 duration_ms=int((time.monotonic() - started) * 1000)))
             return result
