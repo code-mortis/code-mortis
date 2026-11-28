@@ -185,7 +185,7 @@ def test_incremental_review_uses_only_compatible_saved_coverage(scenario, monkey
     baseline = scenario["head"]
     with monkeypatch.context() as baseline_env:
         if case == "engine_upgraded":
-            baseline_env.setattr(comparison, "engine_version", "0.1.7")
+            baseline_env.setattr(comparison, "engine_version", "0.1.8")
         assert (first := review(scenario))[0] == "completed"
     save_analysis("mortis-run", "mortis-job:1", *first)
 

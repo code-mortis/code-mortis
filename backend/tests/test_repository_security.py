@@ -245,6 +245,13 @@ def test_unmapped_directory_failure_is_explicitly_incomplete(tmp_path):
     assert result["findings"] == []
 
 
+def test_cancelled_empty_npm_inventory_check_stops_the_app_scan(tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: True)
+    item.inventory = {path: {"hash": digest("{}")} for path in ("package.json", "package-lock.json")}
+    with pytest.raises(security_engine.ReviewStopped):
+        security_engine.normalize_trivy(item, {"Results": []})
+
+
 def test_other_resource_pass_cannot_resolve_infrastructure_finding(monkeypatch):
     item = SimpleNamespace(sha=SHA, git=None, env={}, stopped=lambda: False, renamed=lambda sha, path: path,
         diff=lambda sha, **kwargs: "changed", read=lambda path, sha=None: "unsafe" if sha else "unsafe\nunrelated change")
@@ -1107,6 +1114,60 @@ def test_resolution_requires_complete_current_evidence(seed, security_github, co
         assert scan.report["commit"] == SHA
 
 
+def test_scan_verifies_dependency_removal_with_empty_npm_inventory(seed, security_github, monkeypatch, tmp_path):
+    item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
+    for path, contents in {"package.json": "{}", "package-lock.json": '{"lockfileVersion":3,"packages":{"":{}}}'}.items():
+        (item.files / path).write_text(contents)
+        item.inventory[path] = {"code": False, "hash": digest(contents), "lines": 1}
+    item.read = lambda path, sha=None: "old lockfile" if sha else (item.files / path).read_text()
+    item.renamed = lambda sha, path: path
+    item.diff = lambda sha: "removed dependency"
+    result = security_engine.normalize_trivy(item, {"Results": []})
+    assert result["targets"] == {}
+    result["metadata"] = {"database_fresh": True, "scanners": ["vuln"]}
+    monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: result)
+    with transaction() as db:
+        prior = saved_scan(db, seed, status="completed")
+        finding = saved_finding(db, seed, prior, kind="dependency", path="package-lock.json",
+                                package="example", installed_version="1.0.0", fixed_version="1.1.0").id
+        identity = security.create_scan(db, seed["repo"], seed["user"], SecurityScanInput(
+            connection_id="connection", request_key=uid())).id
+    perform_security(identity, "test:1")
+    with transaction() as db:
+        scan = db.get(SecurityScan, identity)
+        assert scan.status == "completed", scan.error
+        assert scan.grade == "A"
+        assert db.get(SecurityFinding, finding).state == "resolved"
+
+
+@pytest.mark.parametrize(("local_version", "other_target", "other_type", "other_version", "expected"), [
+    (None, "nested/yarn.lock", "yarn", "1.0.0", "uncertain"),
+    (None, "nested/yarn.lock", "yarn", "1.5.0", "uncertain"),
+    (None, "nested/yarn.lock", "yarn", "2.0.0", "fixed"),
+    (None, "nested/uv.lock", "uv", "1.0.0", "fixed"),
+    ("2.0.0", "nested/yarn.lock", "yarn", "1.0.0", "fixed"),
+])
+def test_retained_lockfile_does_not_hide_a_moved_dependency(local_version, other_target, other_type, other_version, expected):
+    path = "package-lock.json"
+    item = SimpleNamespace(
+        sha=SHA, inventory={path: {}, other_target: {}}, renamed=lambda sha, path: path,
+        read=lambda path, sha: "original lockfile", current_source=lambda path: "updated lockfile",
+        diff=lambda sha: "changed",
+    )
+    # Older saved findings can omit package_type. Infer npm from the lockfile name.
+    old = {"path": path, "evidence": {"kind": "dependency", "source_sha": OLD, "package": "example",
+                                    "installed_version": "1.0.0", "fixed_version": "2.0.0"}}
+    result = {"metadata": {"database_fresh": True}, "dependency_targets": {
+        path: {"npm": [{"name": "example", "version": local_version}] if local_version else []},
+        other_target: {other_type: [{"name": "example", "version": other_version}]},
+    }}
+    verdict = security.deterministic_fix(item, old, result)
+    assert verdict["verdict"] == expected
+    if expected == "uncertain":
+        assert "may have moved" in verdict["explanation"]
+
+
 @pytest.mark.parametrize("advisory_available", [False, True])
 def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(seed, security_github, monkeypatch, tmp_path, advisory_available):
     item = security_engine.Snapshot(tmp_path, SHA, {}, lambda: False)
@@ -1118,7 +1179,7 @@ def test_uncertain_dependency_does_not_block_forty_independently_verified_fixes(
     packages.append({"name": "http-cache-semantics", "version": "4.3.0"})
     monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "bun.lock")
     monkeypatch.setattr(security_engine, "snapshot", lambda *args: nullcontext(item))
-    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "problems": [], "metadata": {},
+    monkeypatch.setattr(security_engine, "trivy", lambda *args, **kwargs: {"findings": [], "problems": [], "metadata": {"database_fresh": True},
         "targets": {"bun.lock": {"packages": packages}}})
     monkeypatch.setattr(security_engine, "ask", lambda *args: pytest.fail("Dependency verification must not dispatch inference"))
     request = github.request
@@ -1380,10 +1441,9 @@ def test_security_fix_verification_refills_and_keeps_resolution_guards(
                     assert scan.progress["tokens"] == 9
 
 
-def test_missing_later_observation_is_not_a_fix(seed, security_github, monkeypatch):
-    monkeypatch.setattr(security.git_source, "git", lambda *args, **kwargs: "regular file")
-    item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha=None: "unsafe", diff=lambda sha, **kwargs: "",
-                           git=None, env={}, sha=SHA, stopped=lambda: False)
+def test_missing_later_observation_is_not_a_fix():
+    item = SimpleNamespace(renamed=lambda sha, path: path, read=lambda path, sha: "unsafe",
+                           current_source=lambda path: "unsafe", diff=lambda sha: "")
     old = {"evidence": {"kind": "dependency", "source_sha": OLD}, "path": "requirements.txt"}
     assert security.deterministic_fix(item, old, {"targets": {}})["verdict"] == "uncertain"
 
@@ -1691,6 +1751,9 @@ def test_snapshot_never_follows_symlinks_or_executes_hooks(tmp_path):
     assert list(item.inventory) == ["app.py"]
     assert not (item.files / "escape").exists() and not (tmp_path / "executed").exists()
     assert item.excluded[0]["reason"] == "Symlink or submodule is not followed"
+    assert item.current_source("missing.py") is None
+    with pytest.raises(ValueError, match="outside the security snapshot"):
+        item.current_source("escape")
 
 
 def test_snapshot_analyzes_astro_without_loading_protected_generated_or_documentation_files(tmp_path, monkeypatch):

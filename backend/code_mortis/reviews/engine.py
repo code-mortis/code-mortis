@@ -93,8 +93,8 @@ _diff_lines = source_lines.use(None)(native._diff_lines)
 @source_lines.use(None)
 def validate_result(data, batch, sources, credentials, stopped=lambda: False):
     value = BatchResult.model_validate(data, strict=True)
-    # Engine 0.1.8 masks bare tokens incompletely when returning validated findings.
-    # Sanitize free text first, leaving identity, bounds and evidence for exact validation.
+    # Match historical credentials before native token masking can split them.
+    # Leave identity, bounds and evidence for exact validation.
     for finding in value.findings:
         for field in ("content", "suggestion_code", "trigger", "consequence", "category"):
             text = getattr(finding, field)
