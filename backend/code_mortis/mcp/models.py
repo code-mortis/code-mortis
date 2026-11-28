@@ -1,5 +1,6 @@
 """Persistent OAuth grants and durable MCP command records."""
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -24,7 +25,19 @@ class McpClient(Base):
         return None
 
     def check_redirect_uri(self, redirect_uri):
-        return redirect_uri in self.redirect_uris
+        if redirect_uri in self.redirect_uris:
+            return True
+        if not self.metadata_managed:
+            return False
+        # Native client metadata can register a portless HTTP loopback callback
+        # and choose its listening port at sign-in. Compare every other byte exactly.
+        match = re.fullmatch(
+            r"(http://(?:localhost|127\.0\.0\.1|\[::1\])):([0-9]{1,5})([/?].*)?", redirect_uri or ""
+        )
+        if not match:
+            return False
+        origin, port, suffix = match.groups(default="")
+        return 0 < int(port) <= 65535 and origin + suffix in self.redirect_uris
 
     def check_client_secret(self, client_secret):
         return False

@@ -19,7 +19,7 @@ In **Settings → MCP access**, enable MCP and the tool groups your client needs
 
 Upgrading from v0.1.2 or earlier turns MCP off, revokes the old grants, and cancels unfinished work authorized by those grants. If you need the results of pending MCP jobs, wait for them to finish before upgrading. Afterwards, re-enable MCP and the desired tool groups, then replace the old client entries with one connection to `/mcp` and authorize it.
 
-Each API process allows two concurrent MCP transport or OAuth setup requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). When busy it returns HTTP 429 with `Retry-After: 2`. Its separate database pool defaults to six connections (`CM_MCP_DB_POOL_SIZE`), zero overflow, and a one-second checkout timeout. Include this limit for each API process when sizing PostgreSQL alongside web and worker pools. Browser administration remains available during MCP overload.
+Each API process allows two concurrent MCP transport or OAuth setup requests (`CM_MCP_MAX_CONCURRENT_REQUESTS`). When busy it returns HTTP 429 with `Retry-After: 2`. Its separate database pool defaults to six connections (`CM_MCP_DB_POOL_SIZE`), zero overflow, and a one-second checkout timeout. Include this limit for each API process when sizing PostgreSQL alongside web and worker pools. Browser administration and OAuth endpoint discovery remain available during MCP overload.
 
 ## Develop locally
 
