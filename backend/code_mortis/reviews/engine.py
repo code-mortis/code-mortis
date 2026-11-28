@@ -92,8 +92,16 @@ _diff_lines = source_lines.use(None)(native._diff_lines)
 
 @source_lines.use(None)
 def validate_result(data, batch, sources, credentials, stopped=lambda: False):
+    value = BatchResult.model_validate(data, strict=True)
+    # Engine 0.1.8 masks bare tokens incompletely when returning validated findings.
+    # Sanitize free text first, leaving identity, bounds and evidence for exact validation.
+    for finding in value.findings:
+        for field in ("content", "suggestion_code", "trigger", "consequence", "category"):
+            text = getattr(finding, field)
+            if "ghs_" in text:
+                setattr(finding, field, context.sanitize(text, credentials, stopped))
     safe_credentials = {key: value for key, value in credentials.items() if key != "redaction_rules"}
-    result = native.validate_result(data, batch, sources, safe_credentials, lambda: engine_stopped(stopped))
+    result = native.validate_result(value, batch, sources, safe_credentials, lambda: engine_stopped(stopped))
     return context.sanitize(result, credentials, stopped)
 
 
