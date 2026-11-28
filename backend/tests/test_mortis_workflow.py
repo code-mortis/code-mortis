@@ -264,7 +264,7 @@ def test_full_mortis_workflow_retains_history_reports_and_authorized_readers(wor
 
     # The OAuth transport reads the actual saved result under an independent Reviews grant.
     with transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True, "security_enabled": False,
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "reviews_enabled": True, "security_enabled": False,
             "management_enabled": False, "allowed_client_domains": []}
         db.add(McpClient(client_id="test-cli", client_name="Test CLI", redirect_uris=[CALLBACK]))
     token = credentials(client)["access_token"]

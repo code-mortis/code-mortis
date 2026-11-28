@@ -1819,7 +1819,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/.well-known/oauth-protected-resource/mcp/{domain}": {
+    "/.well-known/oauth-protected-resource/mcp": {
         parameters: {
             query?: never;
             header?: never;
@@ -1827,7 +1827,7 @@ export interface paths {
             cookie?: never;
         };
         /** Resource Metadata */
-        get: operations["resource_metadata__well_known_oauth_protected_resource_mcp__domain__get"];
+        get: operations["resource_metadata__well_known_oauth_protected_resource_mcp_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3843,12 +3843,77 @@ export interface components {
         McpConsentInput: {
             /** Request Id */
             request_id: string;
-            /** Repository Ids */
-            repository_ids?: number[];
+            /** Repository Ids By Group */
+            repository_ids_by_group?: {
+                [key: string]: number[];
+            };
             /** Scopes */
             scopes?: string[];
             /** Approve */
             approve: boolean;
+        };
+        /** McpConsentPreview */
+        McpConsentPreview: {
+            /** Request Id */
+            request_id: string;
+            /** Client Id */
+            client_id: string;
+            /** Client Name */
+            client_name: string;
+            /** Redirect Uri */
+            redirect_uri: string;
+            /**
+             * Domain
+             * @constant
+             */
+            domain: "unified";
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Scopes */
+            scopes: components["schemas"]["McpScopeOption"][];
+            /** Repositories By Group */
+            repositories_by_group: {
+                [key: string]: components["schemas"]["McpRepositoryOption"][];
+            };
+        };
+        /** McpGrantSummary */
+        McpGrantSummary: {
+            /** Id */
+            id: string;
+            /** Client Id */
+            client_id: string;
+            /** Client Name */
+            client_name: string;
+            /**
+             * Domain
+             * @enum {string}
+             */
+            domain: "reviews" | "security" | "code" | "unified";
+            /** Scopes */
+            scopes: string[];
+            /** Repository Ids */
+            repository_ids: number[];
+            /** Repository Ids By Group */
+            repository_ids_by_group: {
+                [key: string]: number[];
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Revoked At */
+            revoked_at: string | null;
         };
         /** McpRegistrationInput */
         McpRegistrationInput: {
@@ -3874,8 +3939,34 @@ export interface components {
              */
             scope: string;
         };
+        /** McpRepositoryOption */
+        McpRepositoryOption: {
+            /** Id */
+            id: number;
+            /** Full Name */
+            full_name: string;
+        };
+        /** McpScopeOption */
+        McpScopeOption: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "reviews" | "security" | "code" | "management";
+        };
         /** McpSettingsInput */
         McpSettingsInput: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
             /**
              * Reviews Enabled
              * @default false
@@ -3898,6 +3989,40 @@ export interface components {
             management_enabled: boolean;
             /** Allowed Client Domains */
             allowed_client_domains?: string[];
+        };
+        /** McpSettingsView */
+        McpSettingsView: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Reviews Enabled
+             * @default false
+             */
+            reviews_enabled: boolean;
+            /**
+             * Security Enabled
+             * @default false
+             */
+            security_enabled: boolean;
+            /**
+             * Code Enabled
+             * @default false
+             */
+            code_enabled: boolean;
+            /**
+             * Management Enabled
+             * @default false
+             */
+            management_enabled: boolean;
+            /** Allowed Client Domains */
+            allowed_client_domains?: string[];
+            /** Public Url */
+            public_url: string;
+            /** Can Manage */
+            can_manage: boolean;
         };
         /** MemberInput */
         MemberInput: {
@@ -9387,13 +9512,11 @@ export interface operations {
             };
         };
     };
-    resource_metadata__well_known_oauth_protected_resource_mcp__domain__get: {
+    resource_metadata__well_known_oauth_protected_resource_mcp_get: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                domain: "reviews" | "security" | "code";
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -9405,15 +9528,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -9488,7 +9602,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["McpConsentPreview"];
                 };
             };
             /** @description Validation Error */
@@ -9590,7 +9704,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["McpSettingsView"];
                 };
             };
         };
@@ -9614,7 +9728,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["McpSettingsView"];
                 };
             };
             /** @description Validation Error */
@@ -9727,7 +9841,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["McpGrantSummary"][];
                 };
             };
         };

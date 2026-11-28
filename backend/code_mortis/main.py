@@ -126,7 +126,7 @@ async def security_headers(request: Request, call_next):
             "Content-Security-Policy": f"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; {connect_src}; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://github.com",
         }
     )
-    if request.url.path.startswith(("/api/", "/mcp/", "/oauth/", "/.well-known/")):
+    if request.url.path == "/mcp" or request.url.path.startswith(("/api/", "/mcp/", "/oauth/", "/.well-known/")):
         response.headers["Cache-Control"] = "no-store"
     if settings().public_url.startswith("https://"):
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
