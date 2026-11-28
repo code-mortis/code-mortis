@@ -338,8 +338,8 @@ def mcp_grant(seed):
         db.add(McpClient(client_id="test-client", client_name="Test",
                          redirect_uris=["https://example.com/cb"]))
         db.flush()
-        grant = McpGrant(user_id=seed["user"].id, client_id="test-client", domain="reviews",
-                         scopes=["reviews:read", "reviews:run"], repository_ids=[seed["repo"].id],
+        grant = McpGrant(user_id=seed["user"].id, client_id="test-client", domain="unified",
+                         scopes=["reviews:read", "reviews:run"], repository_ids_by_group={"reviews": [seed["repo"].id]},
                          expires_at=now() + timedelta(days=1))
         db.add(grant)
         db.flush()
@@ -550,7 +550,7 @@ def test_sync_pr_mcp_dispatch_preserves_origin_and_options(seed, mcp_grant, monk
     monkeypatch.setattr(github, "request", lambda *a, **kw: remote())
     monkeypatch.setattr(github, "threads", lambda *a: [])
     with mcp_provenance.scoped(mcp_grant), transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "reviews_enabled": True}
         job_id = reviews.enqueue(db, "sync_pr", {"repository_id": seed["repo"].id, "number": seed["pr"].number,
                                                  "automatic": automatic, "sender_type": sender_type}).id
     jobs.execute_job(job_id)
@@ -571,8 +571,8 @@ def test_reconciliation_dedup_matches_complete_origins(seed, pat_setup, mcp_gran
 
     payload = {"repository_id": seed["repo"].id, "number": 9, "automatic": True}
     with transaction() as db:
-        grant_b = McpGrant(user_id=seed["user"].id, client_id="test-client", domain="reviews",
-                           scopes=["reviews:read", "reviews:run"], repository_ids=[seed["repo"].id],
+        grant_b = McpGrant(user_id=seed["user"].id, client_id="test-client", domain="unified",
+                           scopes=["reviews:read", "reviews:run"], repository_ids_by_group={"reviews": [seed["repo"].id]},
                            expires_at=now() + timedelta(days=1))
         db.add(grant_b)
         db.flush()
@@ -816,7 +816,7 @@ def test_review_pre_dispatch_cleans_both_revoked_origins(seed, github_stub, pat_
     })
     monkeypatch.setattr(mortis, "review", lambda *a, **k: pytest.fail("revoked origins must not execute"))
     with transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True}
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "reviews_enabled": True}
         run = reviews.create_run(db, db.get(PullRequest, seed["pr"].id),
                                  db.get(Repository, seed["repo"].id), "manual", seed["user"])
         run.progress = {**run.progress, "pat": pat_setup["record"], "mcp": mcp_grant}

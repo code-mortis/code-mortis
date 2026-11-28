@@ -88,7 +88,7 @@ def lookup(db, user, request):
 
     def safe_source(text):
         # Check the whole blob before slicing so pagination cannot expose pieces of a credential.
-        if auth.redact_tool_text(db, text, grant) != text.replace("\r\n", "\n") or any(
+        if auth.redact_tool_text(db, text, grant, "code") != text.replace("\r\n", "\n") or any(
             value and unseal(value) in text for value in (user.access_token, user.refresh_token)
         ):
             raise HTTPException(422, "This source contains credential material and was withheld.")
@@ -103,7 +103,7 @@ def code_list_repositories() -> dict[str, Any]:
     def read(db, user):
         _, grant = auth.tool_access(db, "code", "code:read")
         selected = set(db.scalars(select(CodeGraphRepository.repository_id).where(
-            CodeGraphRepository.repository_id.in_(grant.repository_ids), CodeGraphRepository.enabled.is_(True),
+            CodeGraphRepository.repository_id.in_(auth.grant_repository_ids(grant, "code")), CodeGraphRepository.enabled.is_(True),
         )))
         items = []
         for identity in sorted(selected):

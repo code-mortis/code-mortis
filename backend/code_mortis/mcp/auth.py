@@ -1,9 +1,10 @@
-"""OAuth authorization and per-command authorization for independent MCP resources."""
+"""OAuth and per-command authorization for the Code Mortis MCP resource."""
 
 import hmac
 import http.client
 import ipaddress
 import json
+import logging
 import re
 import secrets
 import socket
@@ -25,7 +26,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from pydantic import Field, field_validator
 from redis import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from starlette.concurrency import run_in_threadpool
 
 from code_mortis.api.dependencies import ADMIN, DB, USER, current_user
@@ -56,6 +57,9 @@ from code_mortis.models import (
 from code_mortis.schemas.common import StrictModel
 
 router = APIRouter(tags=["MCP"])
+logger = logging.getLogger(__name__)
+UNIFIED = "unified"
+McpGroup = Literal["reviews", "security", "code", "management"]
 DOMAIN_SCOPES = {
     "code": {
         "code:read": ("Read code", "Read indexed definitions, file dependencies and source at exact commits in selected repositories. No indexing, model runs or writes."),
@@ -77,11 +81,15 @@ MANAGEMENT_SCOPES = {
     "instance:manage": ("Manage this instance", "Manage members and GitHub installations with administrator access."),
     "connections:manage": ("Manage AI connections", "Manage permitted connections and your personal connection consent."),
 }
-DEFAULT_SETTINGS = {"reviews_enabled": False, "security_enabled": False, "code_enabled": False, "management_enabled": False,
+GROUP_SCOPES = {**DOMAIN_SCOPES, "management": MANAGEMENT_SCOPES}
+SCOPE_GROUP = {scope: group for group, scopes in GROUP_SCOPES.items() for scope in scopes}
+ADMIN_SCOPES = {"reviews:manage", "instance:manage"}
+DEFAULT_SETTINGS = {"enabled": False, "reviews_enabled": False, "security_enabled": False, "code_enabled": False, "management_enabled": False,
                     "allowed_client_domains": []}
 
 
 class McpSettingsInput(StrictModel):
+    enabled: bool = False
     reviews_enabled: bool = False
     security_enabled: bool = False
     code_enabled: bool = False
@@ -143,22 +151,88 @@ class McpRegistrationInput(StrictModel):
 
 class McpConsentInput(StrictModel):
     request_id: str = Field(min_length=1, max_length=36)
-    repository_ids: list[int] = Field(default_factory=list, max_length=100)
-    scopes: list[str] = Field(default_factory=list, max_length=10)
+    repository_ids_by_group: dict[McpGroup, list[int]] = Field(default_factory=dict)
+    scopes: list[str] = Field(default_factory=list, max_length=len(SCOPE_GROUP))
     approve: bool
+
+    @field_validator("repository_ids_by_group")
+    @classmethod
+    def limit_repositories(cls, values):
+        if any(len(ids) > 100 for ids in values.values()):
+            raise ValueError("Select at most 100 repositories per tool group.")
+        return values
+
+
+class McpScopeOption(StrictModel):
+    name: str
+    label: str
+    description: str
+    group: McpGroup
+
+
+class McpRepositoryOption(StrictModel):
+    id: int
+    full_name: str
+
+
+class McpConsentPreview(StrictModel):
+    request_id: str
+    client_id: str
+    client_name: str
+    redirect_uri: str
+    domain: Literal["unified"]
+    expires_at: datetime
+    scopes: list[McpScopeOption]
+    repositories_by_group: dict[McpGroup, list[McpRepositoryOption]]
+
+
+class McpGrantSummary(StrictModel):
+    id: str
+    client_id: str
+    client_name: str
+    domain: Literal["reviews", "security", "code", "unified"]
+    scopes: list[str]
+    repository_ids: list[int]
+    repository_ids_by_group: dict[McpGroup, list[int]]
+    created_at: datetime
+    expires_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class McpSettingsView(McpSettingsInput):
+    public_url: str
+    can_manage: bool
 
 
 class McpApprovalInput(StrictModel):
     approve: bool
 
 
-def resource_url(domain):
-    return settings().public_url + "/mcp/" + domain
+def resource_url():
+    return settings().public_url + "/mcp"
 
 
 def mcp_settings(db):
     config = db.get(AppConfig, 1)
     return {**DEFAULT_SETTINGS, **(config.mcp_settings if config else {})}
+
+
+def enabled_groups(config):
+    return {group for group in GROUP_SCOPES if config["enabled"] and config[group + "_enabled"]}
+
+
+def scoped_permissions(groups, role=None):
+    return {
+        scope: labels
+        for group in GROUP_SCOPES if group in groups
+        for scope, labels in GROUP_SCOPES[group].items()
+        if role in (None, "admin") or scope not in ADMIN_SCOPES
+    }
+
+
+def grant_repository_ids(grant, group):
+    return (grant.repository_ids_by_group or {}).get(group, [])
 
 
 def rate_limit(category, identity, limit=120):
@@ -181,36 +255,39 @@ def revoke_grant(db, grant):
         revoke_work(db, grant.id)
 
 
-def ensure_grant(db, grant_id, domain=None, scope=None, repository_id=None, lock=False):
+def load_grant(db, grant_id, *, lock=False):
     query = select(McpGrant).where(McpGrant.id == grant_id).execution_options(populate_existing=True)
     grant = db.scalar(query.with_for_update() if lock else query)
-    if not grant or grant.revoked_at or grant.expires_at <= now():
+    if not grant or grant.domain != UNIFIED or grant.revoked_at or grant.expires_at <= now():
         raise HTTPException(401, "This MCP authorization expired or was revoked. Connect again.")
-    config = mcp_settings(db)
-    if (domain and domain != grant.domain) or not config.get(grant.domain + "_enabled"):
-        raise HTTPException(403, "MCP access is disabled for this domain.")
     user = db.get(User, grant.user_id)
     membership = db.get(Membership, grant.user_id)
     if not user or not user.enabled or not membership:
         raise HTTPException(403, "This account no longer has access to Code Mortis.")
     user.role = membership.role
-    if scope and scope not in grant.scopes:
+    groups = enabled_groups(mcp_settings(db))
+    scopes = set(grant.scopes) & set(scoped_permissions(groups, user.role))
+    if not scopes:
+        raise HTTPException(403, "This MCP authorization has no enabled permissions.")
+    return user, grant, scopes
+
+
+def ensure_grant(db, grant_id, domain=None, scope=None, repository_id=None, lock=False):
+    user, grant, scopes = load_grant(db, grant_id, lock=lock)
+    if scope and (scope not in scopes or (domain is not None and SCOPE_GROUP[scope] != domain)):
         raise HTTPException(403, "This MCP client was not granted the required permission.")
-    if scope in MANAGEMENT_SCOPES and not config["management_enabled"]:
-        raise HTTPException(403, "Management through MCP is disabled.")
-    if scope in {"reviews:manage", "instance:manage"} and user.role != "admin":
-        raise HTTPException(403, "Administrator access is required.")
-    if repository_id is not None and repository_id not in grant.repository_ids:
+    group = domain or (SCOPE_GROUP[scope] if scope else None)
+    if group and not any(SCOPE_GROUP[permitted] == group for permitted in scopes):
+        raise HTTPException(403, "MCP access is disabled for this tool group.")
+    selected = grant_repository_ids(grant, group)
+    if repository_id is not None and repository_id not in selected:
         raise HTTPException(403, "This repository was not selected for this MCP client.")
-    user.mcp_repository_ids = frozenset(grant.repository_ids)
+    user.mcp_repository_ids = frozenset(selected)
     user.mcp_grant_id = grant.id
     return user, grant
 
 
 class McpTokenVerifier(TokenVerifier):
-    def __init__(self, domain):
-        self.domain = domain
-
     async def verify_token(self, token):
         if len(token) > 200:
             return None
@@ -222,13 +299,24 @@ class McpTokenVerifier(TokenVerifier):
             if not record or record.expires_at <= now():
                 return None
             try:
-                user, grant = ensure_grant(db, record.grant_id, self.domain)
+                user, grant, allowed = load_grant(db, record.grant_id)
             except HTTPException:
                 return None
-            grant.last_used_at = now()
+            scopes = sorted(set(record.scopes) & allowed)
+            if not scopes:
+                return None
+            timestamp = now()
+            cutoff = timestamp - timedelta(minutes=1)
+            if not grant.last_used_at or grant.last_used_at <= cutoff:
+                # Discovery can skip the timestamp when a command already holds the grant lock.
+                unlocked = db.scalar(select(McpGrant).where(McpGrant.id == grant.id)
+                    .execution_options(populate_existing=True).with_for_update(skip_locked=True))
+                if unlocked and (not unlocked.last_used_at or unlocked.last_used_at <= cutoff):
+                    unlocked.last_used_at = timestamp
+            logger.info("MCP authenticated client_fingerprint=%s grant_id=%s", digest(grant.client_id), grant.id)
             return AccessToken(token=token, client_id=grant.client_id, subject=str(user.id),
-                scopes=list(set(record.scopes) & set(grant.scopes)), expires_at=int(record.expires_at.timestamp()),
-                resource=resource_url(grant.domain), claims={"iss": settings().public_url, "grant_id": grant.id})
+                scopes=scopes, expires_at=int(record.expires_at.timestamp()),
+                resource=resource_url(), claims={"iss": settings().public_url, "grant_id": grant.id})
 
 
 def tool_access(db, domain, scope, repository_id=None):
@@ -257,7 +345,7 @@ def public_result(value):
     raise ValueError("MCP results must use the public response schemas.")
 
 
-def check_cached_repository_access(db, user, grant, arguments):
+def check_cached_repository_access(db, user, group, arguments):
     from code_mortis.api.dependencies import repo_access
 
     repository_id = arguments.get("repository_id")
@@ -271,9 +359,9 @@ def check_cached_repository_access(db, user, grant, arguments):
         elif arguments.get("scan_id"):
             target = db.get(SecurityScan, arguments["scan_id"])
         elif arguments.get("finding_id"):
-            finding = db.get(SecurityFinding if grant.domain == "security" else Finding, arguments["finding_id"])
+            finding = db.get(SecurityFinding if group == "security" else Finding, arguments["finding_id"])
             if finding:
-                target = finding if grant.domain == "security" else db.get(PullRequest, finding.pr_id)
+                target = finding if group == "security" else db.get(PullRequest, finding.pr_id)
         if target is not None:
             repository_id = target.repository_id
         elif any(arguments.get(key) for key in ("pr_id", "run_id", "scan_id", "finding_id")):
@@ -282,13 +370,13 @@ def check_cached_repository_access(db, user, grant, arguments):
         repo_access(db, user, repository_id)
 
 
-def redact_tool_text(db, text, grant=None):
-    return redact_saved_credentials(db, text, grant.repository_ids if grant else None)
+def redact_tool_text(db, text, grant=None, group=None):
+    return redact_saved_credentials(db, text, grant_repository_ids(grant, group) if grant else None)
 
 
-def validate_public_arguments(db, grant, arguments):
+def validate_public_arguments(db, grant, group, arguments):
     text = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
-    if redact_tool_text(db, text, grant) != text:
+    if redact_tool_text(db, text, grant, group) != text:
         raise HTTPException(422, "Remove credential material from the tool arguments before continuing.")
 
 
@@ -316,12 +404,12 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
                 if operation:
                     if operation.arguments_hash != fingerprint:
                         raise HTTPException(409, "This request key was already used with different arguments.")
-                    check_cached_repository_access(db, user, grant, payload)
+                    check_cached_repository_access(db, user, domain, payload)
                     db.add(McpAudit(grant_id=grant.id, tool=name, outcome="replayed",
                         duration_ms=int((time.monotonic() - started) * 1000)))
                     return operation.result
             if approval:
-                validate_public_arguments(db, grant, payload)
+                validate_public_arguments(db, grant, domain, payload)
                 approval_id = arguments.get("approval_id")
                 decision = db.scalar(select(McpApproval).where(McpApproval.id == approval_id,
                     McpApproval.grant_id == grant.id).with_for_update()) if approval_id else None
@@ -347,7 +435,7 @@ def invoke_tool(domain, scope, name, arguments, callback, *, request_key=None, a
             if not isinstance(result, dict):
                 result = {"items": result} if isinstance(result, list) else {"result": result}
             serialized = json.dumps(result, ensure_ascii=False)
-            if redact_tool_text(db, serialized, grant) != serialized:
+            if redact_tool_text(db, serialized, grant, domain) != serialized:
                 raise HTTPException(422, "This result contains credential material. Inspect its redacted details in Code Mortis.")
             if len(serialized.encode("utf-8")) > 262144:
                 raise HTTPException(413, "The result is too large. Use pagination, narrower filters or a detail tool.")
@@ -467,10 +555,12 @@ class CodeGrant(grants.AuthorizationCodeGrant):
             if row.grant_id:
                 revoke_grant(self.server.db, self.server.db.get(McpGrant, row.grant_id))
             return None
-        if row.expires_at <= now() or self.request.form.get("resource") != resource_url(row.domain):
+        if row.domain != UNIFIED or row.expires_at <= now() or self.request.form.get("resource") != resource_url():
             return None
         try:
-            _, self.server.active_grant = ensure_grant(self.server.db, row.grant_id, row.domain, lock=True)
+            _, self.server.active_grant, available = load_grant(self.server.db, row.grant_id, lock=True)
+            if not set(row.scopes) <= available:
+                return None
         except HTTPException:
             return None
         return row
@@ -483,14 +573,15 @@ class CodeGrant(grants.AuthorizationCodeGrant):
 
 
 class RefreshCredential:
-    def __init__(self, token, grant):
+    def __init__(self, token, grant, scopes):
         self.token, self.grant = token, grant
+        self.scopes = scopes
 
     def check_client(self, client):
         return self.grant.client_id == client.client_id
 
     def get_scope(self):
-        return " ".join(self.token.scopes)
+        return " ".join(self.scopes)
 
 
 class RefreshGrant(grants.RefreshTokenGrant):
@@ -501,18 +592,22 @@ class RefreshGrant(grants.RefreshTokenGrant):
         row = self.server.db.scalar(select(McpToken).where(McpToken.refresh_hash == digest(refresh_token)).with_for_update())
         if not row:
             return None
-        grant = self.server.db.get(McpGrant, row.grant_id)
-        if (not grant or grant.client_id != self.request.client.client_id
-            or self.request.form.get("resource") != resource_url(grant.domain)):
+        if self.request.form.get("resource") != resource_url():
+            return None
+        try:
+            _, grant, available = load_grant(self.server.db, row.grant_id, lock=True)
+        except HTTPException:
+            return None
+        if grant.client_id != self.request.client.client_id:
             return None
         if row.refresh_used_at:
             revoke_grant(self.server.db, grant)
             return None
-        try:
-            _, self.server.active_grant = ensure_grant(self.server.db, grant.id, lock=True)
-        except HTTPException:
+        scopes = sorted(set(row.scopes) & available)
+        if not scopes:
             return None
-        return RefreshCredential(row, grant)
+        self.server.active_grant = grant
+        return RefreshCredential(row, grant, scopes)
 
     def authenticate_user(self, refresh_token):
         return self.server.db.get(User, refresh_token.grant.user_id)
@@ -523,7 +618,7 @@ class RefreshGrant(grants.RefreshTokenGrant):
 
 class McpAuthorizationServer(AuthorizationServer):
     def __init__(self, db):
-        super().__init__(scopes_supported=[scope for values in DOMAIN_SCOPES.values() for scope in values] + list(MANAGEMENT_SCOPES))
+        super().__init__(scopes_supported=list(SCOPE_GROUP))
         self.db = db
         self.active_grant = None
         self.register_grant(CodeGrant, [S256Challenge(required=True)])
@@ -570,22 +665,22 @@ def oauth_metadata():
         "grant_types_supported": ["authorization_code", "refresh_token"], "token_endpoint_auth_methods_supported": ["none"],
         "code_challenge_methods_supported": ["S256"], "client_id_metadata_document_supported": True,
         "authorization_response_iss_parameter_supported": True,
-        "scopes_supported": [scope for values in DOMAIN_SCOPES.values() for scope in values] + list(MANAGEMENT_SCOPES)}
+        "scopes_supported": list(SCOPE_GROUP)}
 
 
-@router.get("/.well-known/oauth-protected-resource/mcp/{domain}")
-def resource_metadata(domain: Literal["reviews", "security", "code"]):
-    return {"resource": resource_url(domain), "authorization_servers": [settings().public_url],
-        "scopes_supported": list(DOMAIN_SCOPES[domain]) + ([] if domain == "code" else list(MANAGEMENT_SCOPES)), "bearer_methods_supported": ["header"]}
+@router.get("/.well-known/oauth-protected-resource/mcp")
+def resource_metadata():
+    return {"resource": resource_url(), "authorization_servers": [settings().public_url],
+        "scopes_supported": list(SCOPE_GROUP), "bearer_methods_supported": ["header"]}
 
 
 @router.post("/oauth/register", status_code=201)
 def register_client(body: McpRegistrationInput, request: Request, db: DB):
     rate_limit("register", request.client.host if request.client else "unknown", 20)
+    db.scalar(select(AppConfig).where(AppConfig.id == 1).execution_options(populate_existing=True).with_for_update())
     config = mcp_settings(db)
-    if not any(config[name + "_enabled"] for name in DOMAIN_SCOPES):
+    if not enabled_groups(config):
         raise HTTPException(403, "MCP access is disabled.")
-    db.scalar(select(AppConfig).where(AppConfig.id == 1).with_for_update())
     if db.scalar(select(func.count()).select_from(McpClient)) >= 1000:
         raise HTTPException(429, "The instance has reached its OAuth client registration limit. Ask an administrator to register the client.")
     for uri in body.redirect_uris:
@@ -599,13 +694,16 @@ def register_client(body: McpRegistrationInput, request: Request, db: DB):
 @router.get("/oauth/authorize")
 def authorize(request: Request, db: DB):
     data = oauth_parameters(request, request.query_params.multi_items())
-    domain = next((name for name in DOMAIN_SCOPES if data.get("resource") == resource_url(name)), None)
-    if not domain or not mcp_settings(db)[domain + "_enabled"]:
+    groups = enabled_groups(mcp_settings(db))
+    if data.get("resource") != resource_url() or not groups:
         raise HTTPException(400, "Choose an enabled Code Mortis MCP resource.")
-    data.setdefault("scope", domain + ":read")
-    allowed = set(DOMAIN_SCOPES[domain]) | (set() if domain == "code" else set(MANAGEMENT_SCOPES))
-    if not data.get("scope") or not set(data["scope"].split()) <= allowed:
+    requested = data["scope"].split() if "scope" in data else list(SCOPE_GROUP)
+    if not set(requested) <= SCOPE_GROUP.keys():
         raise HTTPException(400, "The requested scopes do not belong to this MCP resource.")
+    requested = list(dict.fromkeys(scope for scope in requested if SCOPE_GROUP[scope] in groups))
+    if not requested:
+        raise HTTPException(400, "Request at least one enabled Code Mortis MCP permission.")
+    data["scope"] = " ".join(requested)
     client = resolve_client(db, data.get("client_id", ""))
     try:
         McpAuthorizationServer(db).get_consent_grant(ProtocolRequest("GET", data))
@@ -614,8 +712,8 @@ def authorize(request: Request, db: DB):
     binding = request.cookies.get("cm_mcp_browser", "")
     if len(binding) != 43:
         binding = secrets.token_urlsafe(32)
-    row = McpAuthorization(id=uid(), client_id=client.client_id, domain=domain, redirect_uri=data["redirect_uri"],
-        scopes=list(dict.fromkeys(data["scope"].split())), state=data.get("state", ""), code_challenge=data["code_challenge"],
+    row = McpAuthorization(id=uid(), client_id=client.client_id, domain=UNIFIED, redirect_uri=data["redirect_uri"],
+        scopes=requested, state=data.get("state", ""), code_challenge=data["code_challenge"],
         browser_hash=digest(binding), expires_at=now() + timedelta(minutes=10))
     db.add(row)
     destination = "/mcp/authorize?" + urlencode({"request_id": row.id})
@@ -632,48 +730,44 @@ def authorize(request: Request, db: DB):
     return response
 
 
-def authorization_request(db, request, identity, user, *, lock=False):
+def authorization_request(db, request, identity, user, *, lock=False, bind_session=True):
     query = select(McpAuthorization).where(McpAuthorization.id == identity).execution_options(populate_existing=True)
     row = db.scalar(query.with_for_update() if lock else query)
-    if (not row or row.expires_at <= now() or row.decided_at
+    if (not row or row.domain != UNIFIED or row.expires_at <= now() or row.decided_at
         or not hmac.compare_digest(row.browser_hash, digest(request.cookies.get("cm_mcp_browser", "")))):
         raise HTTPException(409, "This authorization request expired or was already used. Connect the MCP client again.")
     session_hash = request.state.login_session.token_hash
     if row.session_hash and row.session_hash != session_hash:
         raise HTTPException(403, "This authorization belongs to a different browser session.")
-    row.session_hash = session_hash
-    if not mcp_settings(db)[row.domain + "_enabled"]:
+    if bind_session:
+        row.session_hash = session_hash
+    if not enabled_groups(mcp_settings(db)):
         raise HTTPException(403, "MCP access is disabled for this domain.")
     return row
 
 
-def permitted_scopes(db, domain, user):
-    scopes = dict(DOMAIN_SCOPES[domain])
-    if user.role != "admin":
-        scopes.pop("reviews:manage", None)
-    if domain != "code" and mcp_settings(db)["management_enabled"]:
-        scopes.update({name: value for name, value in MANAGEMENT_SCOPES.items() if user.role == "admin" or name != "instance:manage"})
-    return scopes
-
-
-def consent_repositories(db, user, domain):
+def consent_repositories(db, user, groups):
     repositories = github.visible_repositories(db, user)
-    if domain == "code":
-        enabled = set(db.scalars(select(CodeGraphRepository.repository_id).where(CodeGraphRepository.enabled.is_(True))))
-        repositories = [repo for repo in repositories if repo.id in enabled]
-    return repositories
+    result = {group: repositories for group in GROUP_SCOPES if group in groups}
+    if "code" in result:
+        indexed = set(db.scalars(select(CodeGraphRepository.repository_id).where(CodeGraphRepository.enabled.is_(True))))
+        result["code"] = [repo for repo in repositories if repo.id in indexed]
+    return result
 
 
-@router.get("/api/v1/mcp/authorize")
+@router.get("/api/v1/mcp/authorize", response_model=McpConsentPreview)
 def consent_preview(request: Request, request_id: str, db: DB, user: USER):
     row = authorization_request(db, request, request_id, user)
-    available = permitted_scopes(db, row.domain, user)
+    available = scoped_permissions(enabled_groups(mcp_settings(db)), user.role)
+    scopes = [scope for scope in row.scopes if scope in available]
+    repositories = consent_repositories(db, user, {SCOPE_GROUP[scope] for scope in scopes})
     client = db.get(McpClient, row.client_id)
     return {"request_id": row.id, "client_id": row.client_id, "client_name": client.client_name,
         "redirect_uri": row.redirect_uri, "domain": row.domain, "expires_at": row.expires_at,
-        "scopes": [{"name": scope, "label": available[scope][0], "description": available[scope][1]}
-                   for scope in row.scopes if scope in available],
-        "repositories": [{"id": repo.id, "full_name": repo.full_name} for repo in consent_repositories(db, user, row.domain)]}
+        "scopes": [{"name": scope, "label": available[scope][0], "description": available[scope][1],
+            "group": SCOPE_GROUP[scope]} for scope in scopes],
+        "repositories_by_group": {group: [{"id": repo.id, "full_name": repo.full_name} for repo in repos]
+            for group, repos in repositories.items()}}
 
 
 def oauth_redirect(row, **values):
@@ -684,25 +778,46 @@ def oauth_redirect(row, **values):
 
 @router.post("/api/v1/mcp/authorize")
 def consent(body: McpConsentInput, request: Request, db: DB, user: USER):
-    row = authorization_request(db, request, body.request_id, user, lock=True)
     if not body.approve:
+        row = authorization_request(db, request, body.request_id, user, lock=True)
         row.decided_at = now()
         return {"redirect_url": oauth_redirect(row, error="access_denied")}
+
+    row = authorization_request(db, request, body.request_id, user, bind_session=False)
     scopes = set(body.scopes)
-    if (not scopes or not scopes <= set(row.scopes) or not scopes <= set(permitted_scopes(db, row.domain, user))):
+    allowed = scoped_permissions(enabled_groups(mcp_settings(db)), user.role)
+    if not scopes or not scopes <= set(row.scopes) or not scopes <= allowed.keys():
         raise HTTPException(422, "Select only the permissions offered for this client.")
-    selected = set(body.repository_ids)
-    available = {repo.id for repo in consent_repositories(db, user, row.domain)}
-    if not selected or not selected <= available:
-        raise HTTPException(403, "Select repositories you can currently access.")
-    if db.scalar(select(func.count()).select_from(McpGrant).where(McpGrant.user_id == user.id,
-        McpGrant.revoked_at.is_(None), McpGrant.expires_at > now())) >= 100:
-        raise HTTPException(409, "Revoke an unused MCP authorization in Settings before connecting another client.")
+    groups = {SCOPE_GROUP[scope] for scope in scopes}
+    needs_repositories = {SCOPE_GROUP[scope] for scope in scopes if scope != "instance:manage"}
+    selections = {group: set(ids) for group, ids in body.repository_ids_by_group.items()}
+    if not selections.keys() <= groups:
+        raise HTTPException(422, "Select repositories only for approved tool groups.")
+    available = consent_repositories(db, user, groups)
+    for group in groups:
+        selected = selections.setdefault(group, set())
+        if (group in needs_repositories and not selected) or not selected <= {repo.id for repo in available[group]}:
+            raise HTTPException(403, "Select repositories you can currently access for each requested tool group.")
     client = resolve_client(db, row.client_id)
     if row.redirect_uri not in client.redirect_uris:
         raise HTTPException(409, "The client callback changed. Connect the client again.")
-    grant = McpGrant(id=uid(), user_id=user.id, client_id=row.client_id, domain=row.domain,
-        scopes=sorted(scopes), repository_ids=sorted(selected), expires_at=now() + timedelta(days=30))
+    client = db.scalar(select(McpClient).where(McpClient.client_id == row.client_id)
+        .execution_options(populate_existing=True).with_for_update())
+    if not client or client.revoked_at or row.redirect_uri not in client.redirect_uris:
+        raise HTTPException(409, "The client registration changed. Connect the client again.")
+
+    # Serialize grant creation with settings changes after outbound checks complete.
+    db.scalar(select(AppConfig).where(AppConfig.id == 1).execution_options(populate_existing=True).with_for_update())
+    row = authorization_request(db, request, body.request_id, user, lock=True)
+    allowed = scoped_permissions(enabled_groups(mcp_settings(db)), user.role)
+    if not scopes <= allowed.keys():
+        raise HTTPException(422, "Select only the permissions offered for this client.")
+    if db.scalar(select(func.count()).select_from(McpGrant).where(McpGrant.user_id == user.id,
+        McpGrant.revoked_at.is_(None), McpGrant.expires_at > now())) >= 100:
+        raise HTTPException(409, "Revoke an unused MCP authorization in Settings before connecting another client.")
+    grant = McpGrant(id=uid(), user_id=user.id, client_id=row.client_id, domain=UNIFIED,
+        scopes=sorted(scopes), repository_ids_by_group={group: sorted(ids) for group, ids in selections.items()},
+        expires_at=now() + timedelta(days=30))
     db.add(grant)
     db.flush()
     code = secrets.token_urlsafe(32)
@@ -714,7 +829,7 @@ def consent(body: McpConsentInput, request: Request, db: DB, user: USER):
 @router.post("/oauth/token")
 async def token_endpoint(request: Request, db: DB):
     raw = await request.body()
-    if len(raw) > 16384 or request.headers.get("content-type", "").split(";")[0].strip() != "application/x-www-form-urlencoded":
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/x-www-form-urlencoded":
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     def respond():
         data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
@@ -726,8 +841,6 @@ async def token_endpoint(request: Request, db: DB):
 @router.post("/oauth/revoke")
 async def revoke_token(request: Request, db: DB):
     raw = await request.body()
-    if len(raw) > 16384:
-        raise HTTPException(413, "The revocation request is too large.")
     def revoke():
         data = oauth_parameters(request, parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True))
         fingerprint = digest(data.get("token", ""))
@@ -741,7 +854,7 @@ async def revoke_token(request: Request, db: DB):
     return JSONResponse({}, headers={"Cache-Control": "no-store"})
 
 
-@router.get("/api/v1/mcp/settings")
+@router.get("/api/v1/mcp/settings", response_model=McpSettingsView)
 def read_settings(db: DB, user: USER):
     config = mcp_settings(db)
     if user.role != "admin":
@@ -749,15 +862,31 @@ def read_settings(db: DB, user: USER):
     return {**config, "public_url": settings().public_url, "can_manage": user.role == "admin"}
 
 
-@router.put("/api/v1/mcp/settings")
+@router.put("/api/v1/mcp/settings", response_model=McpSettingsView)
 def update_settings(body: McpSettingsInput, db: DB, user: ADMIN):
-    config = db.scalar(select(AppConfig).where(AppConfig.id == 1).with_for_update())
-    old = mcp_settings(db)
-    config.mcp_settings = body.model_dump()
+    from code_mortis.mcp.provenance import revoke_work
+
+    config = db.scalar(select(AppConfig).where(AppConfig.id == 1).execution_options(populate_existing=True).with_for_update())
+    new = body.model_dump()
+    disabled_groups = enabled_groups(mcp_settings(db)) - enabled_groups(new)
+    config.mcp_settings = new
+    if not body.enabled:
+        db.execute(update(McpAuthorization).where(McpAuthorization.decided_at.is_(None),
+            McpAuthorization.expires_at > now()).values(expires_at=now()))
+    if body.enabled and not disabled_groups:
+        return read_settings(db, user)
     for grant in db.scalars(select(McpGrant).where(McpGrant.revoked_at.is_(None)).order_by(McpGrant.id).with_for_update()):
-        if (not body.model_dump()[grant.domain + "_enabled"]
-            or (old["management_enabled"] and not body.management_enabled and set(grant.scopes) & set(MANAGEMENT_SCOPES))):
+        if not body.enabled or grant.domain != UNIFIED:
             revoke_grant(db, grant)
+            continue
+        retained = [scope for scope in grant.scopes if SCOPE_GROUP.get(scope) not in disabled_groups]
+        if not retained:
+            revoke_grant(db, grant)
+        elif retained != grant.scopes:
+            grant.scopes = retained
+            grant.repository_ids_by_group = {group: ids for group, ids in grant.repository_ids_by_group.items()
+                if group not in disabled_groups}
+            revoke_work(db, grant.id, groups=disabled_groups)
     return read_settings(db, user)
 
 
@@ -777,7 +906,7 @@ def add_client(body: McpClientInput, db: DB, user: ADMIN):
 
 @router.delete("/api/v1/mcp/clients/{client_id:path}")
 def remove_client(client_id: str, db: DB, user: ADMIN):
-    client = db.get(McpClient, client_id)
+    client = db.scalar(select(McpClient).where(McpClient.client_id == client_id).with_for_update())
     if not client:
         raise HTTPException(404, "MCP client not found.")
     for grant in db.scalars(select(McpGrant).where(McpGrant.client_id == client_id).order_by(McpGrant.id).with_for_update()):
@@ -788,10 +917,11 @@ def remove_client(client_id: str, db: DB, user: ADMIN):
     return {"ok": True}
 
 
-@router.get("/api/v1/mcp/grants")
+@router.get("/api/v1/mcp/grants", response_model=list[McpGrantSummary])
 def list_grants(db: DB, user: USER):
     return [{"id": grant.id, "client_id": grant.client_id, "client_name": client.client_name,
         "domain": grant.domain, "scopes": grant.scopes, "repository_ids": grant.repository_ids,
+        "repository_ids_by_group": grant.repository_ids_by_group,
         "created_at": grant.created_at, "expires_at": grant.expires_at, "last_used_at": grant.last_used_at,
         "revoked_at": grant.revoked_at} for grant, client in db.execute(select(McpGrant, McpClient)
         .join(McpClient).where(McpGrant.user_id == user.id).order_by(McpGrant.created_at.desc()))]
@@ -807,21 +937,32 @@ def remove_grant(grant_id: str, db: DB, user: USER):
 
 
 def owned_approval(db, identity, user, lock=False):
+    from code_mortis.mcp.tools import tool_group_and_scope
+
     query = select(McpApproval).join(McpGrant).where(McpApproval.id == identity, McpGrant.user_id == user.id)
-    row = db.scalar(query.with_for_update() if lock else query)
+    row = db.scalar(query)
     if not row:
         raise HTTPException(404, "Action approval not found.")
-    _, grant = ensure_grant(db, row.grant_id)
+    permission = tool_group_and_scope(row.tool)
+    if not permission:
+        raise HTTPException(404, "Action approval not found.")
+    group, scope = permission
+    owner, grant = ensure_grant(db, row.grant_id, group, scope, lock=lock)
+    if lock:
+        row = db.scalar(query.execution_options(populate_existing=True).with_for_update(of=McpApproval))
+        if not row:
+            raise HTTPException(404, "Action approval not found.")
+    check_cached_repository_access(db, owner, group, row.arguments)
     if row.expires_at <= now():
         raise HTTPException(409, "This action approval expired. Ask your agent for a new preview.")
-    return row, grant
+    return row, grant, group
 
 
 @router.get("/api/v1/mcp/approvals/{approval_id}")
 def approval_preview(approval_id: str, db: DB, user: USER):
-    row, grant = owned_approval(db, approval_id, user)
-    action = row.tool.removeprefix(grant.domain + "_").removeprefix("management_").replace("_", " ").capitalize()
-    return {"id": row.id, "tool": row.tool, "domain": grant.domain,
+    row, grant, group = owned_approval(db, approval_id, user)
+    action = row.tool.removeprefix(group + "_").replace("_", " ").capitalize()
+    return {"id": row.id, "tool": row.tool, "domain": group,
         "summary": action + " for " + db.get(McpClient, grant.client_id).client_name + ".",
         "arguments": row.arguments, "expires_at": row.expires_at, "approved_at": row.approved_at,
         "consumed_at": row.consumed_at, "denied_at": row.denied_at}
@@ -829,7 +970,7 @@ def approval_preview(approval_id: str, db: DB, user: USER):
 
 @router.post("/api/v1/mcp/approvals/{approval_id}")
 def decide_approval(approval_id: str, body: McpApprovalInput, db: DB, user: USER):
-    row, _ = owned_approval(db, approval_id, user, lock=True)
+    row, _, _ = owned_approval(db, approval_id, user, lock=True)
     if row.approved_at or row.denied_at or row.consumed_at:
         raise HTTPException(409, "This approval was already decided.")
     if body.approve:

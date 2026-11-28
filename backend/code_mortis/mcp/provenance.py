@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from code_mortis.api_tokens import provenance as pat_provenance
 
@@ -236,15 +236,18 @@ def cancel_origin(db, job) -> bool:
     from code_mortis.models import ReviewRun, SecurityScan
 
     provenance = job_provenance(db, job)
-    grant_id = provenance["grant_id"] if provenance else None
-    if grant_id is None:
+    if provenance is None:
         return False
+
+    def same_group(origin):
+        return origin is not None and all(origin.get(key) == provenance.get(key) for key in ("grant_id", "domain"))
+
     payload = getattr(job, "payload", None) or {}
     run_id = payload.get("run_id")
     if isinstance(run_id, str):
         run = db.get(ReviewRun, run_id)
         origin = provenance_from_run(run)
-        if run is not None and origin is not None and origin["grant_id"] == grant_id:
+        if run is not None and same_group(origin):
             if run.status in ("queued", "running", "blocked") and not run.cancel_requested:
                 from code_mortis.reviews.service import cancel_review
 
@@ -254,7 +257,7 @@ def cancel_origin(db, job) -> bool:
     if isinstance(scan_id, str):
         scan = db.get(SecurityScan, scan_id)
         origin = provenance_from_scan(scan)
-        if scan is not None and origin is not None and origin["grant_id"] == grant_id:
+        if scan is not None and same_group(origin):
             if scan.status in ("queued", "running", "blocked") and not scan.cancel_requested:
                 from code_mortis.security_scans import service as repository_security
 
@@ -263,23 +266,55 @@ def cancel_origin(db, job) -> bool:
     return False
 
 
-def revoke_work(db, grant_id: str) -> dict:
-    """Cancel only work originating from ``grant_id``; preserve everything else.
+def revoke_work(db, grant_id: str, *, groups: set[str] | None = None) -> dict:
+    """Cancel work originating from the grant and, optionally, the given tool groups.
 
     Locks jobs before runs/scans, matching the worker claim order (job first,
     then run/scan), with ordered row locks like the existing cancellation paths.
     """
+    from code_mortis.core.analysis import cancel_tasks_in_transaction
     from code_mortis.core.db import now
     from code_mortis.models import Finding, Job, ReviewRun, SecurityFinding, SecurityScan
 
+    def matches(record):
+        origin = record[PROVENANCE_KEY]
+        grant_matches = origin["grant_id"].as_string() == grant_id
+        return grant_matches if groups is None else grant_matches & origin["domain"].as_string().in_(groups)
+
+    # Follow-up jobs may inherit their authority from the saved object instead
+    # of carrying it in their payload. Check the effective origin after locking.
+    job_matches = or_(
+        matches(Job.payload),
+        (Job.payload[PROVENANCE_KEY]["grant_id"].as_string().is_(None)) & or_(
+            select(ReviewRun.id).where(
+                matches(ReviewRun.progress),
+                or_(
+                    ReviewRun.id == Job.payload["run_id"].as_string(),
+                    (Job.kind == "sync_summary") & (ReviewRun.pr_id == Job.payload["pr_id"].as_string()),
+                ),
+            ).exists(),
+            select(SecurityScan.id).where(
+                matches(SecurityScan.progress), SecurityScan.id == Job.payload["scan_id"].as_string(),
+            ).exists(),
+            select(Finding.id).where(
+                matches(Finding.sync_intent), Finding.id == Job.payload["finding_id"].as_string(),
+            ).exists(),
+            select(SecurityFinding.id).where(
+                matches(SecurityFinding.issue), SecurityFinding.id == Job.payload["finding_id"].as_string(),
+            ).exists(),
+        ),
+    )
     counts = {"runs": 0, "scans": 0, "jobs": 0, "findings": 0, "issues": 0}
     for job in db.scalars(
         select(Job)
-        .where(Job.status.in_(["queued", "running"]),
-               Job.payload[PROVENANCE_KEY]["grant_id"].as_string() == grant_id)
+        .where(Job.status.in_(["queued", "running"]), job_matches)
         .order_by(Job.id)
         .with_for_update()
     ):
+        origin = job_provenance(db, job)
+        if not origin or origin["grant_id"] != grant_id or (groups is not None and origin.get("domain") not in groups):
+            continue
+        cancel_tasks_in_transaction(db, job.id)
         job.status, job.error, job.lease_until, job.dispatched_at = "failed", REVOKED_MESSAGE, None, None
         job.available_at = now()
         if job.kind == "generate_summary":
@@ -290,7 +325,7 @@ def revoke_work(db, grant_id: str) -> dict:
     for run in db.scalars(
         select(ReviewRun)
         .where(ReviewRun.status.in_(["queued", "running", "blocked"]),
-               ReviewRun.progress[PROVENANCE_KEY]["grant_id"].as_string() == grant_id)
+               matches(ReviewRun.progress))
         .order_by(ReviewRun.id)
         .with_for_update()
     ):
@@ -301,7 +336,7 @@ def revoke_work(db, grant_id: str) -> dict:
     for scan in db.scalars(
         select(SecurityScan)
         .where(SecurityScan.status.in_(["queued", "running", "blocked"]),
-               SecurityScan.progress[PROVENANCE_KEY]["grant_id"].as_string() == grant_id)
+               matches(SecurityScan.progress))
         .order_by(SecurityScan.id)
         .with_for_update()
     ):
@@ -311,22 +346,21 @@ def revoke_work(db, grant_id: str) -> dict:
         counts["scans"] += 1
     for finding in db.scalars(
         select(Finding)
-        .where(Finding.sync_intent[PROVENANCE_KEY]["grant_id"].as_string() == grant_id)
+        .where(Finding.desired_status.is_not(None), Finding.sync_error.is_(None), matches(Finding.sync_intent))
         .order_by(Finding.id)
         .with_for_update()
     ):
-        if not finding.sync_error:
-            finding.sync_error = REVOKED_MESSAGE
+        finding.sync_error = REVOKED_MESSAGE
         counts["findings"] += 1
     for item in db.scalars(
         select(SecurityFinding)
-        .where(SecurityFinding.issue[PROVENANCE_KEY]["grant_id"].as_string() == grant_id)
+        .where(matches(SecurityFinding.issue), SecurityFinding.issue["sync_status"].as_string().is_distinct_from("synced"))
         .order_by(SecurityFinding.id)
         .with_for_update()
     ):
         issue = dict(item.issue or {})
-        if issue.get("sync_status") != "failed" or not issue.get("error"):
-            issue = {**issue, "sync_status": "failed", "error": REVOKED_MESSAGE}
-            item.issue = issue
+        if issue.get("sync_status") == "failed" and issue.get("error"):
+            continue
+        item.issue = {**issue, "sync_status": "failed", "error": REVOKED_MESSAGE}
         counts["issues"] += 1
     return counts

@@ -163,7 +163,7 @@ EXPECTED_SESSION_ONLY = {
     ("POST", "/api/v1/security/findings/{finding_id}/github-issue/sync"),
     ("POST", "/api/v1/security/findings/{finding_id}/github-issue/reapprove"),
     ("GET", "/.well-known/oauth-authorization-server"),
-    ("GET", "/.well-known/oauth-protected-resource/mcp/{domain}"),
+    ("GET", "/.well-known/oauth-protected-resource/mcp"),
     ("POST", "/oauth/register"),
     ("GET", "/oauth/authorize"),
     ("POST", "/oauth/token"),

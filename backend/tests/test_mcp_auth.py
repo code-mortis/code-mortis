@@ -9,14 +9,18 @@ from threading import Event, get_ident
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+import httpx2
 import pytest
 from fastapi import HTTPException, Request
 from sqlalchemy import event, select
 
-from code_mortis.core.db import engine, now, transaction
+from code_mortis.core.access import effective_repository_ids
+from code_mortis.core.db import engine, get_db, mcp_engine, now, transaction
 from code_mortis.core.security import digest
 from code_mortis.integrations import github
+from code_mortis.main import app
 from code_mortis.mcp import auth as mcp_auth
+from code_mortis.mcp import request_body
 from code_mortis.mcp import server as mcp_server
 from code_mortis.mcp import tools as mcp_tools
 from code_mortis.mcp.models import McpAuthorization, McpClient, McpGrant, McpToken
@@ -26,14 +30,22 @@ from code_mortis.reviews import service as reviews
 VERIFIER = "a" * 64
 CHALLENGE = base64.urlsafe_b64encode(hashlib.sha256(VERIFIER.encode()).digest()).rstrip(b"=").decode()
 CALLBACK = "http://127.0.0.1:8765/callback"
+RESOURCE = "http://testserver/mcp"
 
 
 @pytest.fixture
 def enabled(seed, github_stub, monkeypatch):
     monkeypatch.setattr(mcp_auth, "rate_limit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(github, "visible_repositories", lambda db, user: list(db.scalars(select(Repository))))
+    def visible_repositories(db, user):
+        selected = effective_repository_ids(user)
+        query = select(Repository)
+        if selected is not None:
+            query = query.where(Repository.id.in_(selected))
+        return list(db.scalars(query))
+
+    monkeypatch.setattr(github, "visible_repositories", visible_repositories)
     with transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"reviews_enabled": True, "security_enabled": True,
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "reviews_enabled": True, "security_enabled": True,
             "management_enabled": False, "allowed_client_domains": []}
         db.add(McpClient(client_id="test-cli", client_name="Test CLI", redirect_uris=[CALLBACK]))
     return seed
@@ -41,19 +53,24 @@ def enabled(seed, github_stub, monkeypatch):
 
 def authorization(client, *, domain="reviews", scopes=None, **overrides):
     values = {"client_id": "test-cli", "response_type": "code", "redirect_uri": CALLBACK,
-        "resource": "http://testserver/mcp/" + domain, "scope": scopes or domain + ":read",
+        "resource": RESOURCE, "scope": scopes or domain + ":read",
         "state": "client-state", "code_challenge": CHALLENGE, "code_challenge_method": "S256", **overrides}
+    if values["scope"] is None:
+        del values["scope"]
     response = client.get("/oauth/authorize", params=values, follow_redirects=False)
     assert response.status_code == 303, response.text
     return parse_qs(urlsplit(response.headers["location"]).query)["request_id"][0]
 
 
-def consent_code(client, *, domain="reviews", scopes=None, **overrides):
+def consent_code(client, *, domain="reviews", scopes=None, repositories=None, **overrides):
     scopes = scopes or [domain + ":read"]
     request_id = authorization(client, domain=domain, scopes=" ".join(scopes), **overrides)
     preview = client.get("/api/v1/mcp/authorize", params={"request_id": request_id})
     assert preview.status_code == 200, preview.text
-    response = client.post("/api/v1/mcp/authorize", json={"request_id": request_id, "repository_ids": [22],
+    groups = {mcp_auth.SCOPE_GROUP[scope] for scope in scopes}
+    if repositories is None:
+        repositories = {group: [22] for group in groups}
+    response = client.post("/api/v1/mcp/authorize", json={"request_id": request_id, "repository_ids_by_group": repositories,
         "scopes": scopes, "approve": True})
     assert response.status_code == 200, response.text
     redirect = parse_qs(urlsplit(response.json()["redirect_url"]).query)
@@ -64,12 +81,29 @@ def consent_code(client, *, domain="reviews", scopes=None, **overrides):
 
 def exchange(client, code, **overrides):
     return client.post("/oauth/token", data={"grant_type": "authorization_code", "client_id": "test-cli",
-        "code": code, "redirect_uri": CALLBACK, "resource": "http://testserver/mcp/reviews",
+        "code": code, "redirect_uri": CALLBACK, "resource": RESOURCE,
         "code_verifier": VERIFIER, **overrides})
 
 
+@pytest.mark.parametrize("requested", [None, "reviews:read"])
+def test_setup_offers_enabled_scopes_and_issues_only_selected_access(enabled, client, requested):
+    request_id = authorization(client, scope=requested)
+    preview = client.get("/api/v1/mcp/authorize", params={"request_id": request_id})
+    assert preview.status_code == 200
+    offered = {option["name"] for option in preview.json()["scopes"]}
+    expected = set(mcp_auth.GROUP_SCOPES["reviews"]) | set(mcp_auth.GROUP_SCOPES["security"])
+    assert offered == (expected if requested is None else {"reviews:read"})
+    decision = client.post("/api/v1/mcp/authorize", json={
+        "request_id": request_id, "scopes": ["reviews:read"], "repository_ids_by_group": {"reviews": [22]}, "approve": True,
+    })
+    assert decision.status_code == 200
+    code = parse_qs(urlsplit(decision.json()["redirect_url"]).query)["code"][0]
+    token = exchange(client, code)
+    assert token.status_code == 200 and token.json()["scope"] == "reviews:read"
+
+
 def credentials(client, **kwargs):
-    response = exchange(client, consent_code(client, **kwargs), resource="http://testserver/mcp/" + kwargs.get("domain", "reviews"))
+    response = exchange(client, consent_code(client, **kwargs))
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -81,7 +115,7 @@ def rpc(client, token=None, method="initialize", arguments=None, domain="reviews
             "clientInfo": {"name": "tests", "version": "1"}}
     elif arguments is not None:
         payload["params"] = arguments
-    return client.post("/mcp/" + domain, json=payload, headers={"Accept": "application/json, text/event-stream",
+    return client.post("/mcp", json=payload, headers={"Accept": "application/json, text/event-stream",
         "MCP-Protocol-Version": "2025-11-25", **({"Authorization": "Bearer " + token} if token else {}), **headers})
 
 
@@ -91,10 +125,11 @@ def test_default_settings_are_disabled_and_metadata_is_public(seed, client):
     assert response.json()["reviews_enabled"] is False
     assert response.json()["security_enabled"] is False
     assert response.json()["management_enabled"] is False
-    metadata = client.get("/.well-known/oauth-protected-resource/mcp/security")
-    assert metadata.json()["resource"] == "http://testserver/mcp/security"
+    assert response.json()["enabled"] is False
+    metadata = client.get("/.well-known/oauth-protected-resource/mcp")
+    assert metadata.json()["resource"] == RESOURCE
     assert "security:issues" in metadata.json()["scopes_supported"]
-    assert "reviews:read" not in metadata.json()["scopes_supported"]
+    assert {"reviews:read", "code:read", "instance:manage"} <= set(metadata.json()["scopes_supported"])
     assert metadata.headers["cache-control"] == "no-store"
     server = client.get("/.well-known/oauth-authorization-server").json()
     assert server["code_challenge_methods_supported"] == ["S256"]
@@ -109,18 +144,18 @@ def test_oauth_code_flow_hashes_tokens_and_authenticates_actual_transport(enable
         token = db.get(McpToken, digest(tokens["access_token"]))
         assert token.refresh_hash == digest(tokens["refresh_token"])
         grant = db.get(McpGrant, token.grant_id)
-        assert grant.repository_ids == [22]
+        assert grant.repository_ids_by_group == {"reviews": [22]}
         assert grant.scopes == ["reviews:read"]
     response = rpc(client, tokens["access_token"])
     assert response.status_code == 200, response.text
-    assert response.json()["result"]["serverInfo"]["name"] == "Code Mortis reviews"
+    assert response.json()["result"]["serverInfo"]["name"] == "Code Mortis"
     assert response.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.parametrize("operation", ["verify_token", "list_tools", "call_tool", "error"])
 def test_mcp_database_work_runs_off_event_loop_with_auth_context(enabled, client, monkeypatch, operation):
     tokens = credentials(client)
-    verifier = mcp_auth.McpTokenVerifier("reviews")
+    verifier = mcp_auth.McpTokenVerifier()
     token = asyncio.run(verifier.verify_token(tokens["access_token"]))
     access = ContextVar("test_mcp_access", default=None)
     monkeypatch.setattr(mcp_auth, "get_access_token", access.get)
@@ -137,8 +172,14 @@ def test_mcp_database_work_runs_off_event_loop_with_auth_context(enabled, client
 
     monkeypatch.setattr(mcp_auth, "transaction", checked_transaction)
     monkeypatch.setattr(mcp_server, "transaction", checked_transaction)
-    server = mcp_server.DomainServer("reviews")
-    mcp_tools.register_tools(server, "reviews")
+    def checked_get_db():
+        threads.append(get_ident())
+        assert get_ident() != loop_thread, "Blocking database work ran on the event loop"
+        yield from get_db()
+
+    monkeypatch.setattr(mcp_auth, "get_db", checked_get_db)
+    server = mcp_server.CodeMortisServer()
+    mcp_tools.register_tools(server)
 
     async def check():
         access.set(token)
@@ -158,28 +199,23 @@ def test_mcp_database_work_runs_off_event_loop_with_auth_context(enabled, client
                 assert result.structured_content["pull_request"]["id"] == "pr"
 
     asyncio.run(check())
-    assert threads
+    assert bool(threads) is (operation != "list_tools")
 
 
 def test_slow_mcp_authorization_keeps_event_loop_responsive(enabled, client, monkeypatch):
     tokens = credentials(client)
-    token = asyncio.run(mcp_auth.McpTokenVerifier("reviews").verify_token(tokens["access_token"]))
-    monkeypatch.setattr(mcp_auth, "get_access_token", lambda: token)
-    monkeypatch.setattr(mcp_server, "get_access_token", lambda: token)
     entered, release = Event(), Event()
-    original = mcp_server.tool_access
+    original = mcp_auth.load_grant
 
-    def slow_access(*args):
+    def slow_access(*args, **kwargs):
         entered.set()
         assert release.wait(5), "The event loop could not release the blocked authorization"
-        return original(*args)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(mcp_server, "tool_access", slow_access)
-    server = mcp_server.DomainServer("reviews")
-    mcp_tools.register_tools(server, "reviews")
+    monkeypatch.setattr(mcp_auth, "load_grant", slow_access)
 
     async def check():
-        task = asyncio.create_task(server.list_tools())
+        task = asyncio.create_task(mcp_auth.McpTokenVerifier().verify_token(tokens["access_token"]))
         try:
             assert await asyncio.to_thread(entered.wait, 5)
             assert not task.done()
@@ -210,19 +246,62 @@ def test_oauth_post_io_runs_off_event_loop(enabled, client, monkeypatch, endpoin
 
     monkeypatch.setattr(Request, "body", body)
     monkeypatch.setattr(mcp_auth, "oauth_parameters", parameters)
-    event.listen(engine(), "before_cursor_execute", query)
+    event.listen(mcp_engine(), "before_cursor_execute", query)
     try:
         response = exchange(client, code) if endpoint == "token" else client.post("/oauth/revoke", data={
             "client_id": "test-cli", "token": tokens["access_token"]})
         assert response.status_code == 200, response.text
         assert loop_threads
     finally:
-        event.remove(engine(), "before_cursor_execute", query)
+        event.remove(mcp_engine(), "before_cursor_execute", query)
+
+
+@pytest.mark.parametrize("path", request_body.BODY_LIMITS)
+def test_external_mcp_body_limit_applies_before_database_access(seed, client, path):
+    def fail_checkout(*_):
+        pytest.fail("An oversized OAuth request checked out a database connection")
+
+    event.listen(mcp_engine(), "checkout", fail_checkout)
+    event.listen(engine(), "checkout", fail_checkout)
+    try:
+        response = client.post(path, content=b"x" * (request_body.BODY_LIMITS[path] + 1))
+        assert response.status_code == 413
+        assert response.headers["cache-control"] == "no-store"
+    finally:
+        event.remove(engine(), "checkout", fail_checkout)
+        event.remove(mcp_engine(), "checkout", fail_checkout)
+
+
+def test_slow_oauth_upload_releases_capacity_without_database_access(seed, client, monkeypatch):
+    monkeypatch.setattr(request_body, "BODY_TIMEOUT_SECONDS", 0.01)
+
+    def fail_checkout(*_):
+        pytest.fail("An incomplete OAuth upload checked out a database connection")
+
+    async def slow_body():
+        yield b"client_id="
+        await asyncio.sleep(10)
+
+    async def exercise():
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://testserver") as http:
+            async with asyncio.timeout(2):
+                responses = await asyncio.gather(*(http.post("/oauth/token", content=slow_body()) for _ in range(2)))
+                assert [response.status_code for response in responses] == [408, 408]
+                recovered = await http.post("/oauth/token")
+                assert recovered.status_code == 400
+
+    event.listen(mcp_engine(), "checkout", fail_checkout)
+    event.listen(engine(), "checkout", fail_checkout)
+    try:
+        client.portal.call(exercise)
+    finally:
+        event.remove(engine(), "checkout", fail_checkout)
+        event.remove(mcp_engine(), "checkout", fail_checkout)
 
 
 @pytest.mark.parametrize("domain", ["reviews", "security"])
 def test_oauth_accepts_identical_repeated_resources(enabled, client, domain):
-    resource = "http://testserver/mcp/" + domain
+    resource = RESOURCE
     code = consent_code(client, domain=domain, resource=[resource, resource])
     response = exchange(client, code, resource=[resource, resource])
     assert response.status_code == 200, response.text
@@ -289,17 +368,17 @@ def test_cookie_and_foreign_tokens_do_not_authenticate_mcp(enabled, client):
     for token in (None, "session", "github-user-token", "installation-token", "provider-secret"):
         response = rpc(client, token)
         assert response.status_code == 401
-        assert "oauth-protected-resource/mcp/reviews" in response.headers["www-authenticate"]
+        assert "oauth-protected-resource/mcp" in response.headers["www-authenticate"]
 
 
 @pytest.mark.parametrize("changes", [
     {"code_challenge": ""}, {"code_challenge_method": "plain"}, {"response_type": "token"},
     {"redirect_uri": "https://attacker.example/callback"}, {"resource": "https://elsewhere.example/mcp"},
-    {"scope": "security:read"},
+    {"scope": "unsupported:read"}, {"resource": "http://testserver/mcp/reviews"},
 ])
 def test_authorization_rejects_invalid_protocol_and_resource(enabled, client, changes):
     values = {"client_id": "test-cli", "response_type": "code", "redirect_uri": CALLBACK,
-        "resource": "http://testserver/mcp/reviews", "scope": "reviews:read", "state": "state",
+        "resource": RESOURCE, "scope": "reviews:read", "state": "state",
         "code_challenge": CHALLENGE, "code_challenge_method": "S256", **changes}
     response = client.get("/oauth/authorize", params=values, follow_redirects=False)
     assert response.status_code == 400
@@ -328,7 +407,7 @@ def test_code_replay_revokes_issued_grant(enabled, client):
 def test_refresh_rotates_and_reuse_revokes_family(enabled, client):
     tokens = credentials(client)
     data = {"grant_type": "refresh_token", "client_id": "test-cli",
-        "resource": "http://testserver/mcp/reviews", "refresh_token": tokens["refresh_token"]}
+        "resource": RESOURCE, "refresh_token": tokens["refresh_token"]}
     refreshed = client.post("/oauth/token", data=data)
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["refresh_token"] != tokens["refresh_token"]
@@ -339,7 +418,7 @@ def test_refresh_rotates_and_reuse_revokes_family(enabled, client):
 def test_refresh_scope_narrowing_does_not_restore_write_access(enabled, client):
     tokens = credentials(client, scopes=["reviews:read", "reviews:write"])
     narrowed = client.post("/oauth/token", data={"grant_type": "refresh_token", "client_id": "test-cli",
-        "resource": "http://testserver/mcp/reviews", "refresh_token": tokens["refresh_token"], "scope": "reviews:read"})
+        "resource": RESOURCE, "refresh_token": tokens["refresh_token"], "scope": "reviews:read"})
     assert narrowed.status_code == 200, narrowed.text
     with transaction() as db:
         assert db.get(McpToken, digest(narrowed.json()["access_token"])).scopes == ["reviews:read"]
@@ -351,22 +430,22 @@ def test_grant_revoke_and_domain_disable_are_immediate_and_independent(enabled, 
     assert client.delete("/api/v1/mcp/grants/" + grant_id).status_code == 200
     assert rpc(client, tokens["access_token"]).status_code == 401
     tokens = credentials(client)
-    response = client.put("/api/v1/mcp/settings", json={"reviews_enabled": False,
+    response = client.put("/api/v1/mcp/settings", json={"enabled": True, "reviews_enabled": False,
         "security_enabled": True, "management_enabled": False, "allowed_client_domains": []})
     assert response.status_code == 200, response.text
     assert response.json()["security_enabled"] is True
     assert rpc(client, tokens["access_token"]).status_code == 401
-    client.put("/api/v1/mcp/settings", json={"reviews_enabled": True,
+    client.put("/api/v1/mcp/settings", json={"enabled": True, "reviews_enabled": True,
         "security_enabled": True, "management_enabled": False, "allowed_client_domains": []})
     assert rpc(client, tokens["access_token"]).status_code == 401
 
 
-def test_review_token_cannot_access_security(enabled, client):
+def test_legacy_transport_retires_without_redirect(enabled, client):
     tokens = credentials(client)
     response = client.post("/mcp/security", json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},
         headers={"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + tokens["access_token"]})
-    assert response.status_code == 401
+    assert response.status_code == 404
 
 
 def test_consent_bound_to_browser_and_session_and_cannot_expand(enabled, client):
@@ -375,10 +454,10 @@ def test_consent_bound_to_browser_and_session_and_cannot_expand(enabled, client)
         headers={"cookie": "cm_session=session; cm_mcp_browser=" + "b" * 43}).status_code == 409
     identity = authorization(client)
     response = client.post("/api/v1/mcp/authorize", json={"request_id": identity,
-        "repository_ids": [22], "scopes": ["reviews:read", "reviews:write"], "approve": True})
+        "repository_ids_by_group": {"reviews": [22]}, "scopes": ["reviews:read", "reviews:write"], "approve": True})
     assert response.status_code == 422
     response = client.post("/api/v1/mcp/authorize", json={"request_id": identity,
-        "repository_ids": [99], "scopes": ["reviews:read"], "approve": True})
+        "repository_ids_by_group": {"reviews": [99]}, "scopes": ["reviews:read"], "approve": True})
     assert response.status_code == 403
     response = client.post("/api/v1/mcp/authorize", json={"request_id": identity, "approve": False})
     assert response.status_code == 200
@@ -498,6 +577,74 @@ def test_actual_tool_discovery_and_calls_obey_scopes(enabled, client):
         assert not db.scalar(select(ReviewRun))
 
 
+def test_unified_grant_keeps_group_repository_selections_independent(enabled, client):
+    with transaction() as db:
+        db.add(Repository(id=23, installation_id=10, full_name="team/security-only"))
+    tokens = credentials(client, scopes=["reviews:read", "security:read"],
+        repositories={"reviews": [22], "security": [23]})
+    token = tokens["access_token"]
+    tools = rpc(client, token, method="tools/list").json()["result"]["tools"]
+    assert {"reviews_list_repositories", "security_list_repositories"} <= {tool["name"] for tool in tools}
+    for group, expected in (("reviews", 22), ("security", 23)):
+        result = rpc(client, token, method="tools/call",
+            arguments={"name": group + "_list_repositories",
+                "arguments": {"params": {}} if group == "security" else {}}).json()["result"]
+        assert not result.get("isError"), result
+        items = result["structuredContent"]["items"]
+        assert [item["repository"]["id"] if group == "security" else item["id"] for item in items] == [expected]
+        if group == "security":
+            assert not {"review_rules", "settings", "code_graph_enabled"} & items[0]["repository"].keys()
+        else:
+            assert not {"security", "scan_settings", "code_graph_enabled"} & items[0].keys()
+    grant = client.get("/api/v1/mcp/grants").json()[0]
+    assert grant["repository_ids_by_group"] == {"reviews": [22], "security": [23]}
+    settings = {"enabled": True, "reviews_enabled": True, "security_enabled": False}
+    assert client.put("/api/v1/mcp/settings", json=settings).status_code == 200
+    assert client.put("/api/v1/mcp/settings", json={**settings, "security_enabled": True}).status_code == 200
+    tools = rpc(client, token, method="tools/list").json()["result"]["tools"]
+    assert all(tool["name"].startswith("reviews_") for tool in tools)
+    assert tools
+    assert client.put("/api/v1/mcp/settings", json={**settings, "enabled": False}).status_code == 200
+    assert rpc(client, token).status_code == 401
+
+
+def test_tool_discovery_coalesces_grant_usage_writes(enabled, client):
+    token = credentials(client)["access_token"]
+    assert rpc(client, token, method="tools/list").status_code == 200
+    with transaction() as db:
+        previous = db.scalar(select(McpGrant)).last_used_at
+    assert previous is not None
+    assert rpc(client, token, method="tools/list").status_code == 200
+    with transaction() as db:
+        grant = db.scalar(select(McpGrant))
+        assert grant.last_used_at == previous
+        grant.last_used_at = previous - timedelta(minutes=2)
+    assert rpc(client, token, method="tools/list").status_code == 200
+    with transaction() as db:
+        assert db.scalar(select(McpGrant)).last_used_at >= previous
+
+
+def test_tool_discovery_only_performs_transport_authorization_queries(enabled, client):
+    token = credentials(client, scopes=["reviews:read", "security:read"])["access_token"]
+    assert rpc(client, token).status_code == 200  # Warm the coalesced last-used update.
+    queries = []
+
+    def record_query(_conn, _cursor, statement, *_):
+        queries.append(statement)
+
+    event.listen(mcp_engine(), "before_cursor_execute", record_query)
+    try:
+        assert rpc(client, token).status_code == 200
+        initialize_queries = list(queries)
+        queries.clear()
+        listed = rpc(client, token, method="tools/list")
+        assert listed.status_code == 200
+        assert len(listed.json()["result"]["tools"]) > 10
+        assert queries == initialize_queries
+    finally:
+        event.remove(mcp_engine(), "before_cursor_execute", record_query)
+
+
 def test_large_saved_reports_are_available_separately_from_mcp_history(enabled, client):
     report = {"findings": [], "notes": "🧪" * 80000}
     with transaction() as db:
@@ -569,7 +716,7 @@ def test_actual_write_tool_is_durable_idempotent_and_bound_to_arguments(enabled,
 def test_actual_detail_tool_cannot_escape_selected_repositories(enabled, client):
     tokens = credentials(client)
     with transaction() as db:
-        db.scalar(select(McpGrant)).repository_ids = []
+        db.scalar(select(McpGrant)).repository_ids_by_group = {"reviews": []}
     response = rpc(client, tokens["access_token"], method="tools/call",
         arguments={"name": "reviews_get_pull_request", "arguments": {"params": {"pr_id": "pr"}}})
     assert response.json()["result"]["structuredContent"]["error"]["status"] == 403
@@ -581,7 +728,7 @@ def test_action_approval_is_human_bound_exact_once_and_retryable(enabled, client
         token = db.get(McpToken, digest(tokens["access_token"]))
         grant_id = token.grant_id
     access = mcp_auth.AccessToken(token=tokens["access_token"], client_id="test-cli",
-        scopes=["security:issues"], resource="http://testserver/mcp/security")
+        scopes=["security:issues"], resource=RESOURCE)
     monkeypatch.setattr(mcp_auth, "get_access_token", lambda: access)
 
     def action(db, user):

@@ -61,9 +61,10 @@ def revision(indexed, **extra):
     return {"repository_id": 22, "commit_sha": indexed["head"], **extra}
 
 
-def test_default_off_separate_consent_and_no_management(enabled, client):
+def test_code_group_defaults_off_on_unified_endpoint(enabled, client):
     assert client.get("/api/v1/mcp/settings").json()["code_enabled"] is False
-    assert client.get("/.well-known/oauth-protected-resource/mcp/code").json()["scopes_supported"] == ["code:read"]
+    assert client.get("/.well-known/oauth-protected-resource/mcp/code").status_code == 404
+    assert client.get("/.well-known/oauth-protected-resource/mcp").json()["resource"] == "http://testserver/mcp"
     denied(rpc(client, domain="code"))
 
 
@@ -106,29 +107,28 @@ def test_consent_offers_only_opted_in_repos_and_scope(indexed, client):
         db.get(AppConfig, 1).mcp_settings = {**db.get(AppConfig, 1).mcp_settings, "management_enabled": True}
     identity = authorization(client, domain="code")
     preview = client.get("/api/v1/mcp/authorize", params={"request_id": identity}).json()
-    assert [item["id"] for item in preview["repositories"]] == [22]
+    assert [item["id"] for item in preview["repositories_by_group"]["code"]] == [22]
     assert [item["name"] for item in preview["scopes"]] == ["code:read"]
     response = client.get("/oauth/authorize", params={"resource": "http://testserver/mcp/code", "scope": "code:read instance:manage"})
     assert response.status_code == 400
     for scopes, repos in [(["instance:manage"], [22]), (["code:read"], [23])]:
-        response = client.post("/api/v1/mcp/authorize", json={"request_id": identity, "repository_ids": repos, "scopes": scopes, "approve": True})
+        response = client.post("/api/v1/mcp/authorize", json={"request_id": identity, "repository_ids_by_group": {"code": repos}, "scopes": scopes, "approve": True})
         assert response.status_code in {403, 422}
 
 
 @pytest.mark.parametrize("domain", ["reviews", "security"])
-def test_old_grants_cannot_read_code_and_code_cannot_read_other_domains(indexed, client, domain):
+def test_scopes_isolate_code_from_other_groups(indexed, client, domain):
     old = credentials(client, domain=domain)["access_token"]
     denied(call(client, old, "code_index_status", revision(indexed)))
     code = credentials(client, domain="code")["access_token"]
-    denied(rpc(client, code, method="tools/list", domain=domain))
+    assert all(tool["name"].startswith("code_") for tool in rpc(client, code, method="tools/list").json()["result"]["tools"])
     denied(call(client, code, "reviews_list_repositories"))
     denied(call(client, code, "management_list_members"))
     # A bearer grant is not a browser/PAT credential, even alongside a valid browser cookie.
     response = client.get("/api/v1/repositories", headers={"Authorization": "Bearer " + code})
     assert response.status_code in {401, 403}
     with transaction() as db:
-        grant = db.scalar(select(McpGrant).where(McpGrant.domain == "code"))
-        identity = grant.id
+        identity = db.get(McpToken, digest(code)).grant_id
     with provenance.scoped({"grant_id": identity, "domain": "code", "scope": "code:read"}):
         with pytest.raises(service.AccessLost):
             service.enqueue_snapshot(22)
@@ -142,7 +142,7 @@ def test_cached_catalog_and_repeated_calls_revalidate_access(indexed, client, ch
     result(call(client, token, "code_get_source", revision(indexed, path="lib.py")))
     assert rpc(client, token, method="tools/list", domain="code").status_code == 200
     with transaction() as db:
-        grant = db.scalar(select(McpGrant).where(McpGrant.domain == "code"))
+        grant = db.scalar(select(McpGrant).where(McpGrant.domain == "unified"))
         if change == "grant":
             grant.revoked_at = now()
         elif change == "token":
@@ -166,7 +166,7 @@ def test_cached_catalog_and_repeated_calls_revalidate_access(indexed, client, ch
         elif change == "optin":
             db.get(CodeGraphRepository, 22).enabled = False
         else:
-            grant.repository_ids = []
+            grant.repository_ids_by_group = {"code": []}
     response = call(client, token, "code_get_source", revision(indexed, path="lib.py"))
     denied(response)
     assert "value = 42" not in response.text
@@ -193,7 +193,7 @@ def test_revoke_during_source_read_discards_result(indexed, client, monkeypatch)
     def revoke(*args):
         raw = original(*args)
         with transaction() as db:
-            db.scalar(select(McpGrant).where(McpGrant.domain == "code")).revoked_at = now()
+            db.scalar(select(McpGrant).where(McpGrant.domain == "unified")).revoked_at = now()
         return raw
 
     monkeypatch.setattr(store, "read_blob", revoke)
@@ -224,7 +224,7 @@ def test_mid_read_policy_change_or_token_expiry_discards_result(indexed, client,
 
 def test_code_only_registration_disable_and_fresh_github_access(indexed, client, monkeypatch):
     with transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"code_enabled": True}
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "code_enabled": True}
     registered = client.post("/oauth/register", json={"client_name": "Code reader", "redirect_uris": ["http://127.0.0.1:8123/callback"]})
     assert registered.status_code == 201
     token = credentials(client, domain="code")["access_token"]
@@ -239,15 +239,15 @@ def test_code_only_registration_disable_and_fresh_github_access(indexed, client,
     denied(response)
     assert "hidden repository" not in response.text
     assert result(call(client, token, "code_list_repositories"))["items"] == []
-    assert client.put("/api/v1/mcp/settings", json={"code_enabled": False}).status_code == 200
+    assert client.put("/api/v1/mcp/settings", json={"enabled": True, "code_enabled": False}).status_code == 200
     with transaction() as db:
-        assert db.scalar(select(McpGrant).where(McpGrant.domain == "code")).revoked_at
+        assert db.scalar(select(McpGrant).where(McpGrant.domain == "unified")).revoked_at
 
 
 def test_code_grant_cannot_impersonate_index_owner_or_schedule_work(indexed, client):
     credentials(client, domain="code")
     with transaction() as db:
-        grant_id = db.scalar(select(McpGrant.id).where(McpGrant.domain == "code"))
+        grant_id = db.scalar(select(McpGrant.id).where(McpGrant.domain == "unified"))
     with provenance.scoped({"grant_id": grant_id, "domain": "code", "scope": "code:read"}), transaction() as db:
         with pytest.raises(service.AccessLost):
             service.local_access(db, 22, 8, initiator=False)
@@ -290,7 +290,7 @@ def test_source_keeps_regular_crlf_endings_and_original_byte_citations(enabled, 
     row, _ = run(service.enqueue_snapshot(22))
     assert row.status in service.USABLE
     with transaction() as db:
-        db.get(AppConfig, 1).mcp_settings = {"code_enabled": True}
+        db.get(AppConfig, 1).mcp_settings = {"enabled": True, "code_enabled": True}
     token = credentials(client, domain="code")["access_token"]
     source = result(call(client, token, "code_get_source", revision(graph, path="a.py")))["items"][0]
     assert source["text"].encode() == raw

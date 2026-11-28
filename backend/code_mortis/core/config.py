@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CM_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://mortis:mortis@localhost:5432/mortis"
+    mcp_max_concurrent_requests: int = Field(default=2, ge=1)
+    mcp_db_pool_size: int = Field(default=6, ge=1)
     redis_url: str = "redis://localhost:6379/0"
     public_url: str = "http://localhost:8080"
     webhook_url: str = ""
