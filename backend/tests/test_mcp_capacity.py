@@ -82,7 +82,6 @@ def test_reconnect_burst_preserves_webhook_dashboard_and_readiness(enabled, clie
                             yield b""
 
                         assert (await http.post("/oauth/token", content=unread_body())).status_code == 429
-                        assert (await http.get("/.well-known/oauth-authorization-server")).status_code == 429
                     assert not mcp and not web
 
                     body = b'{"action":"test"}'
@@ -100,6 +99,18 @@ def test_reconnect_burst_preserves_webhook_dashboard_and_readiness(enabled, clie
                         duplicate = await http.post("/api/v1/webhooks/github", content=body, headers=headers)
                         assert duplicate.status_code == 202 and duplicate.json()["duplicate"] is True
                     assert web and not mcp
+
+                async with asyncio.timeout(5):
+                    resource = await http.get("/.well-known/oauth-protected-resource/mcp")
+                    assert resource.status_code == 200
+                    issuer, = resource.json()["authorization_servers"]
+                    discovery = await http.get(f"{issuer}/.well-known/oauth-authorization-server")
+                    assert discovery.status_code == 200
+                    metadata = discovery.json()
+                    assert metadata["authorization_endpoint"] == f"{issuer}/oauth/authorize"
+                    assert metadata["token_endpoint"] == f"{issuer}/oauth/token"
+                    assert metadata["registration_endpoint"] == f"{issuer}/oauth/register"
+                    assert metadata["client_id_metadata_document_supported"] is False
             finally:
                 release.set()
                 completed = await asyncio.gather(*active)
@@ -125,6 +136,7 @@ def test_pool_exhaustion_and_sdk_nested_tool_read(enabled, client):
                     assert not web
                     assert (await http.get("/health/ready")).status_code == 200
                     assert web
+                assert (await http.get("/.well-known/oauth-authorization-server")).status_code == 200
             http.headers["Authorization"] = "Bearer " + token
             with checkouts(engine()) as web, checkouts(mcp_engine()) as mcp:
                 async with asyncio.timeout(5):
