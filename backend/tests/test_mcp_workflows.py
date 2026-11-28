@@ -1,11 +1,13 @@
 """Exercise native and fallback workflows through the authenticated HTTP transport."""
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from starlette.exceptions import HTTPException
 from test_mcp_auth import credentials, enabled, rpc  # noqa: F401
 
 from code_mortis.core.db import now, transaction
@@ -188,6 +190,18 @@ def test_task_io_leaves_grant_and_task_unlocked(client, github_pull, monkeypatch
     with transaction() as db:
         assert db.get(ReviewRun, run_id).status == expected
         assert db.get(McpTask, task_id).snapshot["status"] == expected
+
+
+@pytest.mark.parametrize("token", [
+    None, SimpleNamespace(), SimpleNamespace(claims=None), SimpleNamespace(claims={}),
+    SimpleNamespace(claims={"grant_id": ""}), SimpleNamespace(claims={"grant_id": 42}),
+])
+def test_task_requires_grant_before_database_lookup(monkeypatch, token):
+    monkeypatch.setattr(tasks, "get_access_token", lambda: token)
+    monkeypatch.setattr(tasks, "transaction", lambda: pytest.fail("Task lookup started without a grant"))
+    with pytest.raises(HTTPException) as error:
+        tasks.access_task("test-task", "tasks/get")
+    assert error.value.status_code == 401
 
 
 def test_poll_preserves_concurrent_cancellation(client, github_pull, monkeypatch):

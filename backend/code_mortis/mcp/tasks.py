@@ -150,11 +150,14 @@ def task_access(db, operation, repository_id, *, lock=False):
 
 
 def access_task(task_id, method):
-    token = get_access_token()
+    claims = getattr(get_access_token(), "claims", None)
+    grant_id = claims.get("grant_id") if isinstance(claims, dict) else None
+    if not isinstance(grant_id, str) or not grant_id.strip():
+        raise HTTPException(401, "This MCP authorization expired or was revoked. Connect again.")
     cancel = method == "tasks/cancel"
     with transaction() as db:
         operation = db.scalar(select(McpOperation).where(McpOperation.id == task_id,
-            McpOperation.grant_id == token.claims["grant_id"]))
+            McpOperation.grant_id == grant_id))
         if not operation or operation.tool not in DOMAINS:
             raise HTTPException(404, "Unknown task.")
         task = db.get(McpTask, task_id)
