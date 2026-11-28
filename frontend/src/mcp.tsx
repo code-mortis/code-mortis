@@ -62,25 +62,28 @@ function ConnectionInstructions({ settings }: { settings: McpSettings }) {
   const [copied, setCopied] = useState<"endpoint" | "prompt" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const endpoint = `${settings.public_url.replace(/\/+$/, "")}/mcp`;
-  const readScopes = groups.filter((group) => group !== "management" && settings[`${group}_enabled`]).map((group) => group + ":read");
+  const hasEnabledGroup = groups.some((group) => settings[`${group}_enabled`]);
   const quotedEndpoint = "'" + endpoint.replaceAll("'", "'\\''") + "'";
   const prompt = `Connect this client to Code Mortis over Streamable HTTP.
 
 Server URL: ${endpoint}
 Connection name: codemortis
 
-Use OAuth with PKCE and dynamic client registration. Request read permissions for the enabled tool groups. Let me complete sign-in and choose which groups and repositories to authorize in my browser.
+Use OAuth with PKCE and dynamic client registration. Use the permissions advertised by the server. Let me choose permissions and repositories in the browser. Only read permissions should be preselected.
 
 Use the instructions for the current client.
 
 For Claude Code, add the HTTP server with
 claude mcp add --transport http codemortis ${quotedEndpoint}
 
-For Codex CLI, add the HTTP server with
-codex mcp add codemortis --url ${quotedEndpoint} --oauth-resource ${quotedEndpoint} --oauth-client-registration dcr
+For Codex CLI, use the following entry in the active config.toml. Reuse the entry if it already points to this URL. Leave its optional scopes setting unset for OAuth discovery.
 
-If Codex already has this connection at this URL, run
-codex mcp login codemortis --oauth-client-registration dcr${readScopes.length ? ` --scopes ${readScopes.join(",")}` : ""}
+[mcp_servers.codemortis]
+url = ${JSON.stringify(endpoint)}
+oauth_resource = ${JSON.stringify(endpoint)}
+
+If authorization is needed, run this command once and wait for the browser callback:
+codex mcp login codemortis --oauth-client-registration dcr
 
 Verify the connection by listing the available tools.`;
   async function copy(value: string, kind: "endpoint" | "prompt") {
@@ -105,7 +108,7 @@ Verify the connection by listing the available tools.`;
           <DialogDescription>Use this URL in your client or paste the prompt into your coding agent. Complete authorization in your browser.</DialogDescription>
         </DialogHeader>
         {!settings.enabled && <p className="text-xs text-muted-foreground">MCP is off. An administrator must enable it and save before you connect.</p>}
-        {settings.enabled && !readScopes.length && <p className="text-xs text-muted-foreground">An administrator must enable a tool group with read access before using these setup instructions.</p>}
+        {settings.enabled && !hasEnabledGroup && <p className="text-xs text-muted-foreground">An administrator must enable a tool group before you can connect.</p>}
         <div className="min-w-0 space-y-2">
           <p className="text-sm font-medium">Server URL</p>
           <div className="flex items-start gap-2">
