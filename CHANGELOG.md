@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Upgrade to [Mortis Engine 0.1.9](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.9). Security scans check dependency coverage by directory and package ecosystem. The first automatic incremental review after upgrading rechecks eligible files within the configured limits.
+
 ## 0.1.3
 
 - Connect a Streamable HTTP client to `/mcp` for reviews, security, indexed code, and optional management. Choose permissions and repository access for each tool group during browser authorization. Clients can discover the available scopes automatically.

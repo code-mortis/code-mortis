@@ -9,11 +9,14 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta
 from functools import partial
 from itertools import groupby
+from pathlib import PurePosixPath
 from threading import Event, Lock
 from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi import HTTPException
+from mortis_engine.security_scans import engine as scanner_engine
+from mortis_engine.security_scans import service as engine_service
 from sqlalchemy import func, select
 
 from code_mortis.api_tokens.provenance import TransientAuthorizationError
@@ -621,23 +624,8 @@ def observe(db, scan, evidence, existing_id=None):
     return finding
 
 
-def stable_version(value):
-    if not re.fullmatch(r"v?\d+(?:\.\d+)*", value):
-        return None
-    parts = [int(part) for part in value.removeprefix("v").split(".")]
-    return tuple(parts + [0] * max(0, 4 - len(parts)))
-
-
-def safe_dependency_version(current, fixed):
-    # shortcut: automatic version ordering covers stable numeric releases; other schemes require exact fixes.
-    versions = [part.strip() for part in fixed.split(",") if part.strip()]
-    if current in versions:
-        return True
-    actual, fixes = stable_version(current), [stable_version(value) for value in versions]
-    if not actual or not fixes or any(value is None for value in fixes):
-        return False
-    branch = [value for value in fixes if value[:2] == actual[:2]]
-    return actual >= max(branch or fixes)
+stable_version = engine_service.stable_version
+safe_dependency_version = engine_service.safe_dependency_version
 
 
 def dependency_advisory(evidence, packages, installation_token, stopped, cache):
@@ -695,9 +683,38 @@ def dependency_advisory(evidence, packages, installation_token, stopped, cache):
         "original_version": evidence["installed_version"], "current_versions": versions}
 
 
+def dependency_may_have_moved(evidence, path, current_path, targets):
+    project = PurePosixPath(current_path).parent
+    package_type = evidence.get("package_type") or scanner_engine.dependency_target_type(PurePosixPath(path).name)
+    ecosystem = scanner_engine.dependency_ecosystem(package_type)
+    versions = [(PurePosixPath(target).parent, package["version"])
+                for target, rows in targets.items() for target_type, packages in rows.items()
+                if scanner_engine.dependency_ecosystem(target_type) == ecosystem
+                for package in packages if package["name"] == evidence["package"]]
+    if any(directory == project for directory, _ in versions):
+        return False
+    return any(version == evidence["installed_version"] or not safe_dependency_version(version, evidence.get("fixed_version", ""))
+               for _, version in versions)
+
+
 def deterministic_fix(item, old, trivy_result, *, advisory_lookup=None):
     evidence, path = old["evidence"], old["path"]
-    advisory = None
+    if evidence["kind"] == "dependency":
+        finding = {**old, "evidence": {**evidence, "path": path}}
+        verdict = engine_service.deterministic_fix(item, finding, trivy_result, advisory_lookup=advisory_lookup)
+        if verdict["verdict"] == "still_present":
+            return {"verdict": "uncertain", "explanation": "The affected package version is still present."}
+        if verdict["verdict"] != "fixed":
+            return verdict
+        targets = trivy_result.get("dependency_targets")
+        if targets and dependency_may_have_moved(evidence, path, verdict["current_path"], targets):
+            return {"verdict": "uncertain", "explanation": "The affected package may have moved to another directory."}
+        if advisory := verdict.get("advisory"):
+            verdict["explanation"] = (
+                "The lockfile changed, and each installed version in the verified project is outside "
+                f"the GitHub-reviewed advisory's affected range ({advisory['affected_range']})."
+            )
+        return verdict
     original = evidence["source_sha"]
     current_path = item.renamed(original, path)
     original_source = item.read(path, original)
@@ -714,34 +731,14 @@ def deterministic_fix(item, old, trivy_result, *, advisory_lookup=None):
             return {"verdict": "uncertain", "explanation": "Original credential identity could not be revalidated."}
         if any(raw in item.read(candidate) for candidate in item.inventory):
             return {"verdict": "still_present", "explanation": "The original credential material remains in the repository."}
-    elif evidence["kind"] == "dependency":
-        target = trivy_result["targets"].get(current_path)
-        if exists and not target:
-            return {"verdict": "uncertain", "explanation": "The affected dependency target was not successfully analyzed."}
-        packages = [p for row in trivy_result["targets"].values() for p in row["packages"]
-                    if p["name"] == evidence["package"]]
-        if any(p["version"] == evidence["installed_version"] for p in packages):
-            return {"verdict": "uncertain", "explanation": "The affected package version is still present."}
-        if packages and any(not safe_dependency_version(p["version"], evidence.get("fixed_version", "")) for p in packages):
-            if not evidence.get("fixed_version") and advisory_lookup:
-                advisory = advisory_lookup(evidence, packages)
-            if not advisory:
-                reason = "The new version is not an independently established safe version for the original advisory."
-                if not evidence.get("fixed_version"):
-                    reason += " No fixed version was reported. Review the advisory or record a justified triage decision."
-                return {"verdict": "uncertain", "explanation": reason}
     elif evidence["kind"] == "infrastructure":
         checks = trivy_result["targets"].get(current_path, {}).get("checks", [])
         if exists and not any(check["id"] == evidence["rule_id"] and check["status"] == "PASS"
                               and check.get("resource", "") == evidence.get("resource", "") for check in checks):
             return {"verdict": "uncertain", "explanation": "The original configuration check did not explicitly pass."}
-    return {"verdict": "fixed", "explanation": (
-                "The lockfile changed, the original package version is absent, and every installed version is outside "
-                f"the GitHub-reviewed advisory's affected range ({advisory['affected_range']})."
-                if advisory else "The original condition changed and the relevant scanner check confirms its removal."),
+    return {"verdict": "fixed", "explanation": "The original condition changed and the relevant scanner check confirms its removal.",
             "original_sha": original, "current_sha": item.sha, "path": path, "current_path": current_path,
-            "original_hash": digest(original_source), "current_hash": digest(current_source) if current_source is not None else None,
-            **({"advisory": advisory} if advisory else {})}
+            "original_hash": digest(original_source), "current_hash": digest(current_source) if current_source is not None else None}
 
 
 def perform(scan_id, claim):
@@ -1519,7 +1516,7 @@ def perform(scan_id, claim):
                   else "completed", claim=claim, findings=len(verdicts))
             token = fresh_installation_token()
             fresh = branch_head(full_name, token)
-            finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"]),
+            finish(scan_id, verdicts, problems, fresh, bool(code_paths or result["targets"] or result.get("dependency_targets")),
                    claim=claim, assessment_problems=assessment_problems, assessment_blockers=assessment_blockers)
     except TransientAuthorizationError:
         with transaction() as db:

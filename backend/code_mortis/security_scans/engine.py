@@ -67,8 +67,8 @@ def redact_secrets(text, values, rules=(), stopped=None):
     key = settings().encryption_key.encode()
     check_stopped = (lambda: engine_stopped(stopped)) if stopped else None
     if "ghs_" in text:
-        # Engine 0.1.8 discovers historical matches on the original bytes and appends
-        # them to values. Its generic fallback only masks the first token segment.
+        # Discover historical matches on the original bytes. The app's renderer also
+        # preserves empty lines in multiline credentials that overlap a token.
         if rules:
             native.redact_secrets(text, values, rules, check_stopped, key=key)
         return clean_text(text, values, preserve_lines=True)
@@ -111,6 +111,14 @@ class Snapshot:
 
     def read(self, path, sha=None):
         return git_source.read_source(self.git, self.env, sha or self.sha, relative_path(path), self.stopped)
+
+    def current_source(self, path):
+        path = relative_path(path)
+        if path in self.inventory:
+            return self.read(path)
+        if git_source.git(self.git, self.env, "ls-tree", "-z", self.sha, "--", f":(literal){path}", stopped=self.stopped):
+            raise ValueError("Current source exists outside the security snapshot; deletion is unproven.")
+        return None
 
     def redact(self, text):
         return redact_secrets(text, self.secret_values, self.secret_rules, self.stopped)
@@ -351,8 +359,14 @@ def trivy(item, timeout, stopped, *, execution_limits=False):
 
 target_path = native.target_path
 secret_material = native.secret_material
-normalize_trivy = native.normalize_trivy
 model_schema = native.model_schema
+
+
+def normalize_trivy(item, report):
+    try:
+        return native.normalize_trivy(item, report)
+    except native.ReviewStopped as exc:
+        raise ReviewStopped(str(exc)) from exc
 
 
 def selected_citations(evidence, context, *, field="evidence"):
