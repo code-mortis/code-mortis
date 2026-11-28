@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The App bundles [Mortis Engine 0.1.8](https://github.com/code-mortis/mortis-engine/releases/tag/v0.1.8). The first automatic incremental review after upgrading rechecks eligible files within the configured limits to establish a new baseline.
+
 ## 0.1.2
 
 - PR summary comments stay pending while Code Mortis retries temporary GitHub server errors. If all five sync attempts fail, the App shows the error.

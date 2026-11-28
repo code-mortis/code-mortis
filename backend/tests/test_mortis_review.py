@@ -35,7 +35,7 @@ from code_mortis.models import (
     ReviewRun,
     User,
 )
-from code_mortis.reviews import engine, graph_context, mortis, planning
+from code_mortis.reviews import comparison, engine, graph_context, mortis, planning
 from code_mortis.reviews.service import connection_snapshot, save_analysis
 from code_mortis.schemas.code_graph import EXTRACTOR_VERSION, blob_sha
 from code_mortis.schemas.common import RepoSettings
@@ -173,6 +173,7 @@ def settings(scenario, **changes):
     ("incomplete", ["app.py", "guide.md"], []),
     ("unpublished", ["app.py", "guide.md"], []),
     ("settings_changed", ["app.py", "guide.md"], []),
+    ("engine_upgraded", ["app.py", "guide.md"], []),
     ("rewritten_history", ["app.py", "guide.md"], []),
     ("manual", ["app.py", "guide.md"], []),
 ])
@@ -182,7 +183,10 @@ def test_incremental_review_uses_only_compatible_saved_coverage(scenario, monkey
         run = db.get(ReviewRun, "mortis-run")
         run.config = {**run.config, "planner_version": planning.VERSION}
     baseline = scenario["head"]
-    assert (first := review(scenario))[0] == "completed"
+    with monkeypatch.context() as baseline_env:
+        if case == "engine_upgraded":
+            baseline_env.setattr(comparison, "engine_version", "0.1.7")
+        assert (first := review(scenario))[0] == "completed"
     save_analysis("mortis-run", "mortis-job:1", *first)
 
     root = scenario["root"]
