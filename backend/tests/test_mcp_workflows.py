@@ -1,5 +1,6 @@
 """Exercise native and fallback workflows through the authenticated HTTP transport."""
 import hashlib
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -18,10 +19,12 @@ from code_mortis.models import (
     CodeGraphRepository,
     Job,
     Membership,
+    Repository,
     ReviewRun,
     SecurityFinding,
     SecurityScan,
 )
+from code_mortis.security_scans import engine as security_engine
 from code_mortis.security_scans import service as scans
 
 pytestmark = pytest.mark.usefixtures("enabled")
@@ -130,12 +133,16 @@ def test_scan_form_then_durable_task(client, monkeypatch):
     assert "error" in wire(client, token, "tasks/get", identity, caps)
 
 
-@pytest.mark.parametrize("outcome", ["cancel", "partial", "failed"])
-def test_review_task_poll_cancel_and_plain_replay(client, monkeypatch, outcome):
+@pytest.fixture
+def github_pull(monkeypatch):
     monkeypatch.setattr(github, "request", lambda *args, **kw: {
         "number": 3, "title": "A review", "user": {"login": "owner"},
         "html_url": "https://github.com/team/project/pull/3", "state": "open",
         "head": {"sha": "a"*40, "ref": "fix", "repo": {"id": 22}}, "base": {"sha": "b"*40}})
+
+
+@pytest.mark.parametrize("outcome", ["cancel", "partial", "failed"])
+def test_review_task_poll_cancel_and_plain_replay(client, github_pull, outcome):
     token = credentials(client, scopes=["reviews:read", "reviews:run"])["access_token"]
     args = {"pr_id": "pr", "connection_id": "connection", "request_key": "review-task-request"}
     task = call(client, token, "reviews_start_review", args, TASKS)["result"]
@@ -167,6 +174,94 @@ def test_review_task_poll_cancel_and_plain_replay(client, monkeypatch, outcome):
         assert result["structuredContent"]["publication"] == "not_applicable"
     else:
         assert "provider-secret" not in str(result)
+
+
+@pytest.mark.parametrize(("name", "target", "model"), [
+    ("reviews_start_review", {"pr_id": "pr"}, ReviewRun),
+    ("security_start_scan", {"repository_id": 22}, SecurityScan),
+    ("reviews_generate_background", {"repository_id": 22}, Job),
+])
+def test_task_rejects_reused_repository_name(client, github_pull, monkeypatch, name, target, model):
+    monkeypatch.setattr(scans, "branch_head", lambda *args: {"default_branch": "main", "head_sha": "a" * 40,
+                                                              "checked_at": now().isoformat()})
+    group = name.split("_", 1)[0]
+    token = credentials(client, scopes=[group + ":read", group + ":run"])["access_token"]
+    args = {**target, "connection_id": "connection", "request_key": "repository-identity-test"}
+    task_id = call(client, token, name, args, TASKS)["result"]["taskId"]
+    monkeypatch.setattr(github, "authorize_repo", lambda *args, **kw: {"id": 23, "permissions": {"pull": True, "push": True}})
+
+    for method, extra in [("tasks/get", {}), ("tasks/update", {"inputResponses": {}}), ("tasks/cancel", {})]:
+        error = wire(client, token, method, {"taskId": task_id, **extra}, TASKS)["error"]
+        assert error["message"] == "GitHub repository identity changed."
+    replay = call(client, token, name, args, TASKS)["result"]
+    assert replay["isError"] and replay["structuredContent"]["error"]["status"] == 403
+    with transaction() as db:
+        task = db.get(McpTask, task_id)
+        assert db.get(model, task.target_id).status == "queued"
+
+
+@pytest.mark.parametrize(("status", "publication"), [("completed", "pending"), ("partial", "publishing")])
+def test_review_task_rejects_cancel_during_publication(client, github_pull, status, publication):
+    token = credentials(client, scopes=["reviews:read", "reviews:run"])["access_token"]
+    args = {"pr_id": "pr", "connection_id": "connection", "request_key": "review-publication-test"}
+    task_id = call(client, token, "reviews_start_review", args, TASKS)["result"]["taskId"]
+    key = {"taskId": task_id}
+    with transaction() as db:
+        run_id = db.get(McpTask, task_id).target_id
+        run = db.get(ReviewRun, run_id)
+        run.status, run.publication = status, publication
+
+    assert "publication can no longer be cancelled" in wire(client, token, "tasks/cancel", key, TASKS)["error"]["message"]
+    assert wire(client, token, "tasks/get", key, TASKS)["result"]["status"] == "working"
+    with transaction() as db:
+        run = db.get(ReviewRun, run_id)
+        assert (run.status, run.publication, run.cancel_requested) == (status, publication, False)
+        run.publication = "published"
+    result = wire(client, token, "tasks/get", key, TASKS)["result"]
+    assert result["status"] == "completed" and result["result"]["structuredContent"]["publication"] == "published"
+
+
+@pytest.mark.parametrize(("cached", "review_repositories"), [
+    (False, [22, 23]), (True, [22, 23]), (True, [22]),
+], ids=["first-poll", "cached-result", "other-group-only"])
+def test_task_result_uses_current_grant_scoped_secret_evidence(client, cached, review_repositories):
+    with transaction() as db:
+        db.add(Repository(id=23, installation_id=10, full_name="team/other"))
+    token = credentials(client, scopes=["reviews:read", "reviews:run", "security:read"],
+                        repositories={"reviews": review_repositories, "security": [23]})["access_token"]
+    args = {"repository_id": 22, "connection_id": "connection", "request_key": "task-credential-test"}
+    task_id = call(client, token, "reviews_generate_background", args, TASKS)["result"]["taskId"]
+    key = {"taskId": task_id}
+    credential = 'synthetic "multiline"\ncredential'
+    with transaction() as db:
+        job_id = db.get(McpTask, task_id).target_id
+        job = db.get(Job, job_id)
+        job.status, job.payload = "done", {**job.payload, "background": credential}
+    if cached:
+        result = wire(client, token, "tasks/get", key, TASKS)["result"]["result"]
+        assert result["structuredContent"]["background"] == credential
+    with transaction() as db:
+        scan = SecurityScan(repository_id=23, actor_id=7, connection_id="connection", branch="main",
+                            head_sha="a" * 40, request_key="other-repo-scan", config={})
+        db.add(scan)
+        db.flush()
+        db.add(SecurityFinding(repository_id=23, first_scan_id=scan.id, last_scan_id=scan.id, fingerprint="example",
+            kind="secret", severity="high", title="Credential", path="config", evidence={
+                "rule_id": "fixture", "match_bytes": len(credential.encode()),
+                "identity": security_engine.secure_digest("fixture\0" + credential)}))
+
+    result = wire(client, token, "tasks/get", key, TASKS)["result"]
+    assert result["status"] == "completed"
+    if 23 not in review_repositories:
+        assert not result["result"]["isError"]
+        assert result["result"]["structuredContent"]["background"] == credential
+        return
+    assert result["result"]["isError"]
+    summary = {"id": job_id, "status": "done", "message": "Inspect the saved result in Code Mortis."}
+    assert result["result"]["structuredContent"] == json.loads(result["result"]["content"][0]["text"]) == summary
+    with transaction() as db:
+        assert db.get(McpTask, task_id).snapshot["result"] == result["result"]
+        assert db.get(Job, job_id).payload["background"] == credential
 
 
 def test_cancel_active_scan_keeps_the_cancellation_report(client, monkeypatch):

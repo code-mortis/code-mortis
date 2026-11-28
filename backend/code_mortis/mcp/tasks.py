@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException
 from code_mortis.api.dependencies import repo_access
 from code_mortis.api.routers import runs
 from code_mortis.core.db import now, transaction
-from code_mortis.core.security import redact_saved_credentials
+from code_mortis.core.security import saved_credential_redactor
 from code_mortis.integrations.github import GitHubError
 from code_mortis.mcp import auth
 from code_mortis.mcp.models import McpOperation, McpTask
@@ -103,19 +103,41 @@ def observe(db, name, task, user, cancel):
         return {"status": "cancelled"}
     if name == "reviews_start_review":
         if can_publish(row) and row.publication in {"pending", "publishing"}:
+            if cancel:
+                raise HTTPException(409, "Review analysis has finished. GitHub publication can no longer be cancelled.")
             return {"status": "working", "statusMessage": "GitHub publication " + row.publication}
         result = review_result(db, row)
     elif name == "security_start_scan":
         result = scan_result(row)
     else:
         result = background.job_out(row).model_dump(mode="json")
-    text = json.dumps(result, ensure_ascii=False)
-    is_error = status in {"failed", "superseded"}
-    if len(text.encode()) > 262144 or redact_saved_credentials(db, text, [task.repository_id]) != text:
-        result = {"id": task.target_id, "status": status, "message": "Inspect the saved result in Code Mortis."}
-        text, is_error = json.dumps(result), True
+    return completed_snapshot(result, is_error=status in {"failed", "superseded"})
+
+
+def completed_snapshot(result, *, is_error):
     return {"status": "completed", "result": {"resultType": "complete", "structuredContent": result,
-            "content": [{"type": "text", "text": text}], "isError": is_error}}
+            "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": is_error}}
+
+
+def contains_credential(value, redact):
+    # Check decoded strings as well as the text representation. JSON escaping can split a secret.
+    if isinstance(value, str):
+        return redact(value) != value.replace("\r\n", "\n")
+    if isinstance(value, dict):
+        return any(contains_credential(key, redact) or contains_credential(item, redact) for key, item in value.items())
+    if isinstance(value, list):
+        return any(contains_credential(item, redact) for item in value)
+    return False
+
+
+def safe_completed_snapshot(db, state, task, grant, domain):
+    result = state["result"]
+    if len(result["content"][0]["text"].encode()) <= 262144:
+        redact = saved_credential_redactor(db, auth.grant_repository_ids(grant, domain))
+        if not contains_credential(result, redact):
+            return state
+    return completed_snapshot({"id": task.target_id, "status": result["structuredContent"]["status"],
+                               "message": "Inspect the saved result in Code Mortis."}, is_error=True)
 
 
 def access_task(task_id, method):
@@ -137,16 +159,17 @@ def access_task(task_id, method):
         cancel = method == "tasks/cancel"
         auth.rate_limit("tasks", grant.id)
         background_job = operation.tool == "reviews_generate_background"
-        _, remote = repo_access(db, user, task.repository_id, write=cancel or background_job)
-        if background_job and (type(remote.get("id")) is not int or remote["id"] != task.repository_id):
-            raise HTTPException(403, "GitHub repository identity changed.")
+        repo_access(db, user, task.repository_id, write=cancel or background_job)
         if method == "tasks/update":
             # All three workflows resolve their input before the job starts.
             return {}
-        if task.snapshot["status"] == "working":
+        state = task.snapshot
+        if state["status"] == "working":
             state = observe(db, operation.tool, task, user, cancel)
-            if state != task.snapshot:
-                task.snapshot, task.updated_at = state, now()
+        if state["status"] == "completed":
+            state = safe_completed_snapshot(db, state, task, grant, domain)
+        if state != task.snapshot:
+            task.snapshot, task.updated_at = state, now()
         return {} if cancel else {**task_fields(operation, task, grant), **task.snapshot}
 
 
