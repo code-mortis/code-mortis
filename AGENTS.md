@@ -45,6 +45,7 @@ Read the relevant skill directly when automatic skill discovery is unavailable.
 - [Diagnose a saved run](.agents/skills/mortis-diagnose-run/SKILL.md) for read-only review and security scan troubleshooting.
 - [Refresh development services](.agents/skills/mortis-refresh-dev/SKILL.md) for a requested local Docker refresh.
 - [Assess engine evidence](.agents/skills/mortis-engine-evidence/SKILL.md) for reviewing, rescoring, or planning evaluations.
+- [Prepare a release](.agents/skills/code-mortis-release/SKILL.md) for preparing or auditing a stable App release and its public documentation.
 
 ## Runtime and security invariants
 

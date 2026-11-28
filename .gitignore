@@ -21,3 +21,5 @@ graphify-out
 /docs/
 .agents/skills/graphify
 .graphifyignore
+.claude/settings.local.json
+.claude/agents/
