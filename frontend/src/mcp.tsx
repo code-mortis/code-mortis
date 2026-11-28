@@ -180,7 +180,7 @@ function AdminSettings({ settings, onSaved }: { settings: McpSettings; onSaved: 
       </div>
       <Field
         label="Allowed client domains"
-        hint="Optional. Leave empty for the local Codex commands in the installation instructions. Other clients may need their registration or sign-in hostname, one per line."
+        hint="Leave empty for automatic registration with Claude Code or Codex CLI. If you list client hostnames, enter one per line and include claude.ai for Claude Code."
       >
         {(id) => (
           <Textarea

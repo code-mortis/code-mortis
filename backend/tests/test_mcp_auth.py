@@ -136,6 +136,62 @@ def test_default_settings_are_disabled_and_metadata_is_public(seed, client):
     assert "password" not in server["grant_types_supported"]
 
 
+def test_claude_dynamic_registration_without_metadata_hosts(enabled, client):
+    metadata = client.get("/.well-known/oauth-authorization-server").json()
+    assert metadata["client_id_metadata_document_supported"] is False
+    callback = "http://localhost:49152/callback"
+    registration = client.post(metadata["registration_endpoint"], json={
+        "client_name": "Claude Code", "application_type": "native", "redirect_uris": [callback],
+        "token_endpoint_auth_method": "none", "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+    assert registration.status_code == 201, registration.text
+    bindings = {"client_id": registration.json()["client_id"], "redirect_uri": callback}
+    code = consent_code(client, **bindings)
+    token = exchange(client, code, **bindings)
+    assert token.status_code == 200, token.text
+    assert token.json()["scope"] == "reviews:read"
+    assert rpc(client, token.json()["access_token"], method="tools/list").status_code == 200
+
+
+def test_claude_metadata_callback_uses_ephemeral_port_and_binds_code(enabled, client, monkeypatch):
+    with transaction() as db:
+        config = db.get(AppConfig, 1)
+        config.mcp_settings = {**config.mcp_settings, "allowed_client_domains": ["claude.ai"]}
+    assert client.get("/.well-known/oauth-authorization-server").json()["client_id_metadata_document_supported"] is True
+    client_id = "https://claude.ai/oauth/claude-code-client-metadata"
+
+    def claude_metadata(requested_id, allowed_domains):
+        assert requested_id == client_id and allowed_domains == ["claude.ai"]
+        return mcp_auth.McpClientInput(client_id=client_id, client_name="Claude Code",
+            redirect_uris=["http://localhost/callback", "http://127.0.0.1/callback"])
+
+    monkeypatch.setattr(mcp_auth, "fetch_client_metadata", claude_metadata)
+    bindings = {"client_id": client_id, "redirect_uri": "http://localhost:49153/callback"}
+    code = consent_code(client, **bindings)
+    wrong_port = exchange(client, code, client_id=client_id, redirect_uri="http://localhost:49154/callback")
+    assert wrong_port.status_code == 400
+    token = exchange(client, code, **bindings)
+    assert token.status_code == 200, token.text
+    assert token.json()["scope"] == "reviews:read"
+
+
+def test_only_portless_metadata_loopback_callbacks_accept_a_variable_port():
+    callback = "http://127.0.0.1:49153/callback"
+    client = McpClient(redirect_uris=["http://127.0.0.1/callback"], metadata_managed=True)
+    assert client.check_redirect_uri(callback)
+    assert not client.check_redirect_uri("http://localhost:49153/callback")
+    assert not client.check_redirect_uri(callback + "/other")
+    assert not client.check_redirect_uri(callback + "?next=one")
+    assert not client.check_redirect_uri("http://127.0.0.1:65536/callback")
+    client.metadata_managed = False
+    assert not client.check_redirect_uri(callback)
+    client.metadata_managed = True
+    client.redirect_uris = ["http://127.0.0.1:49154/callback", "https://app.example/callback"]
+    assert not client.check_redirect_uri(callback)
+    assert not client.check_redirect_uri("https://app.example:49153/callback")
+
+
 def test_oauth_code_flow_hashes_tokens_and_authenticates_actual_transport(enabled, client):
     tokens = credentials(client)
     assert tokens["token_type"] == "Bearer"
