@@ -143,6 +143,46 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
     assert engine.validate_result(final(batch), batch, batch.sources, dict(CREDENTIALS))["comments"] == []
 
 
+def test_stateless_installation_token_is_redacted_in_diff_and_review_findings():
+    from code_mortis.core.security import clean_text
+    from code_mortis.security_scans.engine import secure_digest
+
+    token = "ghs_" + "12345_" + "a" * 35 + "." + "b-_" * 100 + "." + "c_" * 86 + "-"
+    raw = f"value = '{token}'\n"
+    assert clean_text("+" + raw) == "+value = '[redacted]'\n"
+    assert clean_text(f"({token}).") == "([redacted])."
+    assert clean_text(f"prefix{token} and {token}", (token,)) == "prefix[redacted] and [redacted]"
+    assert clean_text(f"Bearer prefix.{token}.suffix") == "Bearer [redacted]"
+    assert clean_text("legacy ghs_" + "x" * 36) == "legacy [redacted]"
+    assert json.loads(clean_text(json.dumps(f"first\n{token}"))) == "first\n[redacted]"
+
+    batch = prepared(plan([unit(source=raw)]))[0]
+    assert batch.sources[0]["text"] == "value = '[redacted]'\n"
+    assert "b-_" not in batch.request.model_dump_json()
+
+    # Historical credentials can include a token and additional secret material.
+    historical = f"password={token}/private"
+    credentials = {"extra_headers": {"X-Account": "12345"}, "redaction_rules": [{
+        "rule_id": "test", "match_bytes": len(historical),
+        "identity": secure_digest("test\0" + historical),
+    }]}
+    item = finding(batch)
+    item.update(content=f"Found {token}.", suggestion_code=historical)
+    result = engine.validate_result(final(batch, [item]), batch, batch.sources, credentials)
+    assert result["comments"][0]["content"] == "Found [redacted]."
+    assert result["comments"][0]["suggestion_code"] == "[redacted]"
+    assert historical in credentials["redaction_values"]
+
+
+def test_token_redaction_preserves_exact_legacy_quote_validation():
+    batch = prepared(plan([unit(source="[redacted]\n")]), source_code_policy=None)[0]
+    item = finding(batch)
+    item["existing_code"] = "ghs_12345_header.payload.signature"
+    with pytest.raises(engine.ResultValidationError) as caught:
+        engine.validate_result(final(batch, [item]), batch, batch.sources, dict(CREDENTIALS))
+    assert caught.value.issue["code"] == "existing_code_mismatch"
+
+
 @pytest.mark.parametrize("removed", ["-- SQL comment", "-- a/header-like.sql", "ordinary removed line"])
 def test_removed_header_like_content_preserves_inline_finding_anchor(removed):
     value = plan([unit("query.sql", start=7, source="-- current comment\nSELECT 1;\n")])

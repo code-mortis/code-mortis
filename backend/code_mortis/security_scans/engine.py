@@ -18,7 +18,7 @@ from code_mortis.core import source as git_source
 from code_mortis.core.config import settings
 from code_mortis.core.db import now
 from code_mortis.core.errors import ReviewStopped, RunnerBlocked, engine_stopped
-from code_mortis.core.security import digest, safe_repo_name
+from code_mortis.core.security import clean_text, digest, safe_repo_name
 from code_mortis.core.shared_execution import require_shared
 from code_mortis.integrations import llm
 from code_mortis.reviews import verification
@@ -64,8 +64,15 @@ def secure_digest(value):
 
 
 def redact_secrets(text, values, rules=(), stopped=None):
-    return native.redact_secrets(text, values, rules, (lambda: engine_stopped(stopped)) if stopped else None,
-                                key=settings().encryption_key.encode())
+    key = settings().encryption_key.encode()
+    check_stopped = (lambda: engine_stopped(stopped)) if stopped else None
+    if "ghs_" in text:
+        # Engine 0.1.8 discovers historical matches on the original bytes and appends
+        # them to values. Its generic fallback only masks the first token segment.
+        if rules:
+            native.redact_secrets(text, values, rules, check_stopped, key=key)
+        return clean_text(text, values, preserve_lines=True)
+    return native.redact_secrets(text, values, rules, check_stopped, key=key)
 
 
 def redacted_context(item, value, *, structural=False):

@@ -68,13 +68,20 @@ services:
         - -c
         - |
           import os
+          import sys
           import time
+          from contextlib import suppress
           from redis import Redis
 
-          # Celery Beat normally flushes the schedule every three minutes.
-          if time.time() - os.stat("/tmp/celerybeat-schedule").st_mtime >= 360:
+          schedule = sys.argv[1]
+          last_sync = os.path.getmtime(schedule)
+          # SQLite can flush Beat's updates to the WAL between checkpoints.
+          with suppress(FileNotFoundError):
+              last_sync = max(last_sync, os.path.getmtime(schedule + "-wal"))
+          if time.time() - last_sync >= 360:
               raise SystemExit("Celery Beat schedule is stale")
           Redis.from_url(os.environ["CM_REDIS_URL"], socket_timeout=3, socket_connect_timeout=3).ping()
+        - /tmp/celerybeat-schedule
 
 networks:
   default:
