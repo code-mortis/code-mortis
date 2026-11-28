@@ -143,6 +143,15 @@ def test_valid_finding_constructs_exact_citation_and_empty_findings_complete():
     assert engine.validate_result(final(batch), batch, batch.sources, dict(CREDENTIALS))["comments"] == []
 
 
+def test_multiline_redaction_preserves_empty_lines_in_text_and_json():
+    from code_mortis.core.security import clean_text
+
+    secret = "\nfirst\n\nlast\n"
+    expected = "\n[redacted]\n\n[redacted]\n"
+    assert clean_text(secret, (secret,), preserve_lines=True) == expected
+    assert clean_text(json.dumps(secret), (secret,), preserve_lines=True) == json.dumps(expected)
+
+
 def test_stateless_installation_token_is_redacted_in_diff_and_review_findings():
     from code_mortis.core.security import clean_text
     from code_mortis.security_scans.engine import secure_digest

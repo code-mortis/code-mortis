@@ -74,7 +74,8 @@ def _literal_spans(text, lines, separator):
     while start >= 0:
         end = start + len(literal)
         for line in lines:
-            yield start, start + len(line)
+            if line:
+                yield start, start + len(line)
             start += len(line) + len(separator)
         start = text.find(literal, end)
 
